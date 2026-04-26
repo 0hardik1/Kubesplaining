@@ -1,0 +1,14 @@
+# Local Claude Code config
+.claude/
+
+# Internal spec — not for public repo
+KUBESPLAINING_SPEC.md
+
+# Build/test scratch dir (caches, kubeconfig, e2e artifacts)
+.tmp/
+
+# Build output
+bin/
+
+# Generated reports
+kubesplaining-report/

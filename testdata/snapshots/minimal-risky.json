@@ -1,0 +1,237 @@
+{
+  "metadata": {
+    "kubesplaining_version": "dev",
+    "snapshot_timestamp": "2026-03-25T00:00:00Z",
+    "cluster_name": "fixture-cluster",
+    "cluster_version": "v1.35.0",
+    "api_server_url": "https://fixture.local"
+  },
+  "resources": {
+    "namespaces": [
+      {
+        "metadata": {
+          "name": "default"
+        }
+      },
+      {
+        "metadata": {
+          "name": "flat-network"
+        }
+      }
+    ],
+    "pods": [
+      {
+        "metadata": {
+          "name": "reader-pod",
+          "namespace": "default"
+        },
+        "spec": {
+          "serviceAccountName": "reader"
+        }
+      }
+    ],
+    "deployments": [
+      {
+        "metadata": {
+          "name": "risky",
+          "namespace": "default"
+        },
+        "spec": {
+          "template": {
+            "spec": {
+              "serviceAccountName": "default",
+              "hostNetwork": true,
+              "containers": [
+                {
+                  "name": "app",
+                  "image": "nginx:latest",
+                  "securityContext": {
+                    "privileged": true
+                  }
+                }
+              ],
+              "volumes": [
+                {
+                  "name": "rootfs",
+                  "hostPath": {
+                    "path": "/"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "metadata": {
+          "name": "api",
+          "namespace": "flat-network"
+        },
+        "spec": {
+          "template": {
+            "metadata": {
+              "labels": {
+                "app": "api"
+              }
+            },
+            "spec": {
+              "containers": [
+                {
+                  "name": "api",
+                  "image": "nginx:1.27.5"
+                }
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "network_policies": [
+      {
+        "metadata": {
+          "name": "allow-broad",
+          "namespace": "flat-network"
+        },
+        "spec": {
+          "podSelector": {
+            "matchLabels": {
+              "app": "api"
+            }
+          },
+          "ingress": [
+            {
+              "from": [
+                {
+                  "namespaceSelector": {}
+                }
+              ]
+            }
+          ],
+          "egress": [
+            {
+              "to": [
+                {
+                  "ipBlock": {
+                    "cidr": "0.0.0.0/0"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "secrets_metadata": [
+      {
+        "name": "legacy-token",
+        "namespace": "default",
+        "type": "kubernetes.io/service-account-token"
+      }
+    ],
+    "config_maps": [
+      {
+        "name": "app-config",
+        "namespace": "default",
+        "data": {
+          "db_password": "",
+          "api_token": ""
+        }
+      }
+    ],
+    "mutating_webhook_configs": [
+      {
+        "metadata": {
+          "name": "risky-ignore-webhook"
+        },
+        "webhooks": [
+          {
+            "name": "mutate.default.local",
+            "admissionReviewVersions": ["v1"],
+            "sideEffects": "None",
+            "failurePolicy": "Ignore",
+            "namespaceSelector": {
+              "matchExpressions": [
+                {
+                  "key": "kubernetes.io/metadata.name",
+                  "operator": "NotIn",
+                  "values": ["kube-system"]
+                }
+              ]
+            },
+            "objectSelector": {
+              "matchLabels": {
+                "admission": "enabled"
+              }
+            },
+            "clientConfig": {
+              "service": {
+                "namespace": "default",
+                "name": "fake-webhook",
+                "path": "/mutate"
+              }
+            },
+            "rules": [
+              {
+                "operations": ["CREATE"],
+                "apiGroups": [""],
+                "apiVersions": ["v1"],
+                "resources": ["pods"]
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "cluster_roles": [
+      {
+        "metadata": {
+          "name": "reader-role"
+        },
+        "rules": [
+          {
+            "apiGroups": [
+              ""
+            ],
+            "resources": [
+              "secrets"
+            ],
+            "verbs": [
+              "get",
+              "list"
+            ]
+          },
+          {
+            "apiGroups": [
+              ""
+            ],
+            "resources": [
+              "pods"
+            ],
+            "verbs": [
+              "create"
+            ]
+          }
+        ]
+      }
+    ],
+    "cluster_role_bindings": [
+      {
+        "metadata": {
+          "name": "reader-role"
+        },
+        "subjects": [
+          {
+            "kind": "ServiceAccount",
+            "name": "reader",
+            "namespace": "default"
+          }
+        ],
+        "roleRef": {
+          "apiGroup": "rbac.authorization.k8s.io",
+          "kind": "ClusterRole",
+          "name": "reader-role"
+        }
+      }
+    ]
+  }
+}

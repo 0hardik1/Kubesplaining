@@ -1,0 +1,114 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: default
+  namespace: app
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: legacy-token
+  namespace: app
+  annotations:
+    kubernetes.io/service-account.name: default
+type: kubernetes.io/service-account-token
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: app
+data:
+  db_password: super-secret
+  api_token: placeholder
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-webhook
+  namespace: app
+spec:
+  selector:
+    app: fake-webhook
+  ports:
+    - name: https
+      port: 443
+      targetPort: 8443
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: app-default-reader
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: app-default-reader
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: app
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: app-default-reader
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: risky
+  namespace: app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: risky
+  template:
+    metadata:
+      labels:
+        app: risky
+    spec:
+      serviceAccountName: default
+      hostNetwork: true
+      containers:
+        - name: app
+          image: nginx:latest
+          securityContext:
+            privileged: true
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: risky-ignore-webhook
+webhooks:
+  - name: mutate.app.local
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Ignore
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: ["kube-system"]
+    objectSelector:
+      matchLabels:
+        admission: enabled
+    clientConfig:
+      service:
+        namespace: app
+        name: fake-webhook
+        path: /mutate
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
