@@ -55,12 +55,17 @@ For one-off manifest checks without cluster access:
 
 ### Developer setup
 
+The repo uses [Hermit](https://cashapp.github.io/hermit/) to pin developer tools (Go, kubectl, kind, ripgrep). Activate the environment once per shell — Hermit downloads the pinned versions on first use into a per-user cache:
+
 ```bash
-make setup    # download Go module deps
-make test     # go test ./...
-make lint     # gofmt -l + go vet
-make e2e      # spin up kind, apply risky manifests, assert findings (needs Docker)
+. ./bin/activate-hermit          # or run `./bin/<tool>` ad hoc without activating
+make setup                        # download Go module deps
+make test                         # go test ./...
+make lint                         # gofmt -l + go vet
+make e2e                          # spin up kind, apply risky manifests, assert findings (needs Docker)
 ```
+
+Docker is intentionally not Hermit-managed — install the Docker daemon on the host. To add or change a pinned tool, run `./bin/hermit install <pkg>` and commit the resulting symlinks under `bin/`.
 
 ## Why It Is Useful
 

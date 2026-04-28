@@ -7,8 +7,8 @@ KUBESPLAINING_SPEC.md
 # Build/test scratch dir (caches, kubeconfig, e2e artifacts)
 .tmp/
 
-# Build output
-bin/
+# Build output (Hermit shims in bin/ are tracked; only the compiled CLI is ignored)
+bin/kubesplaining
 
 # Generated reports
 kubesplaining-report/

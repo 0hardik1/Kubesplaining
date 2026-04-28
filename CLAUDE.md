@@ -10,6 +10,8 @@ The single source-of-truth for *what* the tool does and every implemented/planne
 
 ## Common commands
 
+Developer tooling (Go, kubectl, kind, ripgrep) is pinned via [Hermit](https://cashapp.github.io/hermit/) under `bin/`. Either activate the environment once per shell with `. ./bin/activate-hermit`, or invoke binaries directly as `./bin/go ...`, `./bin/rg ...`, etc. The Hermit shims auto-download the pinned versions on first use into `~/Library/Caches/hermit`. Docker is not Hermit-managed.
+
 All build/test commands route through the `Makefile`, which pins `GOCACHE` / `GOMODCACHE` under `.tmp/` so module downloads stay inside the repo.
 
 ```bash
@@ -31,9 +33,9 @@ GOCACHE=$(pwd)/.tmp/go-build-cache GOMODCACHE=$(pwd)/.tmp/go-mod-cache \
   go test ./internal/analyzer/privesc -run TestFindPaths -v
 ```
 
-`make e2e` requires `docker`, `kind`, `kubectl`, and `rg` on `PATH` and a reachable Docker daemon (see `scripts/kind-e2e.sh`). The script greps `findings.json` for specific rule IDs — when you add or rename a rule that the e2e fixture should produce, update the `rg -q "KUBE-..."` assertions and/or `testdata/e2e/vulnerable.yaml` together.
+`make e2e` requires a reachable Docker daemon (see `scripts/kind-e2e.sh`); `kind`, `kubectl`, and `rg` come from Hermit once the environment is activated. The script greps `findings.json` for specific rule IDs — when you add or rename a rule that the e2e fixture should produce, update the `rg -q "KUBE-..."` assertions and/or `testdata/e2e/vulnerable.yaml` together.
 
-`gofmt -l` is the lint gate; the Makefile lists Go files via `rg --files -g '*.go'`, so `rg` must be available locally for `make lint` too.
+`gofmt -l` is the lint gate; the Makefile lists Go files via `rg --files -g '*.go'` (Hermit-managed).
 
 ## Architecture
 
