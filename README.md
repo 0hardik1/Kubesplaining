@@ -24,12 +24,28 @@ See [PLAN.md](PLAN.md) for the full roadmap and what is/isn't done yet.
 
 ## Quickstart
 
-Build the CLI and scan your current `kubectl` context:
+The repo pins its developer tools (Go, kubectl, kind, ripgrep) with [Hermit](https://cashapp.github.io/hermit/), so you do **not** need a system Go install. The `./bin/` directory ships shim symlinks; the first invocation of any of them auto-downloads the pinned version into `~/Library/Caches/hermit` (macOS) or `~/.cache/hermit` (Linux). No global install required, no `sudo`.
+
+Activate the environment once per shell so plain `go`, `kubectl`, etc. resolve to the pinned versions:
+
+```bash
+. ./bin/activate-hermit          # adds ./bin to PATH for this shell
+```
+
+> Don't want to activate? Skip the line above and call shims directly: `./bin/go ...`, `./bin/kubectl ...`. Either path works; everything below assumes you've activated.
+
+Build the CLI and scan your current `kubectl` context — one command:
+
+```bash
+make scan                                   # builds if needed, then scans the current context
+open kubesplaining-report/report.html       # macOS; xdg-open on Linux
+```
+
+`make scan` builds the binary on first run (Hermit auto-fetches Go) and then re-runs incrementally. Pass extra CLI flags via `ARGS`, e.g. `make scan ARGS="--threshold high --only-modules privesc"`. To run the binary directly instead:
 
 ```bash
 make build
 ./bin/kubesplaining scan
-open kubesplaining-report/report.html      # macOS; xdg-open on Linux
 ```
 
 Or capture a snapshot first and analyze it offline (good for jumphosts, audits, diffs):
@@ -55,11 +71,10 @@ For one-off manifest checks without cluster access:
 
 ### Developer setup
 
-The repo uses [Hermit](https://cashapp.github.io/hermit/) to pin developer tools (Go, kubectl, kind, ripgrep). Activate the environment once per shell — Hermit downloads the pinned versions on first use into a per-user cache:
+With Hermit activated (see Quickstart), the standard loop is:
 
 ```bash
-. ./bin/activate-hermit          # or run `./bin/<tool>` ad hoc without activating
-make setup                        # download Go module deps
+make setup                        # download Go module deps into ./.tmp
 make test                         # go test ./...
 make lint                         # gofmt -l + go vet
 make e2e                          # spin up kind, apply risky manifests, assert findings (needs Docker)
