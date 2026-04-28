@@ -67,30 +67,27 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 func analyzeMutating(ctx webhookContext, findings []models.Finding, seen map[string]struct{}) []models.Finding {
 	webhook := ctx.Webhook
 	if interceptsSecurityCriticalResources(webhook.Rules) && webhook.FailurePolicy != nil && *webhook.FailurePolicy == admissionregistrationv1.Ignore {
-		findings = appendUnique(findings, seen, webhookFinding(ctx.ConfigKind, ctx.ConfigName, webhook.Name, "KUBE-ADMISSION-001", models.SeverityHigh, 7.9,
-			"Security-critical webhook uses failurePolicy Ignore",
-			"This mutating webhook targets sensitive resources but will fail open if the webhook backend is unavailable.",
+		findings = appendUnique(findings, seen, webhookFinding(ctx.ConfigKind, ctx.ConfigName, webhook.Name,
+			"KUBE-ADMISSION-001", models.SeverityHigh, 7.9,
 			map[string]any{"failurePolicy": webhook.FailurePolicy, "rules": webhook.Rules},
-			"Use `failurePolicy: Fail` for security-critical webhooks so outages do not silently disable enforcement.",
-			"failurePolicyIgnore"))
+			"failurePolicyIgnore",
+			contentAdmission001(ctx.ConfigKind, ctx.ConfigName, webhook.Name)))
 	}
 
 	if selectorHasBypassableObjectMatch(webhook.ObjectSelector) {
-		findings = appendUnique(findings, seen, webhookFinding(ctx.ConfigKind, ctx.ConfigName, webhook.Name, "KUBE-ADMISSION-002", models.SeverityMedium, 6.1,
-			"Webhook can be bypassed via object labels",
-			"This webhook uses an object selector, which means workloads may avoid admission by omitting or changing matching labels.",
+		findings = appendUnique(findings, seen, webhookFinding(ctx.ConfigKind, ctx.ConfigName, webhook.Name,
+			"KUBE-ADMISSION-002", models.SeverityMedium, 6.1,
 			map[string]any{"objectSelector": webhook.ObjectSelector},
-			"Prefer rules that apply independent of workload-controlled labels for security-sensitive admission checks.",
-			"objectSelector"))
+			"objectSelector",
+			contentAdmission002(ctx.ConfigKind, ctx.ConfigName, webhook.Name)))
 	}
 
 	if selectorExcludesSensitiveNamespaces(webhook.NamespaceSelector) {
-		findings = appendUnique(findings, seen, webhookFinding(ctx.ConfigKind, ctx.ConfigName, webhook.Name, "KUBE-ADMISSION-003", models.SeverityMedium, 6.4,
-			"Webhook excludes sensitive namespaces",
-			"This webhook's namespace selector excludes at least one sensitive namespace, which can leave privileged areas outside admission control.",
+		findings = appendUnique(findings, seen, webhookFinding(ctx.ConfigKind, ctx.ConfigName, webhook.Name,
+			"KUBE-ADMISSION-003", models.SeverityMedium, 6.4,
 			map[string]any{"namespaceSelector": webhook.NamespaceSelector},
-			"Review namespace exemptions and ensure privileged namespaces are intentionally and safely excluded.",
-			"namespaceSelector"))
+			"namespaceSelector",
+			contentAdmission003(ctx.ConfigKind, ctx.ConfigName, webhook.Name)))
 	}
 
 	return findings
@@ -100,30 +97,27 @@ func analyzeMutating(ctx webhookContext, findings []models.Finding, seen map[str
 func analyzeValidating(ctx validatingWebhookContext, findings []models.Finding, seen map[string]struct{}) []models.Finding {
 	webhook := ctx.Webhook
 	if interceptsSecurityCriticalResources(webhook.Rules) && webhook.FailurePolicy != nil && *webhook.FailurePolicy == admissionregistrationv1.Ignore {
-		findings = appendUnique(findings, seen, webhookFinding(ctx.ConfigKind, ctx.ConfigName, webhook.Name, "KUBE-ADMISSION-001", models.SeverityHigh, 7.9,
-			"Security-critical webhook uses failurePolicy Ignore",
-			"This validating webhook targets sensitive resources but will fail open if the webhook backend is unavailable.",
+		findings = appendUnique(findings, seen, webhookFinding(ctx.ConfigKind, ctx.ConfigName, webhook.Name,
+			"KUBE-ADMISSION-001", models.SeverityHigh, 7.9,
 			map[string]any{"failurePolicy": webhook.FailurePolicy, "rules": webhook.Rules},
-			"Use `failurePolicy: Fail` for security-critical webhooks so outages do not silently disable enforcement.",
-			"failurePolicyIgnore"))
+			"failurePolicyIgnore",
+			contentAdmission001(ctx.ConfigKind, ctx.ConfigName, webhook.Name)))
 	}
 
 	if selectorHasBypassableObjectMatch(webhook.ObjectSelector) {
-		findings = appendUnique(findings, seen, webhookFinding(ctx.ConfigKind, ctx.ConfigName, webhook.Name, "KUBE-ADMISSION-002", models.SeverityMedium, 6.1,
-			"Webhook can be bypassed via object labels",
-			"This webhook uses an object selector, which means workloads may avoid admission by omitting or changing matching labels.",
+		findings = appendUnique(findings, seen, webhookFinding(ctx.ConfigKind, ctx.ConfigName, webhook.Name,
+			"KUBE-ADMISSION-002", models.SeverityMedium, 6.1,
 			map[string]any{"objectSelector": webhook.ObjectSelector},
-			"Prefer rules that apply independent of workload-controlled labels for security-sensitive admission checks.",
-			"objectSelector"))
+			"objectSelector",
+			contentAdmission002(ctx.ConfigKind, ctx.ConfigName, webhook.Name)))
 	}
 
 	if selectorExcludesSensitiveNamespaces(webhook.NamespaceSelector) {
-		findings = appendUnique(findings, seen, webhookFinding(ctx.ConfigKind, ctx.ConfigName, webhook.Name, "KUBE-ADMISSION-003", models.SeverityMedium, 6.4,
-			"Webhook excludes sensitive namespaces",
-			"This webhook's namespace selector excludes at least one sensitive namespace, which can leave privileged areas outside admission control.",
+		findings = appendUnique(findings, seen, webhookFinding(ctx.ConfigKind, ctx.ConfigName, webhook.Name,
+			"KUBE-ADMISSION-003", models.SeverityMedium, 6.4,
 			map[string]any{"namespaceSelector": webhook.NamespaceSelector},
-			"Review namespace exemptions and ensure privileged namespaces are intentionally and safely excluded.",
-			"namespaceSelector"))
+			"namespaceSelector",
+			contentAdmission003(ctx.ConfigKind, ctx.ConfigName, webhook.Name)))
 	}
 
 	return findings
@@ -201,28 +195,39 @@ func selectorExcludesSensitiveNamespaces(selector *metav1.LabelSelector) bool {
 	return false
 }
 
-// webhookFinding materializes an admission-webhook finding tied to the given webhook configuration.
-func webhookFinding(configKind, configName, webhookName, ruleID string, severity models.Severity, score float64, title, description string, evidence map[string]any, remediation, check string) models.Finding {
+// webhookFinding materializes an admission-webhook finding from a ruleContent. The structured
+// content (Scope, Impact, AttackScenario, RemediationSteps, LearnMore, MitreTechniques) carries
+// the senior-staff-grade detail; the analyzer supplies severity, score, evidence, and the rule
+// ID + dedup key.
+func webhookFinding(configKind, configName, webhookName, ruleID string, severity models.Severity, score float64, evidence map[string]any, check string, content ruleContent) models.Finding {
 	evidenceBytes, _ := json.Marshal(evidence)
+	references := make([]string, 0, len(content.LearnMore))
+	for _, ref := range content.LearnMore {
+		references = append(references, ref.URL)
+	}
 	return models.Finding{
 		ID:          fmt.Sprintf("%s:%s:%s", ruleID, configName, webhookName),
 		RuleID:      ruleID,
 		Severity:    severity,
 		Score:       scoring.Clamp(score),
 		Category:    models.CategoryInfrastructureModification,
-		Title:       title,
-		Description: description,
+		Title:       content.Title,
+		Description: content.Description,
 		Resource: &models.ResourceRef{
 			Kind:     configKind,
 			Name:     configName,
 			APIGroup: admissionregistrationv1.GroupName,
 		},
-		Evidence:    evidenceBytes,
-		Remediation: remediation,
-		References: []string{
-			"https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/",
-		},
-		Tags: []string{"module:admission", "check:" + check},
+		Scope:            content.Scope,
+		Impact:           content.Impact,
+		AttackScenario:   content.AttackScenario,
+		Evidence:         evidenceBytes,
+		Remediation:      content.Remediation,
+		RemediationSteps: content.RemediationSteps,
+		References:       references,
+		LearnMore:        content.LearnMore,
+		MitreTechniques:  content.MitreTechniques,
+		Tags:             []string{"module:admission", "check:" + check},
 	}
 }
 

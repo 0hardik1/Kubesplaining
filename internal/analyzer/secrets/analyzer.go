@@ -52,42 +52,38 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 
 	for _, secret := range snapshot.Resources.SecretsMetadata {
 		if secret.Type == corev1.SecretTypeServiceAccountToken {
-			findings = appendUnique(findings, seen, secretFinding(secret, "KUBE-SECRETS-001", models.SeverityHigh, 7.8,
-				"Long-lived service account token secret present",
-				"This secret uses the legacy `kubernetes.io/service-account-token` pattern, which creates long-lived credentials that are harder to rotate safely.",
+			findings = appendUnique(findings, seen, secretFinding(secret,
+				"KUBE-SECRETS-001", models.SeverityHigh, 7.8,
 				map[string]any{"type": secret.Type},
-				"Prefer projected service account tokens and remove legacy token secrets where possible.",
-				"serviceAccountToken"))
+				"serviceAccountToken",
+				contentSecrets001(secret.Namespace, secret.Name)))
 		}
 
 		if secret.Namespace == "kube-system" && secret.Type == corev1.SecretTypeOpaque {
-			findings = appendUnique(findings, seen, secretFinding(secret, "KUBE-SECRETS-002", models.SeverityMedium, 5.9,
-				"Opaque secret stored in kube-system",
-				"An opaque secret is stored in `kube-system`, which often indicates infrastructure credentials or cluster-level integrations.",
+			findings = appendUnique(findings, seen, secretFinding(secret,
+				"KUBE-SECRETS-002", models.SeverityMedium, 5.9,
 				map[string]any{"type": secret.Type},
-				"Review whether this secret is still required and restrict who can read it.",
-				"opaqueKubeSystem"))
+				"opaqueKubeSystem",
+				contentSecrets002(secret.Name)))
 		}
 	}
 
 	for _, configMap := range snapshot.Resources.ConfigMaps {
 		if keys := matchedCredentialKeys(configMap.Data); len(keys) > 0 {
-			findings = appendUnique(findings, seen, configMapFinding(configMap, "KUBE-CONFIGMAP-001", models.SeverityMedium, 6.3,
-				"ConfigMap contains credential-like keys",
-				"This ConfigMap contains keys that look like credentials or connection secrets, which may indicate sensitive data is stored outside Kubernetes Secrets.",
+			findings = appendUnique(findings, seen, configMapFinding(configMap,
+				"KUBE-CONFIGMAP-001", models.SeverityMedium, 6.3,
 				map[string]any{"matched_keys": keys},
-				"Move sensitive values into Secrets or an external secret manager and keep ConfigMaps for non-sensitive configuration only.",
-				"credentialLikeKeys"))
+				"credentialLikeKeys",
+				contentConfigMap001(configMap.Namespace, configMap.Name, keys)))
 		}
 
 		if configMap.Namespace == "kube-system" && configMap.Name == "coredns" {
 			if corefile, ok := configMap.Data["Corefile"]; ok && suspiciousCoreDNS(corefile) {
-				findings = appendUnique(findings, seen, configMapFinding(configMap, "KUBE-CONFIGMAP-002", models.SeverityHigh, 7.5,
-					"CoreDNS configuration contains risky directives",
-					"The CoreDNS ConfigMap contains directives that can alter or redirect DNS behavior in ways that deserve review.",
+				findings = appendUnique(findings, seen, configMapFinding(configMap,
+					"KUBE-CONFIGMAP-002", models.SeverityHigh, 7.5,
 					map[string]any{"name": configMap.Name},
-					"Review CoreDNS rewrites and external forwarders to ensure they are intentional and trusted.",
-					"corednsRiskyDirectives"))
+					"corednsRiskyDirectives",
+					contentConfigMap002()))
 			}
 		}
 	}
@@ -126,8 +122,18 @@ func suspiciousCoreDNS(corefile string) bool {
 		strings.Contains(normalized, "forward . tls://")
 }
 
-// secretFinding materializes a Secret-scoped finding.
-func secretFinding(secret models.SecretMetadata, ruleID string, severity models.Severity, score float64, title, description string, evidence map[string]any, remediation, check string) models.Finding {
+// referencesFromContent flattens content.LearnMore into a []string of URLs for the legacy
+// References field — JSON/SARIF/CSV consumers see the URLs; HTML uses the structured form.
+func referencesFromContent(content ruleContent) []string {
+	urls := make([]string, 0, len(content.LearnMore))
+	for _, ref := range content.LearnMore {
+		urls = append(urls, ref.URL)
+	}
+	return urls
+}
+
+// secretFinding materializes a Secret-scoped finding from a ruleContent.
+func secretFinding(secret models.SecretMetadata, ruleID string, severity models.Severity, score float64, evidence map[string]any, check string, content ruleContent) models.Finding {
 	evidenceBytes, _ := json.Marshal(evidence)
 	return models.Finding{
 		ID:          fmt.Sprintf("%s:%s:%s", ruleID, secret.Namespace, secret.Name),
@@ -135,25 +141,29 @@ func secretFinding(secret models.SecretMetadata, ruleID string, severity models.
 		Severity:    severity,
 		Score:       scoring.Clamp(score),
 		Category:    models.CategoryDataExfiltration,
-		Title:       title,
-		Description: description,
+		Title:       content.Title,
+		Description: content.Description,
 		Namespace:   secret.Namespace,
 		Resource: &models.ResourceRef{
 			Kind:      "Secret",
 			Name:      secret.Name,
 			Namespace: secret.Namespace,
 		},
-		Evidence:    evidenceBytes,
-		Remediation: remediation,
-		References: []string{
-			"https://kubernetes.io/docs/concepts/configuration/secret/",
-		},
-		Tags: []string{"module:secrets", "check:" + check},
+		Scope:            content.Scope,
+		Impact:           content.Impact,
+		AttackScenario:   content.AttackScenario,
+		Evidence:         evidenceBytes,
+		Remediation:      content.Remediation,
+		RemediationSteps: content.RemediationSteps,
+		References:       referencesFromContent(content),
+		LearnMore:        content.LearnMore,
+		MitreTechniques:  content.MitreTechniques,
+		Tags:             []string{"module:secrets", "check:" + check},
 	}
 }
 
-// configMapFinding materializes a ConfigMap-scoped finding.
-func configMapFinding(configMap models.ConfigMapSnapshot, ruleID string, severity models.Severity, score float64, title, description string, evidence map[string]any, remediation, check string) models.Finding {
+// configMapFinding materializes a ConfigMap-scoped finding from a ruleContent.
+func configMapFinding(configMap models.ConfigMapSnapshot, ruleID string, severity models.Severity, score float64, evidence map[string]any, check string, content ruleContent) models.Finding {
 	evidenceBytes, _ := json.Marshal(evidence)
 	return models.Finding{
 		ID:          fmt.Sprintf("%s:%s:%s", ruleID, configMap.Namespace, configMap.Name),
@@ -161,20 +171,24 @@ func configMapFinding(configMap models.ConfigMapSnapshot, ruleID string, severit
 		Severity:    severity,
 		Score:       scoring.Clamp(score),
 		Category:    models.CategoryDataExfiltration,
-		Title:       title,
-		Description: description,
+		Title:       content.Title,
+		Description: content.Description,
 		Namespace:   configMap.Namespace,
 		Resource: &models.ResourceRef{
 			Kind:      "ConfigMap",
 			Name:      configMap.Name,
 			Namespace: configMap.Namespace,
 		},
-		Evidence:    evidenceBytes,
-		Remediation: remediation,
-		References: []string{
-			"https://kubernetes.io/docs/concepts/configuration/configmap/",
-		},
-		Tags: []string{"module:secrets", "check:" + check},
+		Scope:            content.Scope,
+		Impact:           content.Impact,
+		AttackScenario:   content.AttackScenario,
+		Evidence:         evidenceBytes,
+		Remediation:      content.Remediation,
+		RemediationSteps: content.RemediationSteps,
+		References:       referencesFromContent(content),
+		LearnMore:        content.LearnMore,
+		MitreTechniques:  content.MitreTechniques,
+		Tags:             []string{"module:secrets", "check:" + check},
 	}
 }
 

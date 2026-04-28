@@ -322,7 +322,7 @@ var Categories = map[string]CategoryExplainer{
 		Title: "Control Bypass",
 		Plain: template.HTML(`<p>The attacker turns off, weakens, or works around the cluster's policy enforcement — admission webhooks, Pod Security admission, OPA/Gatekeeper, or audit configuration. After this, follow-on actions become invisible to defenders.</p>`),
 		Examples: []string{
-			"Patching a ValidatingWebhookConfiguration to <code>failurePolicy: Ignore</code>, then deleting the backing service.",
+			"Patching a `ValidatingWebhookConfiguration` to `failurePolicy: Ignore`, then deleting the backing service.",
 			"Removing a Pod Security label from a namespace to allow privileged pods.",
 		},
 	},
@@ -330,7 +330,7 @@ var Categories = map[string]CategoryExplainer{
 		Title: "Detection Evasion",
 		Plain: template.HTML(`<p>The attacker hides their tracks — disabling audit logging, deleting events, rolling back resource versions, or abusing legitimate-looking patterns (impersonation, service accounts) so the activity blends in.</p>`),
 		Examples: []string{
-			"Using <code>--as=system:serviceaccount:kube-system:replicaset-controller</code> to impersonate a high-volume controller and disappear in audit log noise.",
+			"Using `--as=system:serviceaccount:kube-system:replicaset-controller` to impersonate a high-volume controller and disappear in audit log noise.",
 			"Deleting Events that record the privileged pod's creation.",
 		},
 	},

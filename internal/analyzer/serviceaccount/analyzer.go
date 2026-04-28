@@ -67,22 +67,21 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 		}
 
 		workloads := usageBySA[key]
+		workloadDesc := workloadsSummary(workloads)
 		if subject.Name == "default" && perms != nil && len(perms.Rules) > 0 {
-			findings = appendUnique(findings, seen, newFinding(subject, "KUBE-SA-DEFAULT-002", severityForRules(perms.Rules, true), scoreForRules(perms.Rules, true),
-				"Default service account has explicit RBAC permissions",
-				"This namespace default service account is bound to non-trivial RBAC permissions, increasing risk for any workload that inherits it.",
+			findings = appendUnique(findings, seen, newFinding(subject,
+				"KUBE-SA-DEFAULT-002", severityForRules(perms.Rules, true), scoreForRules(perms.Rules, true),
 				map[string]any{"workloads": workloads, "rules": summarizeRules(perms.Rules)},
-				"Create dedicated service accounts for workloads and keep the namespace default account minimally privileged or unused.",
-				"defaultServiceAccountPermissions"))
+				"defaultServiceAccountPermissions",
+				contentSADefault002(subject, workloadDesc, ruleSummaryText(perms.Rules))))
 		}
 
 		if perms != nil && hasClusterAdminStyleRule(perms.Rules) {
-			findings = appendUnique(findings, seen, newFinding(subject, "KUBE-SA-PRIVILEGED-001", models.SeverityCritical, 10,
-				"Service account has cluster-admin style permissions",
-				"This service account can act broadly across cluster resources and should be treated as a critical identity.",
+			findings = appendUnique(findings, seen, newFinding(subject,
+				"KUBE-SA-PRIVILEGED-001", models.SeverityCritical, 10,
 				map[string]any{"workloads": workloads, "rules": summarizeRules(perms.Rules)},
-				"Replace wildcard permissions with tightly scoped roles and bind them only where needed.",
-				"clusterAdminStyle"))
+				"clusterAdminStyle",
+				contentSAPrivileged001(subject, workloadDesc, ruleSummaryText(perms.Rules))))
 		}
 
 		if perms != nil && len(workloads) > 0 {
@@ -93,28 +92,27 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 					severity = models.SeverityCritical
 					score = 9.1
 				}
-				findings = appendUnique(findings, seen, newFinding(subject, "KUBE-SA-PRIVILEGED-002", severity, score,
-					"Workload-mounted service account has dangerous permissions",
-					"This service account is actively used by workloads and carries permissions that enable privilege escalation or sensitive data access.",
+				findings = appendUnique(findings, seen, newFinding(subject,
+					"KUBE-SA-PRIVILEGED-002", severity, score,
 					map[string]any{"workloads": workloads, "dangerous_permissions": dangerous},
-					"Split this service account by workload and remove high-risk permissions such as secret reads, pod creation, and RBAC mutation.",
-					"dangerousPermissions"))
+					"dangerousPermissions",
+					contentSAPrivileged002(subject, workloadDesc, dangerous)))
 			}
 		}
 
 		if usedByKind(workloads, "DaemonSet") {
 			severity := models.SeverityMedium
 			score := 5.9
-			if perms != nil && len(perms.Rules) > 0 {
+			hasRules := perms != nil && len(perms.Rules) > 0
+			if hasRules {
 				severity = models.SeverityHigh
 				score = 7.4
 			}
-			findings = appendUnique(findings, seen, newFinding(subject, "KUBE-SA-DAEMONSET-001", severity, score,
-				"Service account used by a DaemonSet",
-				"Tokens for this service account are distributed to a DaemonSet, which places them on every scheduled node the DaemonSet reaches.",
+			findings = appendUnique(findings, seen, newFinding(subject,
+				"KUBE-SA-DAEMONSET-001", severity, score,
 				map[string]any{"workloads": workloads, "rules": summarizeRules(maybeRules(perms))},
-				"Use a narrowly scoped service account for node-wide agents and audit its permissions carefully.",
-				"daemonSetUsage"))
+				"daemonSetUsage",
+				contentSADaemonset001(subject, workloadDesc, ruleSummaryText(maybeRules(perms)), hasRules)))
 		}
 	}
 
@@ -279,17 +277,21 @@ func severityForRules(rules []permissions.EffectiveRule, defaultSA bool) models.
 	}
 }
 
-// newFinding materializes a ServiceAccount-scoped finding.
-func newFinding(subject models.SubjectRef, ruleID string, severity models.Severity, score float64, title, description string, evidence map[string]any, remediation, check string) models.Finding {
+// newFinding materializes a ServiceAccount-scoped finding from a ruleContent.
+func newFinding(subject models.SubjectRef, ruleID string, severity models.Severity, score float64, evidence map[string]any, check string, content ruleContent) models.Finding {
 	evidenceBytes, _ := json.Marshal(evidence)
+	references := make([]string, 0, len(content.LearnMore))
+	for _, ref := range content.LearnMore {
+		references = append(references, ref.URL)
+	}
 	return models.Finding{
 		ID:          fmt.Sprintf("%s:%s", ruleID, subject.Key()),
 		RuleID:      ruleID,
 		Severity:    severity,
 		Score:       scoring.Clamp(score),
 		Category:    models.CategoryPrivilegeEscalation,
-		Title:       title,
-		Description: description,
+		Title:       content.Title,
+		Description: content.Description,
 		Subject:     &subject,
 		Namespace:   subject.Namespace,
 		Resource: &models.ResourceRef{
@@ -298,13 +300,47 @@ func newFinding(subject models.SubjectRef, ruleID string, severity models.Severi
 			Namespace: subject.Namespace,
 			APIGroup:  "",
 		},
-		Evidence:    evidenceBytes,
-		Remediation: remediation,
-		References: []string{
-			"https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/",
-		},
-		Tags: []string{"module:service_account", "check:" + check},
+		Scope:            content.Scope,
+		Impact:           content.Impact,
+		AttackScenario:   content.AttackScenario,
+		Evidence:         evidenceBytes,
+		Remediation:      content.Remediation,
+		RemediationSteps: content.RemediationSteps,
+		References:       references,
+		LearnMore:        content.LearnMore,
+		MitreTechniques:  content.MitreTechniques,
+		Tags:             []string{"module:service_account", "check:" + check},
 	}
+}
+
+// workloadsSummary renders the list of workloads that mount the SA into a one-line
+// human description used in finding descriptions / impact lines.
+func workloadsSummary(workloads []workloadRef) string {
+	if len(workloads) == 0 {
+		return "no workloads currently mount this SA"
+	}
+	parts := make([]string, 0, len(workloads))
+	for _, w := range workloads {
+		parts = append(parts, fmt.Sprintf("%s/%s/%s", w.Kind, w.Namespace, w.Name))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// ruleSummaryText renders aggregated rules into a compact text block for finding descriptions.
+// Each line is "  - verbs on resources [from binding/role] in namespace".
+func ruleSummaryText(rules []permissions.EffectiveRule) string {
+	if len(rules) == 0 {
+		return "  (no aggregated rules)"
+	}
+	lines := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		ns := rule.Namespace
+		if ns == "" {
+			ns = "cluster-wide"
+		}
+		lines = append(lines, fmt.Sprintf("  - verbs %v on resources %v (from %s/%s in %s)", rule.Verbs, rule.Resources, rule.SourceBinding, rule.SourceRole, ns))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // appendUnique deduplicates by Finding.ID before appending.

@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/hardik/kubesplaining/internal/models"
 )
@@ -62,8 +61,7 @@ func findingFromPath(path models.EscalationPath) models.Finding {
 		category = models.CategoryDataExfiltration
 	}
 
-	title := fmt.Sprintf("%s can reach %s in %d hop(s)", path.Source.Key(), targetLabel(target), len(path.Hops))
-	remediation := targetRemediation(target)
+	content := contentForTarget(path.Source, target, path.Hops)
 
 	evidence, _ := json.Marshal(map[string]any{
 		"target":        string(target),
@@ -74,22 +72,48 @@ func findingFromPath(path models.EscalationPath) models.Finding {
 	})
 
 	id := fmt.Sprintf("%s:%s:%s", ruleID, path.Source.Key(), target)
+	references := make([]string, 0, len(content.LearnMore))
+	for _, ref := range content.LearnMore {
+		references = append(references, ref.URL)
+	}
 
 	subject := path.Source
 	return models.Finding{
-		ID:             id,
-		RuleID:         ruleID,
-		Severity:       severity,
-		Score:          score,
-		Category:       category,
-		Title:          title,
-		Description:    chainDescription(path),
-		Subject:        &subject,
-		Evidence:       evidence,
-		Remediation:    remediation,
-		References:     []string{"https://cloud.hacktricks.wiki/en/pentesting-cloud/kubernetes-security/abusing-roles-clusterroles-in-kubernetes/index.html"},
-		EscalationPath: path.Hops,
-		Tags:           []string{"module:privesc", "target:" + string(target)},
+		ID:               id,
+		RuleID:           ruleID,
+		Severity:         severity,
+		Score:            score,
+		Category:         category,
+		Title:            content.Title,
+		Description:      content.Description,
+		Subject:          &subject,
+		Scope:            content.Scope,
+		Impact:           content.Impact,
+		AttackScenario:   content.AttackScenario,
+		Evidence:         evidence,
+		Remediation:      content.Remediation,
+		RemediationSteps: content.RemediationSteps,
+		References:       references,
+		LearnMore:        content.LearnMore,
+		MitreTechniques:  content.MitreTechniques,
+		EscalationPath:   path.Hops,
+		Tags:             []string{"module:privesc", "target:" + string(target)},
+	}
+}
+
+// contentForTarget dispatches to the matching content builder based on the path's terminal sink.
+func contentForTarget(source models.SubjectRef, target models.EscalationTarget, hops []models.EscalationHop) ruleContent {
+	switch target {
+	case models.TargetClusterAdmin:
+		return contentClusterAdminPath(source, hops)
+	case models.TargetNodeEscape:
+		return contentNodeEscapePath(source, hops)
+	case models.TargetKubeSystemSecrets:
+		return contentKubeSystemSecretsPath(source, hops)
+	case models.TargetSystemMasters:
+		return contentSystemMastersPath(source, hops)
+	default:
+		return contentGenericPath(source, target, hops)
 	}
 }
 
@@ -154,22 +178,6 @@ func targetLabel(target models.EscalationTarget) string {
 	}
 }
 
-// targetRemediation returns the canonical remediation guidance for each escalation target.
-func targetRemediation(target models.EscalationTarget) string {
-	switch target {
-	case models.TargetClusterAdmin:
-		return "Break the chain: remove RBAC write/bind/escalate or wildcard permissions from intermediate subjects."
-	case models.TargetNodeEscape:
-		return "Remove privileged/hostPath mounts from pods reachable via this chain, or constrain who can create/exec into those pods."
-	case models.TargetKubeSystemSecrets:
-		return "Restrict `get/list/watch` on secrets to a minimal set of controllers, especially cluster-wide and in kube-system."
-	case models.TargetSystemMasters:
-		return "Remove impersonation permissions that can reach system:masters."
-	default:
-		return "Investigate and constrain the permissions that enable this escalation path."
-	}
-}
-
 // uniqueTechniques returns the deduplicated list of hop Actions along the path for evidence summaries.
 func uniqueTechniques(hops []models.EscalationHop) []string {
 	seen := map[string]struct{}{}
@@ -202,16 +210,4 @@ func chainSummary(hops []models.EscalationHop) []string {
 		summary = append(summary, fmt.Sprintf("%d. %s [%s]", hop.Step, hop.Action, hop.Permission))
 	}
 	return summary
-}
-
-// chainDescription returns a one-sentence narrative describing how the path chains hops together.
-func chainDescription(path models.EscalationPath) string {
-	if len(path.Hops) == 0 {
-		return fmt.Sprintf("%s reaches %s without intermediate hops.", path.Source.Key(), targetLabel(path.Target))
-	}
-	var parts []string
-	for _, hop := range path.Hops {
-		parts = append(parts, hop.Gains)
-	}
-	return fmt.Sprintf("Chain of %d hop(s): %s.", len(path.Hops), strings.Join(parts, " → "))
 }

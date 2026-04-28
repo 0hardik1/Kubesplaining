@@ -10,24 +10,100 @@ import (
 )
 
 // Finding is the common output of every analyzer module: a scored, categorized observation tied to a subject or resource.
+//
+// The richer fields below (Scope, Impact, AttackScenario, RemediationSteps, LearnMore, MitreTechniques) are
+// optional but strongly preferred over a single-paragraph Description+Remediation. They power the structured
+// HTML report sections so a senior reviewer can grasp blast radius at a glance and a junior engineer can
+// follow the attack scenario and remediation steps.
 type Finding struct {
-	ID              string          `json:"id"`       // deterministic unique key ("RULE:ns:name")
-	RuleID          string          `json:"rule_id"`  // rule identifier, stable across runs
-	Severity        Severity        `json:"severity"` // bucketed severity used for filtering and display
-	Score           float64         `json:"score"`    // numeric 0–10 score, already clamped
-	Category        RiskCategory    `json:"category"` // risk category for grouping in the report
-	Title           string          `json:"title"`
-	Description     string          `json:"description"`
-	Subject         *SubjectRef     `json:"subject,omitempty"`  // RBAC subject this finding is about, when applicable
-	Resource        *ResourceRef    `json:"resource,omitempty"` // cluster resource this finding is about, when applicable
-	Namespace       string          `json:"namespace,omitempty"`
-	Evidence        json.RawMessage `json:"evidence,omitempty"` // analyzer-specific JSON payload describing what was found
-	Remediation     string          `json:"remediation"`
-	References      []string        `json:"references,omitempty"`
-	EscalationPath  []EscalationHop `json:"escalation_path,omitempty"` // populated by the privesc module
-	Excluded        bool            `json:"excluded"`                  // set post-analysis by the exclusions matcher
-	ExclusionReason string          `json:"exclusion_reason,omitempty"`
-	Tags            []string        `json:"tags,omitempty"` // free-form labels like "module:rbac", "check:wildcardVerbs"
+	ID               string           `json:"id"`       // deterministic unique key ("RULE:ns:name")
+	RuleID           string           `json:"rule_id"`  // rule identifier, stable across runs
+	Severity         Severity         `json:"severity"` // bucketed severity used for filtering and display
+	Score            float64          `json:"score"`    // numeric 0–10 score, already clamped
+	Category         RiskCategory     `json:"category"` // risk category for grouping in the report
+	Title            string           `json:"title"`
+	Description      string           `json:"description"`
+	Subject          *SubjectRef      `json:"subject,omitempty"`  // RBAC subject this finding is about, when applicable
+	Resource         *ResourceRef     `json:"resource,omitempty"` // cluster resource this finding is about, when applicable
+	Namespace        string           `json:"namespace,omitempty"`
+	Scope            Scope            `json:"scope,omitzero"`              // explicit blast radius (cluster | namespace | workload | object)
+	Impact           string           `json:"impact,omitempty"`            // one-line concrete blast-radius statement
+	AttackScenario   []string         `json:"attack_scenario,omitempty"`   // ordered narrative steps an attacker would take
+	Evidence         json.RawMessage  `json:"evidence,omitempty"`          // analyzer-specific JSON payload describing what was found
+	Remediation      string           `json:"remediation"`                 // one-line summary fix
+	RemediationSteps []string         `json:"remediation_steps,omitempty"` // ordered concrete actions, kubectl/YAML examples allowed
+	References       []string         `json:"references,omitempty"`
+	LearnMore        []Reference      `json:"learn_more,omitempty"`       // structured references (Title + URL)
+	MitreTechniques  []MitreTechnique `json:"mitre_techniques,omitempty"` // ATT&CK technique IDs for Containers / Kubernetes
+	EscalationPath   []EscalationHop  `json:"escalation_path,omitempty"`  // populated by the privesc module
+	Excluded         bool             `json:"excluded"`                   // set post-analysis by the exclusions matcher
+	ExclusionReason  string           `json:"exclusion_reason,omitempty"`
+	Tags             []string         `json:"tags,omitempty"` // free-form labels like "module:rbac", "check:wildcardVerbs"
+}
+
+// Reference is a structured external citation (e.g. CIS benchmark, MITRE ATT&CK technique, K8s docs).
+// Title is what a reader sees; URL is the link target.
+type Reference struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
+}
+
+// MitreTechnique names a single MITRE ATT&CK technique relevant to the finding (Containers / Kubernetes matrices).
+type MitreTechnique struct {
+	ID   string `json:"id"`   // e.g. "T1611"
+	Name string `json:"name"` // e.g. "Escape to Host"
+	URL  string `json:"url"`  // e.g. "https://attack.mitre.org/techniques/T1611/"
+}
+
+// Scope captures the explicit blast radius of a finding. It is what the reader sees
+// when asking "how much of the cluster is exposed by this single finding?". Level is
+// the bucket used for sorting/filtering; Detail is the human-readable description
+// that names specific namespaces, workload, or object.
+type Scope struct {
+	Level  ScopeLevel `json:"level"`            // cluster | namespace | workload | object
+	Detail string     `json:"detail,omitempty"` // human-readable, e.g. "Cluster-wide (all namespaces)" or "Namespace: prod (12 secrets, 4 service accounts)"
+}
+
+// ScopeLevel is the bucketed scope level for filtering and sorting.
+type ScopeLevel string
+
+const (
+	ScopeCluster   ScopeLevel = "cluster"   // affects every namespace / cluster-scoped object
+	ScopeNamespace ScopeLevel = "namespace" // affects one namespace
+	ScopeWorkload  ScopeLevel = "workload"  // affects one workload (Deployment/DaemonSet/StatefulSet/Job/CronJob/Pod)
+	ScopeObject    ScopeLevel = "object"    // affects a single object (Secret, ConfigMap, NetworkPolicy, etc.)
+)
+
+// Rank returns an integer ordering: cluster > namespace > workload > object. Used to sort/filter by blast radius.
+func (s ScopeLevel) Rank() int {
+	switch s {
+	case ScopeCluster:
+		return 4
+	case ScopeNamespace:
+		return 3
+	case ScopeWorkload:
+		return 2
+	case ScopeObject:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// Label returns the human-readable label for a scope level.
+func (s ScopeLevel) Label() string {
+	switch s {
+	case ScopeCluster:
+		return "Cluster"
+	case ScopeNamespace:
+		return "Namespace"
+	case ScopeWorkload:
+		return "Workload"
+	case ScopeObject:
+		return "Object"
+	default:
+		return "Unknown"
+	}
 }
 
 // Severity is the bucketed severity level attached to every Finding.

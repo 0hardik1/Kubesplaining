@@ -139,6 +139,28 @@ func sarifResults(findings []models.Finding) []sarifResult {
 				"remediation": finding.Remediation,
 			},
 		}
+		if finding.Scope.Level != "" {
+			result.Properties["scope_level"] = finding.Scope.Level
+			if finding.Scope.Detail != "" {
+				result.Properties["scope_detail"] = finding.Scope.Detail
+			}
+		}
+		if finding.Impact != "" {
+			result.Properties["impact"] = finding.Impact
+		}
+		if len(finding.AttackScenario) > 0 {
+			result.Properties["attack_scenario"] = finding.AttackScenario
+		}
+		if len(finding.RemediationSteps) > 0 {
+			result.Properties["remediation_steps"] = finding.RemediationSteps
+		}
+		if len(finding.MitreTechniques) > 0 {
+			ids := make([]string, 0, len(finding.MitreTechniques))
+			for _, technique := range finding.MitreTechniques {
+				ids = append(ids, technique.ID)
+			}
+			result.Properties["mitre_attack"] = ids
+		}
 		if finding.Subject != nil {
 			result.Properties["subject"] = finding.Subject
 		}
