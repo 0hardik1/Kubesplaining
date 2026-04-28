@@ -265,7 +265,9 @@ const kpGraphScript = `
     tooltip.style.top = (rect.top + window.pageYOffset - 12) + 'px';
     var t = tooltip.querySelector('.kp-tt-title');
     var b = tooltip.querySelector('.kp-tt-body');
-    t.textContent = title || '';
+    // Title may contain backticks/**bold** from analyzer-supplied finding text;
+    // renderInlineHTML escapes content and inserts safe <code>/<strong> tags.
+    t.innerHTML = renderInlineHTML(title || '');
     if (htmlBody) { b.innerHTML = htmlBody; b.hidden = false; }
     else { b.innerHTML = ''; b.hidden = true; }
     tooltip.hidden = false;
@@ -303,12 +305,123 @@ const kpGraphScript = `
     }
   }
 
+  // ---- Markdown helpers (popup-pane prose) -----------------------------
+  // Tiny tokenizer for the limited markdown analyzers emit:
+  //   ` + "`" + `code` + "`" + `         → <code>
+  //   **bold** → <strong>
+  // Always uses textContent for content so analyzer strings can never
+  // inject HTML. Returns nothing — appends nodes into the target.
+  function renderInline(text, target) {
+    var s = String(text || '');
+    var i = 0;
+    while (i < s.length) {
+      var bold = s.indexOf('**', i);
+      var code = s.indexOf('` + "`" + `', i);
+      var next = -1, which = null;
+      if (bold >= 0 && (code < 0 || bold < code)) { next = bold; which = 'bold'; }
+      else if (code >= 0) { next = code; which = 'code'; }
+      if (next < 0) {
+        target.appendChild(document.createTextNode(s.slice(i)));
+        return;
+      }
+      if (next > i) target.appendChild(document.createTextNode(s.slice(i, next)));
+      if (which === 'bold') {
+        var end = s.indexOf('**', next + 2);
+        if (end < 0) { target.appendChild(document.createTextNode(s.slice(next))); return; }
+        var strong = document.createElement('strong');
+        strong.textContent = s.slice(next + 2, end);
+        target.appendChild(strong);
+        i = end + 2;
+      } else {
+        var endC = s.indexOf('` + "`" + `', next + 1);
+        if (endC < 0) { target.appendChild(document.createTextNode(s.slice(next))); return; }
+        var c = document.createElement('code');
+        c.textContent = s.slice(next + 1, endC);
+        target.appendChild(c);
+        i = endC + 1;
+      }
+    }
+  }
+
+  // renderInlineHTML mirrors renderInline but returns an HTML string instead of
+  // appending DOM nodes — the floating tooltip uses innerHTML so it needs an
+  // HTML-string output. Text content is always escaped; only the safe ` + "`" + `<code>` + "`" + `
+  // and ` + "`" + `<strong>` + "`" + ` tags are inserted.
+  function renderInlineHTML(text) {
+    var s = String(text || '');
+    var out = '';
+    var i = 0;
+    while (i < s.length) {
+      var bold = s.indexOf('**', i);
+      var code = s.indexOf('` + "`" + `', i);
+      var next = -1, which = null;
+      if (bold >= 0 && (code < 0 || bold < code)) { next = bold; which = 'bold'; }
+      else if (code >= 0) { next = code; which = 'code'; }
+      if (next < 0) { out += escapeHtml(s.slice(i)); break; }
+      if (next > i) out += escapeHtml(s.slice(i, next));
+      if (which === 'bold') {
+        var end = s.indexOf('**', next + 2);
+        if (end < 0) { out += escapeHtml(s.slice(next)); break; }
+        out += '<strong>' + escapeHtml(s.slice(next + 2, end)) + '</strong>';
+        i = end + 2;
+      } else {
+        var endC = s.indexOf('` + "`" + `', next + 1);
+        if (endC < 0) { out += escapeHtml(s.slice(next)); break; }
+        out += '<code>' + escapeHtml(s.slice(next + 1, endC)) + '</code>';
+        i = endC + 1;
+      }
+    }
+    return out;
+  }
+
+  // renderMarkdownBlocks splits text into block-level chunks: paragraphs (\n\n
+  // separated), bullet lists (lines all starting with "- " or "* "), and
+  // numbered lists (lines all starting with "N. "). Each block is appended to
+  // container; inline markdown inside is handled by renderInline.
+  function renderMarkdownBlocks(text, container) {
+    var t = String(text || '').replace(/\r\n/g, '\n').trim();
+    if (!t) return;
+    t.split(/\n\n+/).forEach(function(para) {
+      para = para.replace(/^\n+|\n+$/g, '');
+      if (!para) return;
+      var lines = para.split('\n');
+      var nonEmpty = lines.filter(function(l) { return l.trim().length > 0; });
+      var allBullets = nonEmpty.length > 0 && nonEmpty.every(function(l) { return /^\s*[-*]\s+/.test(l); });
+      var allNum = nonEmpty.length > 0 && nonEmpty.every(function(l) { return /^\s*\d+\.\s+/.test(l); });
+      if (allBullets && nonEmpty.length >= 1) {
+        var ul = document.createElement('ul');
+        nonEmpty.forEach(function(l) {
+          var li = document.createElement('li');
+          renderInline(l.replace(/^\s*[-*]\s+/, ''), li);
+          ul.appendChild(li);
+        });
+        container.appendChild(ul);
+      } else if (allNum && nonEmpty.length >= 1) {
+        var ol = document.createElement('ol');
+        nonEmpty.forEach(function(l) {
+          var li = document.createElement('li');
+          renderInline(l.replace(/^\s*\d+\.\s+/, ''), li);
+          ol.appendChild(li);
+        });
+        container.appendChild(ol);
+      } else {
+        var p = document.createElement('p');
+        lines.forEach(function(l, idx) {
+          if (idx > 0) p.appendChild(document.createElement('br'));
+          renderInline(l, p);
+        });
+        container.appendChild(p);
+      }
+    });
+  }
+
   // renderPanel composes the side-panel content for one node. All Finding-derived strings go
   // through textContent (via the el() helper) so untrusted content never reaches innerHTML.
   // Glossary/technique/category prose is HTML pre-vetted by Go and is allowed via 'html'.
   function renderPanel(node) {
     panelBody.innerHTML = '';
-    panelTitle.textContent = node.Title || 'Detail';
+    panelTitle.textContent = '';
+    renderInline(node.Title || 'Detail', panelTitle);
 
     var hd = el('div', { class: 'kp-panel-meta' });
     if (node.Severity) hd.appendChild(el('span', { class: 'kp-sev-badge kp-sev-' + node.Severity, text: severityLabel(node.Severity) }));
@@ -340,17 +453,24 @@ const kpGraphScript = `
       ]);
       if (category.Examples && category.Examples.length) {
         var ul = el('ul', { class: 'kp-examples' });
-        category.Examples.forEach(function(ex) { ul.appendChild(el('li', { text: ex })); });
+        category.Examples.forEach(function(ex) {
+          var li = document.createElement('li');
+          renderInline(ex, li);
+          ul.appendChild(li);
+        });
         csec.appendChild(ul);
       }
       panelBody.appendChild(csec);
     }
 
     if (node.Description) {
-      panelBody.appendChild(el('section', { class: 'kp-section' }, [
-        el('h4', { text: 'Why this finding fires' }),
-        el('p', { class: 'kp-prose', text: node.Description })
-      ]));
+      var descSec = el('section', { class: 'kp-section' }, [
+        el('h4', { text: 'Why this finding fires' })
+      ]);
+      var descBody = el('div', { class: 'kp-prose' });
+      renderMarkdownBlocks(node.Description, descBody);
+      descSec.appendChild(descBody);
+      panelBody.appendChild(descSec);
     }
 
     var techKey = node.TechniqueKey;
@@ -495,28 +615,26 @@ const kpGraphScript = `
 
   // renderRemediation parses a remediation string. Backtick spans that look
   // like full commands (contain spaces or start with kubectl/kubeadm/helm) are
-  // emitted as separate code blocks AFTER the prose; short identifier-style
-  // backticks render as inline <code>. Non-backtick text becomes plain text
-  // (via textContent — never innerHTML).
+  // collected as separate copy-able code blocks AFTER the prose; everything
+  // else flows through renderMarkdownBlocks so paragraphs, bullets, and
+  // **bold** render correctly. All content goes through textContent — never
+  // innerHTML — so analyzer strings can never inject markup.
   function renderRemediation(text) {
-    var prose = el('p', { class: 'kp-prose' });
+    var s = String(text || '');
     var commands = [];
-    var re = /` + "`" + `([^` + "`" + `]+)` + "`" + `/g;
-    var lastIdx = 0;
-    var m;
-    while ((m = re.exec(text)) !== null) {
-      if (m.index > lastIdx) prose.appendChild(document.createTextNode(text.slice(lastIdx, m.index)));
-      var inner = m[1];
+    // Pull out command-shaped backtick spans up-front; replace them with a
+    // sentinel so they vanish from the prose. Identifier-style backticks
+    // (no spaces, not a known CLI) stay inline and render as <code>.
+    var sanitized = s.replace(/` + "`" + `([^` + "`" + `]+)` + "`" + `/g, function(_, inner) {
       var isCmd = /\s/.test(inner) || /^(kubectl|kubeadm|helm|kubectl-)/.test(inner);
       if (isCmd) {
         commands.push(inner);
-        prose.appendChild(el('code', { text: inner }));
-      } else {
-        prose.appendChild(el('code', { text: inner }));
+        return ''; // command renders as its own block below
       }
-      lastIdx = m.index + m[0].length;
-    }
-    if (lastIdx < text.length) prose.appendChild(document.createTextNode(text.slice(lastIdx)));
+      return '` + "`" + `' + inner + '` + "`" + `';
+    });
+    var prose = el('div', { class: 'kp-prose' });
+    renderMarkdownBlocks(sanitized, prose);
     return { prose: prose, commands: commands };
   }
 
@@ -531,15 +649,17 @@ const kpGraphScript = `
   function tooltipBody(node) {
     var lines = [];
     var glossary = node.GlossaryKey && payload.Glossary ? payload.Glossary[node.GlossaryKey] : null;
-    if (node.Subtitle) lines.push('<div class="kp-tt-sub">' + escapeHtml(node.Subtitle) + '</div>');
-    if (glossary && glossary.Short) lines.push('<div>' + escapeHtml(glossary.Short) + '</div>');
+    // Use renderInlineHTML so backticks/**bold** in finding-derived text render
+    // as <code>/<strong> instead of leaking through as raw markdown chars.
+    if (node.Subtitle) lines.push('<div class="kp-tt-sub">' + renderInlineHTML(node.Subtitle) + '</div>');
+    if (glossary && glossary.Short) lines.push('<div>' + renderInlineHTML(glossary.Short) + '</div>');
     if (node.Kind === 'capability' && node.Description) {
-      lines.push('<div class="kp-tt-why"><span class="kp-tt-tag">Why it matters</span><br>' + escapeHtml(firstSentence(node.Description, 140)) + '</div>');
+      lines.push('<div class="kp-tt-why"><span class="kp-tt-tag">Why it matters</span><br>' + renderInlineHTML(firstSentence(node.Description, 140)) + '</div>');
     }
     if (node.Kind === 'impact') {
       var cat = node.RiskCategory && payload.Categories ? payload.Categories[node.RiskCategory] : null;
       if (cat && cat.Examples && cat.Examples.length) {
-        lines.push('<div class="kp-tt-why"><span class="kp-tt-tag">Example</span><br>' + escapeHtml(cat.Examples[0]) + '</div>');
+        lines.push('<div class="kp-tt-why"><span class="kp-tt-tag">Example</span><br>' + renderInlineHTML(cat.Examples[0]) + '</div>');
       }
     }
     lines.push('<div class="kp-tt-hint">Click for full explainer →</div>');

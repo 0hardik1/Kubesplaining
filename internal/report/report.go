@@ -451,6 +451,9 @@ func writeCSV(path string, findings []models.Finding) error {
 		"Severity",
 		"Score",
 		"Category",
+		"Scope",
+		"Scope Detail",
+		"Impact",
 		"Subject Kind",
 		"Subject Name",
 		"Subject Namespace",
@@ -488,6 +491,9 @@ func writeCSV(path string, findings []models.Finding) error {
 			string(finding.Severity),
 			fmt.Sprintf("%.1f", finding.Score),
 			string(finding.Category),
+			string(finding.Scope.Level),
+			finding.Scope.Detail,
+			finding.Impact,
 			subjectKind,
 			subjectName,
 			subjectNamespace,
@@ -570,12 +576,31 @@ func writeHTML(path string, snapshot models.Snapshot, findings []models.Finding)
 		"score": func(v float64) string {
 			return fmt.Sprintf("%.1f", v)
 		},
-		"add":    func(a, b int) int { return a + b },
-		"sub":    func(a, b int) int { return a - b },
-		"div":    func(a, b int) int { return a / b },
-		"midY":   func(n GraphNode) int { return n.Y + n.Height/2 },
-		"rightX": func(n GraphNode) int { return n.X + n.Width },
-		"catKey": func(c models.RiskCategory) string { return categoryCSSKey(c) },
+		"add":      func(a, b int) int { return a + b },
+		"sub":      func(a, b int) int { return a - b },
+		"div":      func(a, b int) int { return a / b },
+		"midY":     func(n GraphNode) int { return n.Y + n.Height/2 },
+		"rightX":   func(n GraphNode) int { return n.X + n.Width },
+		"catKey":   func(c models.RiskCategory) string { return categoryCSSKey(c) },
+		"catLabel": func(c models.RiskCategory) string { return categoryLabel(c) },
+		"scopeLabel": func(level models.ScopeLevel) string {
+			return level.Label()
+		},
+		// scopeDetailHTML renders a scope detail string with backtick-quoted spans wrapped in <code>.
+		// Subject/resource keys like `prod/svc-a` become <code>prod/svc-a</code> for visual emphasis
+		// without forcing analyzers to ship raw HTML.
+		"scopeDetailHTML": func(detail string) template.HTML {
+			return template.HTML(renderInlineCode(detail))
+		},
+		// descriptionHTML splits a description into <p> blocks on blank lines and inline-renders
+		// backtick spans as <code>. Analyzers can write 1-3 short paragraphs separated by "\n\n".
+		"descriptionHTML": func(description string) template.HTML {
+			return template.HTML(renderParagraphs(description))
+		},
+		// remediationStepHTML inline-renders a single remediation step, allowing backtick code spans.
+		"remediationStepHTML": func(step string) template.HTML {
+			return template.HTML(renderInlineCode(step))
+		},
 		"pluralize": func(n int, singular, plural string) string {
 			if n == 1 {
 				return singular
@@ -678,6 +703,69 @@ func categoryLabel(category models.RiskCategory) string {
 	default:
 		return strings.Title(strings.ReplaceAll(string(category), "_", " "))
 	}
+}
+
+// renderParagraphs splits text on blank lines into <p> blocks and inline-renders backtick spans
+// as <code>. Each paragraph is HTML-escaped before backtick substitution so analyzer-supplied
+// content cannot inject markup. Returns a string ready to be wrapped in template.HTML.
+func renderParagraphs(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, para := range strings.Split(text, "\n\n") {
+		para = strings.TrimSpace(para)
+		if para == "" {
+			continue
+		}
+		b.WriteString("<p>")
+		b.WriteString(renderInlineCode(para))
+		b.WriteString("</p>")
+	}
+	return b.String()
+}
+
+// stripMarkdown removes markdown markers (backticks, **bold**) so a string can be
+// rendered into a context that has no markup support — primarily SVG <text> elements
+// in the attack graph. Content stays intact; only the delimiter characters are dropped.
+func stripMarkdown(text string) string {
+	if text == "" {
+		return text
+	}
+	out := strings.ReplaceAll(text, "**", "")
+	out = strings.ReplaceAll(out, "`", "")
+	return out
+}
+
+// renderInlineCode HTML-escapes text and replaces backtick-delimited spans with <code> tags.
+// Used for inline rendering of identifiers (resource names, kubectl flags) inside descriptions
+// and remediation steps. Single newlines become <br> for natural line breaks within a paragraph.
+func renderInlineCode(text string) string {
+	escaped := template.HTMLEscapeString(text)
+	var b strings.Builder
+	b.Grow(len(escaped))
+	inCode := false
+	for _, r := range escaped {
+		if r == '`' {
+			if inCode {
+				b.WriteString("</code>")
+			} else {
+				b.WriteString("<code>")
+			}
+			inCode = !inCode
+			continue
+		}
+		if r == '\n' && !inCode {
+			b.WriteString("<br>")
+			continue
+		}
+		b.WriteRune(r)
+	}
+	if inCode { // unmatched backtick — close the tag so HTML stays valid
+		b.WriteString("</code>")
+	}
+	return b.String()
 }
 
 // categoryCSSKey maps a RiskCategory to the short CSS class suffix used by the heatmap cells and graph nodes.
@@ -1203,11 +1291,14 @@ func buildAttackGraph(findings []models.Finding, resourceMap, subjectMap map[str
 		}
 	}
 
-	// Lane geometry.
+	// Lane geometry. Gaps between lanes (40px entry→cap, 80px cap→impact) give
+	// the bezier edges horizontal room to fan out — the cap→impact gap was
+	// previously 20px, which made many edges overlap when several capabilities
+	// converged on the same impact node.
 	const (
 		laneEntryX, laneEntryW   = 20, 300
-		laneCapX, laneCapW       = 360, 340
-		laneImpactX, laneImpactW = 720, 240
+		laneCapX, laneCapW       = 360, 360
+		laneImpactX, laneImpactW = 800, 240
 		topY                     = 50
 		capGap                   = 14
 		entryGap                 = 18
@@ -1217,12 +1308,12 @@ func buildAttackGraph(findings []models.Finding, resourceMap, subjectMap map[str
 		// text shows — this tool is educational, so we never truncate.
 		// Entry/cap left padding is 26/22px to clear the severity dot at top-left.
 		entryTextPx  = laneEntryW - 26 - 12  // 262
-		capTextPx    = laneCapW - 22 - 12    // 306
+		capTextPx    = laneCapW - 22 - 12    // 326
 		impactTextPx = laneImpactW - 16 - 12 // 212
 	)
 
 	g := AttackGraph{
-		Width: 980,
+		Width: 1080,
 		Lanes: [3]GraphLane{
 			{X: laneEntryX, Label: "Entry point", LabelX: laneEntryX + laneEntryW/2, LabelW: 110},
 			{X: laneCapX, Label: "Abused capability", LabelX: laneCapX + laneCapW/2, LabelW: 175},
@@ -1255,12 +1346,16 @@ func buildAttackGraph(findings []models.Finding, resourceMap, subjectMap map[str
 		})
 	}
 
-	// Build capability nodes.
+	// Build capability nodes. Strip markdown markers (`, **) from the title
+	// before wrapping — SVG <text> can't render <code>/<strong>, so leaving
+	// them in shows raw chars in the node. The popup-pane GraphNodeDetail
+	// keeps the original Title (with markdown) so its prose renderer can show
+	// proper code/bold formatting.
 	capNodes := make([]GraphNode, len(caps))
 	for i, f := range caps {
 		ruleMeta := fmt.Sprintf("%s  ·  score %.1f", f.RuleID, f.Score)
-		ruleLines := wrapForWidth(ruleMeta, capTextPx, 6.3) // rule-id:    10px monospace + letter-spacing
-		titleLines := wrapForWidth(f.Title, capTextPx, 7.2) // node-title: 13px sans 600
+		ruleLines := wrapForWidth(ruleMeta, capTextPx, 6.3)                // rule-id:    10px monospace + letter-spacing
+		titleLines := wrapForWidth(stripMarkdown(f.Title), capTextPx, 7.2) // node-title: 13px sans 600
 		lines, height := composeLines(22, []textCluster{
 			{class: "rule-id", lineHeight: 14, leadIn: 18, lines: ruleLines},
 			{class: "node-title", lineHeight: 17, leadIn: 22, lines: titleLines},
@@ -1846,7 +1941,7 @@ const htmlTemplate = `<!doctype html>
     .graph-intro .kp-hint { display: inline-block; margin-left: 4px; color: var(--accent); font-size: 12.5px; }
     .graph-wrap { margin-top: 10px; overflow-x: auto; }
     .kp-graph-card { position: relative; }
-    .attack-svg { width: 100%; min-width: 980px; height: auto; display: block; }
+    .attack-svg { width: 100%; min-width: 1080px; height: auto; display: block; }
     .attack-svg text { pointer-events: none; user-select: none; }
     .attack-svg rect.lane-pill { fill: rgba(255,255,255,0.025); stroke: var(--border-soft); stroke-width: 0.6; }
     .attack-svg text.lane-hd { font-size: 10.5px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; fill: #8d99b1; }
@@ -1902,7 +1997,7 @@ const htmlTemplate = `<!doctype html>
     .attack-svg.kp-hide-sev-med  .edge.med  { opacity: 0.08; }
 
     /* Side detail panel */
-    .kp-detail { position: fixed; top: 80px; right: 24px; width: 380px; max-width: calc(100vw - 48px); max-height: calc(100vh - 110px); overflow-y: auto; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 14px; padding: 18px 20px 22px; z-index: 50; box-shadow: 0 18px 60px rgba(0,0,0,0.55); transform: translateX(20px); opacity: 0; transition: transform 0.22s ease, opacity 0.18s ease; }
+    .kp-detail { position: fixed; top: 80px; right: 24px; width: 580px; max-width: calc(100vw - 48px); max-height: calc(100vh - 110px); overflow-y: auto; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 14px; padding: 20px 24px 24px; z-index: 50; box-shadow: 0 18px 60px rgba(0,0,0,0.55); transform: translateX(20px); opacity: 0; transition: transform 0.22s ease, opacity 0.18s ease; }
     .kp-detail.kp-open { transform: translateX(0); opacity: 1; }
     .kp-detail-hd { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
     .kp-detail-hd h3 { font-size: 16px; line-height: 1.3; flex: 1; }
@@ -1974,7 +2069,7 @@ const htmlTemplate = `<!doctype html>
     .kp-tt-tag { display: inline-block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; padding: 1px 6px; margin-right: 5px; border-radius: 999px; background: rgba(106,183,255,0.12); color: var(--accent); border: 1px solid rgba(106,183,255,0.25); vertical-align: middle; }
     .kp-tt-hint { margin-top: 6px; color: var(--accent); font-size: 11px; opacity: 0.8; }
 
-    @media (max-width: 980px) {
+    @media (max-width: 1180px) {
       .kp-detail { position: relative; top: auto; right: auto; width: 100%; max-width: 100%; margin-top: 12px; transform: translateY(8px); }
       .kp-detail.kp-open { transform: translateY(0); }
     }
@@ -2111,14 +2206,44 @@ const htmlTemplate = `<!doctype html>
     .finding .rule { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11px; color: var(--text-mut); padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; background: rgba(255,255,255,0.02); letter-spacing: 0.02em; }
     .finding .score-lbl { font-size: 12px; color: var(--text-mut); }
     .finding .score-lbl strong { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 600; }
+    .finding .scope-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 6px; align-items: center; }
+    .finding .scope-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; border: 1px solid; }
+    .finding .scope-chip.cluster { color: #ff9a3c; border-color: rgba(255,154,60,0.4); background: rgba(255,154,60,0.08); }
+    .finding .scope-chip.namespace { color: #6ab7ff; border-color: rgba(106,183,255,0.4); background: rgba(106,183,255,0.08); }
+    .finding .scope-chip.workload { color: #a89cf6; border-color: rgba(168,156,246,0.4); background: rgba(168,156,246,0.08); }
+    .finding .scope-chip.object { color: #88d49f; border-color: rgba(136,212,159,0.4); background: rgba(136,212,159,0.08); }
+    .finding .scope-detail { color: var(--text); font-size: 13px; font-weight: 500; }
+    .finding .scope-detail code { background: rgba(255,255,255,0.04); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
     .finding .meta { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 10px 0; color: var(--text-mut); font-size: 12.5px; }
     .finding .meta .k { color: var(--text-dim); }
     .finding .meta code { background: rgba(255,255,255,0.03); padding: 1px 6px; border-radius: 4px; color: var(--text); }
     .finding .desc { margin: 6px 0 12px; color: #cfd6e5; font-size: 14px; line-height: 1.58; }
-    .finding .rem { display: grid; grid-template-columns: 120px 1fr; gap: 12px; padding: 12px 14px; background: rgba(106,183,255,0.05); border: 1px solid rgba(106,183,255,0.18); border-radius: 10px; font-size: 13.5px; line-height: 1.55; }
-    .finding .rem .k { color: var(--accent); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; padding-top: 2px; }
+    .finding .desc p { margin-bottom: 8px; }
+    .finding .desc p:last-child { margin-bottom: 0; }
+    .finding .impact { display: grid; grid-template-columns: 90px 1fr; gap: 10px; padding: 10px 14px; background: rgba(255,107,107,0.06); border: 1px solid rgba(255,107,107,0.22); border-radius: 10px; font-size: 13.5px; line-height: 1.5; margin: 8px 0 12px; }
+    .finding .impact .k { color: #ff9a3c; font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; padding-top: 2px; }
+    .finding .impact .v { color: var(--text); }
+    .finding .scenario { margin: 10px 0; padding: 12px 14px; background: rgba(255,154,60,0.04); border: 1px solid rgba(255,154,60,0.18); border-radius: 10px; }
+    .finding .scenario .k { color: #ff9a3c; font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 8px; display: block; }
+    .finding .scenario ol { margin: 0; padding-left: 20px; color: var(--text); font-size: 13px; line-height: 1.6; }
+    .finding .scenario ol li { margin-bottom: 4px; }
+    .finding .scenario ol li:last-child { margin-bottom: 0; }
+    .finding .rem { padding: 12px 14px; background: rgba(106,183,255,0.05); border: 1px solid rgba(106,183,255,0.18); border-radius: 10px; font-size: 13.5px; line-height: 1.55; }
+    .finding .rem .k { color: var(--accent); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 8px; display: block; }
+    .finding .rem .summary { color: var(--text); margin-bottom: 8px; }
+    .finding .rem ol { margin: 0; padding-left: 20px; color: var(--text); font-size: 13px; line-height: 1.6; }
+    .finding .rem ol li { margin-bottom: 4px; }
+    .finding .rem ol li:last-child { margin-bottom: 0; }
+    .finding .rem code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; font-size: 12px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; }
     .finding .refs { margin: 10px 0 0; font-size: 13px; color: var(--text-mut); }
     .finding .refs a { word-break: break-all; }
+    .finding .refs ul { list-style: none; padding-left: 0; margin: 6px 0 0; display: grid; gap: 4px; }
+    .finding .refs ul li { padding-left: 14px; position: relative; }
+    .finding .refs ul li::before { content: "↗"; position: absolute; left: 0; color: var(--text-dim); }
+    .finding .mitre { margin: 10px 0 0; font-size: 12.5px; color: var(--text-mut); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .finding .mitre .k { color: var(--text-dim); }
+    .finding .mitre a { display: inline-flex; align-items: center; padding: 2px 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11px; text-decoration: none; background: rgba(255,255,255,0.02); }
+    .finding .mitre a:hover { border-color: var(--border-strong); background: var(--surface-hover); }
     .finding details { margin-top: 12px; }
     .finding details summary { cursor: pointer; user-select: none; font-size: 12px; color: var(--text-mut); padding: 6px 10px; border: 1px dashed var(--border); border-radius: 8px; display: inline-block; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; }
     .finding details[open] summary { color: var(--accent); border-color: var(--border-strong); border-style: solid; }
@@ -2466,27 +2591,66 @@ const htmlTemplate = `<!doctype html>
       <div class="finding-list">
         {{ range .Findings }}
         {{ $anchor := index $.AnchorByID .ID }}
-        <article class="finding {{ sevClass .Severity }}"{{ if $anchor }} id="{{ $anchor }}"{{ end }} data-rule="{{ .RuleID }}" data-severity="{{ sevClass .Severity }}" data-category="{{ catKey .Category }}"{{ if .Resource }} data-resource="{{ resource .Resource }}"{{ end }}>
+        <article class="finding {{ sevClass .Severity }}"{{ if $anchor }} id="{{ $anchor }}"{{ end }} data-rule="{{ .RuleID }}" data-severity="{{ sevClass .Severity }}" data-category="{{ catKey .Category }}"{{ if .Scope.Level }} data-scope="{{ .Scope.Level }}"{{ end }}{{ if .Resource }} data-resource="{{ resource .Resource }}"{{ end }}>
           <div class="finding-hd">
             <h3>{{ .Title }}</h3>
             <span class="badge-sev {{ sevClass .Severity }}">{{ sevShort .Severity }}</span>
             <span class="rule">{{ .RuleID }}</span>
             <span class="score-lbl">Score <strong>{{ score .Score }}</strong></span>
           </div>
-          <div class="meta">
-            <span><span class="k">Category:</span> {{ .Category }}</span>
-            {{ if .Subject }}<span><span class="k">Subject:</span> <code>{{ subject .Subject }}</code></span>{{ end }}
-            {{ if .Resource }}<span><span class="k">Resource:</span> <code>{{ resource .Resource }}</code></span>{{ end }}
-          </div>
-          <p class="desc">{{ .Description }}</p>
-          {{ if .Remediation }}
-          <div class="rem">
-            <div class="k">Remediation</div>
-            <div>{{ .Remediation }}</div>
+          {{ if or .Scope.Level .Scope.Detail }}
+          <div class="scope-row">
+            {{ if .Scope.Level }}<span class="scope-chip {{ .Scope.Level }}" title="Blast-radius level">Scope · {{ scopeLabel .Scope.Level }}</span>{{ end }}
+            {{ if .Scope.Detail }}<span class="scope-detail">{{ scopeDetailHTML .Scope.Detail }}</span>{{ end }}
           </div>
           {{ end }}
-          {{ if .References }}
-          <div class="refs">References: {{ range $i, $ref := .References }}{{ if $i }}, {{ end }}<a href="{{ $ref }}">{{ $ref }}</a>{{ end }}</div>
+          <div class="meta">
+            <span><span class="k">Category:</span> {{ catLabel .Category }}</span>
+            {{ if .Subject }}<span><span class="k">Subject:</span> <code>{{ subject .Subject }}</code></span>{{ end }}
+            {{ if .Resource }}<span><span class="k">Resource:</span> <code>{{ resource .Resource }}</code></span>{{ end }}
+            {{ if and (not .Subject) .Namespace }}<span><span class="k">Namespace:</span> <code>{{ .Namespace }}</code></span>{{ end }}
+          </div>
+          <div class="desc">{{ descriptionHTML .Description }}</div>
+          {{ if .Impact }}
+          <div class="impact">
+            <span class="k">Impact</span>
+            <span class="v">{{ .Impact }}</span>
+          </div>
+          {{ end }}
+          {{ if .AttackScenario }}
+          <div class="scenario">
+            <span class="k">How an attacker abuses this</span>
+            <ol>
+              {{ range .AttackScenario }}<li>{{ . }}</li>{{ end }}
+            </ol>
+          </div>
+          {{ end }}
+          {{ if or .Remediation .RemediationSteps }}
+          <div class="rem">
+            <span class="k">Remediation</span>
+            {{ if .Remediation }}<div class="summary">{{ .Remediation }}</div>{{ end }}
+            {{ if .RemediationSteps }}
+            <ol>
+              {{ range .RemediationSteps }}<li>{{ remediationStepHTML . }}</li>{{ end }}
+            </ol>
+            {{ end }}
+          </div>
+          {{ end }}
+          {{ if .MitreTechniques }}
+          <div class="mitre">
+            <span class="k">MITRE ATT&amp;CK:</span>
+            {{ range .MitreTechniques }}<a href="{{ .URL }}" target="_blank" rel="noopener noreferrer" title="{{ .Name }}">{{ .ID }}</a>{{ end }}
+          </div>
+          {{ end }}
+          {{ if .LearnMore }}
+          <div class="refs">
+            <span>References</span>
+            <ul>
+              {{ range .LearnMore }}<li><a href="{{ .URL }}" target="_blank" rel="noopener noreferrer">{{ .Title }}</a></li>{{ end }}
+            </ul>
+          </div>
+          {{ else if .References }}
+          <div class="refs">References: {{ range $i, $ref := .References }}{{ if $i }}, {{ end }}<a href="{{ $ref }}" target="_blank" rel="noopener noreferrer">{{ $ref }}</a>{{ end }}</div>
           {{ end }}
           {{ if .Evidence }}
           <details>

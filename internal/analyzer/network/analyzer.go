@@ -50,22 +50,20 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 	for _, namespace := range namespaces {
 		policies := policiesByNamespace[namespace]
 		if len(policies) == 0 && !isSystemNamespace(namespace) {
-			findings = appendUnique(findings, seen, namespaceFinding(namespace, "KUBE-NETPOL-COVERAGE-001", models.SeverityHigh, scoring.Clamp(7.4),
-				"Namespace has no NetworkPolicies",
-				"No NetworkPolicies were found for this namespace, so workloads are unrestricted by default.",
+			findings = appendUnique(findings, seen, namespaceFinding(namespace,
+				"KUBE-NETPOL-COVERAGE-001", models.SeverityHigh, scoring.Clamp(7.4),
 				map[string]any{"namespace": namespace},
-				"Add default-deny ingress and egress policies, then explicitly open only the traffic each workload needs.",
-				"noNetworkPolicies"))
+				"noNetworkPolicies",
+				contentNetpolCoverage001(namespace)))
 			continue
 		}
 
 		if len(policies) > 0 && namespaceHasIngressButNoEgress(policies) {
-			findings = appendUnique(findings, seen, namespaceFinding(namespace, "KUBE-NETPOL-COVERAGE-003", models.SeverityMedium, scoring.Clamp(5.8),
-				"Ingress policies present but egress remains open",
-				"This namespace has ingress-focused policies but no egress controls, so workloads can still connect out broadly.",
+			findings = appendUnique(findings, seen, namespaceFinding(namespace,
+				"KUBE-NETPOL-COVERAGE-003", models.SeverityMedium, scoring.Clamp(5.8),
 				map[string]any{"namespace": namespace},
-				"Add explicit egress policies or a namespace-level default deny egress policy.",
-				"noEgressPolicies"))
+				"noEgressPolicies",
+				contentNetpolCoverage003(namespace)))
 		}
 	}
 
@@ -75,12 +73,11 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 			continue
 		}
 		if !selectedByAnyPolicy(policies, workload.Labels) {
-			findings = appendUnique(findings, seen, workloadFinding(workload, "KUBE-NETPOL-COVERAGE-002", models.SeverityMedium, scoring.Clamp(6.2),
-				"Workload is not selected by any NetworkPolicy",
-				"No NetworkPolicy selects this workload, leaving it unrestricted within the namespace defaults.",
+			findings = appendUnique(findings, seen, workloadFinding(workload,
+				"KUBE-NETPOL-COVERAGE-002", models.SeverityMedium, scoring.Clamp(6.2),
 				map[string]any{"labels": workload.Labels},
-				"Ensure at least one policy selects this workload, even if the policy only applies a default-deny baseline.",
-				"uncoveredWorkload"))
+				"uncoveredWorkload",
+				contentNetpolCoverage002(workload.Kind, workload.Namespace, workload.Name, workload.Labels)))
 		}
 	}
 
@@ -88,12 +85,11 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 		for _, ingress := range policy.Spec.Ingress {
 			for _, peer := range ingress.From {
 				if isAllNamespaces(peer.NamespaceSelector) {
-					findings = appendUnique(findings, seen, policyFinding(policy, "KUBE-NETPOL-WEAKNESS-001", models.SeverityMedium, scoring.Clamp(5.5),
-						"NetworkPolicy allows ingress from all namespaces",
-						"This policy uses an empty namespace selector, effectively allowing traffic from any namespace.",
+					findings = appendUnique(findings, seen, policyFinding(policy,
+						"KUBE-NETPOL-WEAKNESS-001", models.SeverityMedium, scoring.Clamp(5.5),
 						map[string]any{"policy": policy.Name},
-						"Replace broad namespace selectors with explicit namespace labels or tighter pod selectors.",
-						"allNamespacesIngress"))
+						"allNamespacesIngress",
+						contentNetpolWeakness001(policy.Namespace, policy.Name)))
 				}
 			}
 		}
@@ -101,12 +97,11 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 		for _, egress := range policy.Spec.Egress {
 			for _, peer := range egress.To {
 				if peer.IPBlock != nil && (peer.IPBlock.CIDR == "0.0.0.0/0" || peer.IPBlock.CIDR == "::/0") {
-					findings = appendUnique(findings, seen, policyFinding(policy, "KUBE-NETPOL-WEAKNESS-002", models.SeverityHigh, scoring.Clamp(7.6),
-						"NetworkPolicy permits internet egress",
-						"This policy explicitly allows outbound traffic to the entire internet.",
+					findings = appendUnique(findings, seen, policyFinding(policy,
+						"KUBE-NETPOL-WEAKNESS-002", models.SeverityHigh, scoring.Clamp(7.6),
 						map[string]any{"policy": policy.Name, "cidr": peer.IPBlock.CIDR},
-						"Restrict egress to the specific CIDRs, services, or namespaces the workload genuinely needs.",
-						"internetEgress"))
+						"internetEgress",
+						contentNetpolWeakness002(policy.Namespace, policy.Name, peer.IPBlock.CIDR)))
 				}
 			}
 		}
@@ -278,8 +273,19 @@ func appendUnique(findings []models.Finding, seen map[string]struct{}, finding m
 	return append(findings, finding)
 }
 
-// namespaceFinding materializes a namespace-scoped network-policy finding.
-func namespaceFinding(namespace, ruleID string, severity models.Severity, score float64, title, description string, evidence map[string]any, remediation, check string) models.Finding {
+// referencesFromContent flattens content.LearnMore into a []string of URLs for the legacy
+// References field — keeps existing JSON/SARIF/CSV consumers working while the structured
+// LearnMore powers the HTML report.
+func referencesFromContent(content ruleContent) []string {
+	urls := make([]string, 0, len(content.LearnMore))
+	for _, ref := range content.LearnMore {
+		urls = append(urls, ref.URL)
+	}
+	return urls
+}
+
+// namespaceFinding materializes a namespace-scoped network-policy finding from a ruleContent.
+func namespaceFinding(namespace, ruleID string, severity models.Severity, score float64, evidence map[string]any, check string, content ruleContent) models.Finding {
 	evidenceBytes, _ := json.Marshal(evidence)
 	return models.Finding{
 		ID:          fmt.Sprintf("%s:Namespace:%s", ruleID, namespace),
@@ -287,23 +293,29 @@ func namespaceFinding(namespace, ruleID string, severity models.Severity, score 
 		Severity:    severity,
 		Score:       score,
 		Category:    models.CategoryLateralMovement,
-		Title:       title,
-		Description: description,
+		Title:       content.Title,
+		Description: content.Description,
 		Namespace:   namespace,
 		Resource: &models.ResourceRef{
 			Kind:      "Namespace",
 			Name:      namespace,
 			Namespace: namespace,
 		},
-		Evidence:    evidenceBytes,
-		Remediation: remediation,
-		References:  []string{"https://kubernetes.io/docs/concepts/services-networking/network-policies/"},
-		Tags:        []string{"module:network_policy", "check:" + check},
+		Scope:            content.Scope,
+		Impact:           content.Impact,
+		AttackScenario:   content.AttackScenario,
+		Evidence:         evidenceBytes,
+		Remediation:      content.Remediation,
+		RemediationSteps: content.RemediationSteps,
+		References:       referencesFromContent(content),
+		LearnMore:        content.LearnMore,
+		MitreTechniques:  content.MitreTechniques,
+		Tags:             []string{"module:network_policy", "check:" + check},
 	}
 }
 
-// workloadFinding materializes a workload-scoped network-policy finding.
-func workloadFinding(workload workload, ruleID string, severity models.Severity, score float64, title, description string, evidence map[string]any, remediation, check string) models.Finding {
+// workloadFinding materializes a workload-scoped network-policy finding from a ruleContent.
+func workloadFinding(workload workload, ruleID string, severity models.Severity, score float64, evidence map[string]any, check string, content ruleContent) models.Finding {
 	evidenceBytes, _ := json.Marshal(evidence)
 	return models.Finding{
 		ID:          fmt.Sprintf("%s:%s:%s:%s", ruleID, workload.Kind, workload.Namespace, workload.Name),
@@ -311,8 +323,8 @@ func workloadFinding(workload workload, ruleID string, severity models.Severity,
 		Severity:    severity,
 		Score:       score,
 		Category:    models.CategoryLateralMovement,
-		Title:       title,
-		Description: description,
+		Title:       content.Title,
+		Description: content.Description,
 		Namespace:   workload.Namespace,
 		Resource: &models.ResourceRef{
 			Kind:      workload.Kind,
@@ -320,15 +332,21 @@ func workloadFinding(workload workload, ruleID string, severity models.Severity,
 			Namespace: workload.Namespace,
 			APIGroup:  workloadAPIGroup(workload.Kind),
 		},
-		Evidence:    evidenceBytes,
-		Remediation: remediation,
-		References:  []string{"https://kubernetes.io/docs/concepts/services-networking/network-policies/"},
-		Tags:        []string{"module:network_policy", "check:" + check},
+		Scope:            content.Scope,
+		Impact:           content.Impact,
+		AttackScenario:   content.AttackScenario,
+		Evidence:         evidenceBytes,
+		Remediation:      content.Remediation,
+		RemediationSteps: content.RemediationSteps,
+		References:       referencesFromContent(content),
+		LearnMore:        content.LearnMore,
+		MitreTechniques:  content.MitreTechniques,
+		Tags:             []string{"module:network_policy", "check:" + check},
 	}
 }
 
 // policyFinding materializes a finding pointing at a specific NetworkPolicy that is too permissive.
-func policyFinding(policy networkingv1.NetworkPolicy, ruleID string, severity models.Severity, score float64, title, description string, evidence map[string]any, remediation, check string) models.Finding {
+func policyFinding(policy networkingv1.NetworkPolicy, ruleID string, severity models.Severity, score float64, evidence map[string]any, check string, content ruleContent) models.Finding {
 	evidenceBytes, _ := json.Marshal(evidence)
 	return models.Finding{
 		ID:          fmt.Sprintf("%s:%s:%s", ruleID, policy.Namespace, policy.Name),
@@ -336,8 +354,8 @@ func policyFinding(policy networkingv1.NetworkPolicy, ruleID string, severity mo
 		Severity:    severity,
 		Score:       score,
 		Category:    models.CategoryLateralMovement,
-		Title:       title,
-		Description: description,
+		Title:       content.Title,
+		Description: content.Description,
 		Namespace:   policy.Namespace,
 		Resource: &models.ResourceRef{
 			Kind:      "NetworkPolicy",
@@ -345,10 +363,16 @@ func policyFinding(policy networkingv1.NetworkPolicy, ruleID string, severity mo
 			Namespace: policy.Namespace,
 			APIGroup:  networkingv1.GroupName,
 		},
-		Evidence:    evidenceBytes,
-		Remediation: remediation,
-		References:  []string{"https://kubernetes.io/docs/concepts/services-networking/network-policies/"},
-		Tags:        []string{"module:network_policy", "check:" + check},
+		Scope:            content.Scope,
+		Impact:           content.Impact,
+		AttackScenario:   content.AttackScenario,
+		Evidence:         evidenceBytes,
+		Remediation:      content.Remediation,
+		RemediationSteps: content.RemediationSteps,
+		References:       referencesFromContent(content),
+		LearnMore:        content.LearnMore,
+		MitreTechniques:  content.MitreTechniques,
+		Tags:             []string{"module:network_policy", "check:" + check},
 	}
 }
 

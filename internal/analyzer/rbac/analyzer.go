@@ -110,124 +110,52 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 
 			switch {
 			case hasWildcard(rule.Verbs) && hasWildcard(rule.Resources) && hasWildcard(rule.APIGroups):
-				findings = appendFinding(findings, seen, finding(perms.Subject, rule, findingSpec{
-					RuleID:      "KUBE-PRIVESC-017",
-					Severity:    models.SeverityCritical,
-					Category:    models.CategoryPrivilegeEscalation,
-					BaseScore:   scoring.Clamp(9.8 * exploitability * blastRadius),
-					Title:       "Wildcard cluster-admin style permissions",
-					Description: "This subject can act on any resource with any verb, which is effectively cluster-admin access.",
-					Remediation: "Replace wildcard verbs/resources with the minimum set of explicit permissions required for the workload.",
-					References: []string{
-						"https://kubernetes.io/docs/reference/access-authn-authz/rbac/",
-					},
-				}))
+				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
+					"KUBE-PRIVESC-017", models.SeverityCritical, models.CategoryPrivilegeEscalation,
+					scoring.Clamp(9.8*exploitability*blastRadius),
+					contentPrivesc017(rule.Namespace, perms.Subject, rule.SourceBinding, rule.SourceRole)))
 			case hasResource(rule.Resources, "secrets") && hasAnyVerb(rule.Verbs, "get", "list", "watch"):
-				findings = appendFinding(findings, seen, finding(perms.Subject, rule, findingSpec{
-					RuleID:      "KUBE-PRIVESC-005",
-					Severity:    models.SeverityHigh,
-					Category:    models.CategoryDataExfiltration,
-					BaseScore:   scoring.Clamp(8.2 * exploitability * blastRadius),
-					Title:       "Secret read access",
-					Description: "This subject can read Kubernetes secrets, which can expose service account tokens, credentials, and certificates.",
-					Remediation: "Restrict secret access to only the namespaces and workloads that require it.",
-					References: []string{
-						"https://kubernetes.io/docs/concepts/configuration/secret/",
-					},
-				}))
+				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
+					"KUBE-PRIVESC-005", models.SeverityHigh, models.CategoryDataExfiltration,
+					scoring.Clamp(8.2*exploitability*blastRadius),
+					contentPrivesc005(rule.Namespace, perms.Subject, rule.SourceBinding, rule.SourceRole)))
 			case hasResource(rule.Resources, "pods") && hasAnyVerb(rule.Verbs, "create"):
-				findings = appendFinding(findings, seen, finding(perms.Subject, rule, findingSpec{
-					RuleID:      "KUBE-PRIVESC-001",
-					Severity:    models.SeverityHigh,
-					Category:    models.CategoryPrivilegeEscalation,
-					BaseScore:   scoring.Clamp(8.4 * exploitability * blastRadius),
-					Title:       "Pod creation access can be used for token theft",
-					Description: "Creating pods lets an attacker mount another service account and execute code with that identity.",
-					Remediation: "Remove direct pod creation rights from broad identities and route deployments through controlled automation.",
-					References: []string{
-						"https://kubernetes.io/docs/reference/access-authn-authz/rbac/",
-					},
-				}))
+				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
+					"KUBE-PRIVESC-001", models.SeverityHigh, models.CategoryPrivilegeEscalation,
+					scoring.Clamp(8.4*exploitability*blastRadius),
+					contentPrivesc001(rule.Namespace, perms.Subject, rule.SourceBinding, rule.SourceRole)))
 			case hasAnyResource(rule.Resources, []string{"deployments", "daemonsets", "statefulsets", "jobs", "cronjobs"}) &&
 				hasAnyVerb(rule.Verbs, "create", "update", "patch"):
-				findings = appendFinding(findings, seen, finding(perms.Subject, rule, findingSpec{
-					RuleID:      "KUBE-PRIVESC-003",
-					Severity:    models.SeverityHigh,
-					Category:    models.CategoryPrivilegeEscalation,
-					BaseScore:   scoring.Clamp(8.1 * exploitability * blastRadius),
-					Title:       "Workload controller modification can create privileged pods",
-					Description: "This subject can create or mutate workload controllers that in turn create pods.",
-					Remediation: "Restrict workload mutation rights and separate deployment automation from runtime identities.",
-					References: []string{
-						"https://cloud.hacktricks.wiki/en/pentesting-cloud/kubernetes-security/abusing-roles-clusterroles-in-kubernetes/index.html",
-					},
-				}))
+				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
+					"KUBE-PRIVESC-003", models.SeverityHigh, models.CategoryPrivilegeEscalation,
+					scoring.Clamp(8.1*exploitability*blastRadius),
+					contentPrivesc003(rule.Namespace, perms.Subject, rule.SourceBinding, rule.SourceRole)))
 			case hasAnyResource(rule.Resources, []string{"users", "groups", "serviceaccounts"}) && hasAnyVerb(rule.Verbs, "impersonate"):
-				findings = appendFinding(findings, seen, finding(perms.Subject, rule, findingSpec{
-					RuleID:      "KUBE-PRIVESC-008",
-					Severity:    models.SeverityCritical,
-					Category:    models.CategoryPrivilegeEscalation,
-					BaseScore:   scoring.Clamp(9.4 * exploitability * blastRadius),
-					Title:       "Impersonation permissions",
-					Description: "This subject can impersonate other identities and potentially assume more privileged access.",
-					Remediation: "Avoid granting impersonation except to tightly controlled admin workflows.",
-					References: []string{
-						"https://kubernetes.io/docs/reference/access-authn-authz/authentication/#user-impersonation",
-					},
-				}))
+				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
+					"KUBE-PRIVESC-008", models.SeverityCritical, models.CategoryPrivilegeEscalation,
+					scoring.Clamp(9.4*exploitability*blastRadius),
+					contentPrivesc008(rule.Namespace, perms.Subject, rule.SourceBinding, rule.SourceRole)))
 			case hasAnyResource(rule.Resources, []string{"roles", "clusterroles"}) && hasAnyVerb(rule.Verbs, "bind", "escalate"):
-				findings = appendFinding(findings, seen, finding(perms.Subject, rule, findingSpec{
-					RuleID:      "KUBE-PRIVESC-009",
-					Severity:    models.SeverityCritical,
-					Category:    models.CategoryPrivilegeEscalation,
-					BaseScore:   scoring.Clamp(9.2 * exploitability * blastRadius),
-					Title:       "RBAC bind or escalate permission",
-					Description: "This subject can bypass RBAC escalation protections or bind itself to higher privileges.",
-					Remediation: "Remove `bind` and `escalate` from non-admin identities and scope RBAC write access tightly.",
-					References: []string{
-						"https://kubernetes.io/docs/reference/access-authn-authz/rbac/#restrictions-on-role-binding-creation-or-update",
-					},
-				}))
+				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
+					"KUBE-PRIVESC-009", models.SeverityCritical, models.CategoryPrivilegeEscalation,
+					scoring.Clamp(9.2*exploitability*blastRadius),
+					contentPrivesc009(rule.Namespace, perms.Subject, rule.SourceBinding, rule.SourceRole)))
 			case hasAnyResource(rule.Resources, []string{"rolebindings", "clusterrolebindings"}) &&
 				hasAnyVerb(rule.Verbs, "create", "update", "patch"):
-				findings = appendFinding(findings, seen, finding(perms.Subject, rule, findingSpec{
-					RuleID:      "KUBE-PRIVESC-010",
-					Severity:    models.SeverityCritical,
-					Category:    models.CategoryPrivilegeEscalation,
-					BaseScore:   scoring.Clamp(9.0 * exploitability * blastRadius),
-					Title:       "Role binding modification can self-grant access",
-					Description: "This subject can create or modify role bindings and may grant itself stronger permissions.",
-					Remediation: "Limit RBAC binding write access to a small administrative boundary and monitor changes.",
-					References: []string{
-						"https://kubernetes.io/docs/reference/access-authn-authz/rbac/",
-					},
-				}))
+				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
+					"KUBE-PRIVESC-010", models.SeverityCritical, models.CategoryPrivilegeEscalation,
+					scoring.Clamp(9.0*exploitability*blastRadius),
+					contentPrivesc010(rule.Namespace, perms.Subject, rule.SourceBinding, rule.SourceRole)))
 			case hasResource(rule.Resources, "nodes/proxy") && hasAnyVerb(rule.Verbs, "get"):
-				findings = appendFinding(findings, seen, finding(perms.Subject, rule, findingSpec{
-					RuleID:      "KUBE-PRIVESC-012",
-					Severity:    models.SeverityCritical,
-					Category:    models.CategoryPrivilegeEscalation,
-					BaseScore:   scoring.Clamp(9.3 * exploitability * blastRadius),
-					Title:       "Node proxy access",
-					Description: "Access to `nodes/proxy` can enable kubelet abuse and command execution into pods on the node.",
-					Remediation: "Avoid granting kubelet-facing permissions to application identities.",
-					References: []string{
-						"https://cloud.hacktricks.wiki/en/pentesting-cloud/kubernetes-security/abusing-roles-clusterroles-in-kubernetes/index.html",
-					},
-				}))
+				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
+					"KUBE-PRIVESC-012", models.SeverityCritical, models.CategoryPrivilegeEscalation,
+					scoring.Clamp(9.3*exploitability*blastRadius),
+					contentPrivesc012(rule.Namespace, perms.Subject, rule.SourceBinding, rule.SourceRole)))
 			case hasResource(rule.Resources, "serviceaccounts/token") && hasAnyVerb(rule.Verbs, "create"):
-				findings = appendFinding(findings, seen, finding(perms.Subject, rule, findingSpec{
-					RuleID:      "KUBE-PRIVESC-014",
-					Severity:    models.SeverityHigh,
-					Category:    models.CategoryPrivilegeEscalation,
-					BaseScore:   scoring.Clamp(8.0 * exploitability * blastRadius),
-					Title:       "Service account token creation",
-					Description: "This subject can mint service account tokens for other identities in scope.",
-					Remediation: "Grant `create` on `serviceaccounts/token` only to trusted control-plane components.",
-					References: []string{
-						"https://kubernetes.io/docs/reference/access-authn-authz/service-accounts-admin/",
-					},
-				}))
+				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
+					"KUBE-PRIVESC-014", models.SeverityHigh, models.CategoryPrivilegeEscalation,
+					scoring.Clamp(8.0*exploitability*blastRadius),
+					contentPrivesc014(rule.Namespace, perms.Subject, rule.SourceBinding, rule.SourceRole)))
 			}
 		}
 	}
@@ -239,36 +167,16 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 				if strings.HasPrefix(ref.Name, "system:") {
 					continue
 				}
-				findings = appendFinding(findings, seen, finding(ref, effectiveRule{SourceBinding: binding.Name, SourceRole: binding.RoleRef.Name}, findingSpec{
-					RuleID:      "KUBE-RBAC-OVERBROAD-001",
-					Severity:    models.SeverityCritical,
-					Category:    models.CategoryPrivilegeEscalation,
-					BaseScore:   10,
-					Title:       "Non-system subject bound to cluster-admin",
-					Description: "A non-system subject is directly bound to the `cluster-admin` ClusterRole.",
-					Remediation: "Replace cluster-admin with a custom least-privilege role or constrain the binding to a dedicated admin group.",
-					References: []string{
-						"https://kubernetes.io/docs/reference/access-authn-authz/rbac/#user-facing-roles",
-					},
-				}))
+				findings = appendFinding(findings, seen, findingFromContent(
+					ref,
+					effectiveRule{SourceBinding: binding.Name, SourceRole: binding.RoleRef.Name},
+					"KUBE-RBAC-OVERBROAD-001", models.SeverityCritical, models.CategoryPrivilegeEscalation, 10,
+					contentRBACOverbroad001(ref, binding.Name)))
 			}
 		}
 	}
 
 	return findings, nil
-}
-
-// findingSpec bundles the static metadata used to materialize a models.Finding for a matched rule.
-type findingSpec struct {
-	RuleID      string
-	Severity    models.Severity
-	Category    models.RiskCategory
-	BaseScore   float64
-	Title       string
-	Description string
-	Remediation string
-	References  []string
-	Tags        []string
 }
 
 // appendFinding adds finding to the slice unless its ID has already been seen (deduplication keyed by Finding.ID).
@@ -280,8 +188,11 @@ func appendFinding(findings []models.Finding, seen map[string]struct{}, finding 
 	return append(findings, finding)
 }
 
-// finding materializes a models.Finding describing subject's exposure through rule using spec's metadata.
-func finding(subject models.SubjectRef, rule effectiveRule, spec findingSpec) models.Finding {
+// findingFromContent materializes a models.Finding using the enriched ruleContent (Scope, Impact,
+// AttackScenario, RemediationSteps, LearnMore, MitreTechniques) plus the runtime context (subject,
+// originating rule, severity/score/category bucket). Evidence keeps the same shape as before so
+// existing consumers continue to work.
+func findingFromContent(subject models.SubjectRef, rule effectiveRule, ruleID string, severity models.Severity, category models.RiskCategory, score float64, content ruleContent) models.Finding {
 	evidenceBytes, _ := json.Marshal(map[string]any{
 		"source_role":    rule.SourceRole,
 		"source_binding": rule.SourceBinding,
@@ -289,6 +200,7 @@ func finding(subject models.SubjectRef, rule effectiveRule, spec findingSpec) mo
 		"resources":      rule.Resources,
 		"verbs":          rule.Verbs,
 		"namespace":      rule.Namespace,
+		"scope":          string(content.Scope.Level),
 	})
 
 	resource := &models.ResourceRef{
@@ -298,22 +210,32 @@ func finding(subject models.SubjectRef, rule effectiveRule, spec findingSpec) mo
 		APIGroup:  "rbac.authorization.k8s.io",
 	}
 
-	id := fmt.Sprintf("%s:%s:%s:%s", spec.RuleID, subject.Key(), rule.Namespace, strings.Join(rule.Resources, ","))
+	id := fmt.Sprintf("%s:%s:%s:%s", ruleID, subject.Key(), rule.Namespace, strings.Join(rule.Resources, ","))
+	references := make([]string, 0, len(content.LearnMore))
+	for _, ref := range content.LearnMore {
+		references = append(references, ref.URL)
+	}
 	return models.Finding{
-		ID:          id,
-		RuleID:      spec.RuleID,
-		Severity:    spec.Severity,
-		Score:       spec.BaseScore,
-		Category:    spec.Category,
-		Title:       spec.Title,
-		Description: spec.Description,
-		Subject:     &subject,
-		Resource:    resource,
-		Namespace:   rule.Namespace,
-		Evidence:    evidenceBytes,
-		Remediation: spec.Remediation,
-		References:  spec.References,
-		Tags:        append([]string{"module:rbac"}, spec.Tags...),
+		ID:               id,
+		RuleID:           ruleID,
+		Severity:         severity,
+		Score:            score,
+		Category:         category,
+		Title:            content.Title,
+		Description:      content.Description,
+		Subject:          &subject,
+		Resource:         resource,
+		Namespace:        rule.Namespace,
+		Scope:            content.Scope,
+		Impact:           content.Impact,
+		AttackScenario:   content.AttackScenario,
+		Evidence:         evidenceBytes,
+		Remediation:      content.Remediation,
+		RemediationSteps: content.RemediationSteps,
+		References:       references,
+		LearnMore:        content.LearnMore,
+		MitreTechniques:  content.MitreTechniques,
+		Tags:             []string{"module:rbac"},
 	}
 }
 
