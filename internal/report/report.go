@@ -67,11 +67,11 @@ type HeatmapCell struct {
 
 // HeatmapRow is one row of the Resource × Category heatmap.
 type HeatmapRow struct {
-	Label     string
-	SevClass  string // crit | high | med  — derived from the highest-severity finding on this resource
-	SevLabel  string // CRIT | HIGH | MED
-	Total     int
-	Cells     []HeatmapCell
+	Label    string
+	SevClass string // crit | high | med  — derived from the highest-severity finding on this resource
+	SevLabel string // CRIT | HIGH | MED
+	Total    int
+	Cells    []HeatmapCell
 }
 
 // HeatmapCategory is a column header in the heatmap.
@@ -120,8 +120,64 @@ type GraphTextLine struct {
 
 // GraphEdge is a rendered bezier path in the attack graph.
 type GraphEdge struct {
+	ID    string // stable ID of the form "edge-<fromNodeID>-<toNodeID>" — used by the JS layer.
 	Class string // crit | high | med
 	D     string
+}
+
+// GraphPayload is the parallel detail-only payload that the inline JSON block embeds for the
+// JS interactivity layer. It is kept separate from AttackGraph (which stays cosmetic — only
+// what the SVG template needs) so multi-paragraph educational HTML doesn't bloat per-element
+// attributes.
+type GraphPayload struct {
+	Nodes      []GraphNodeDetail             `json:"Nodes"`
+	Edges      []GraphEdgeDetail             `json:"Edges"`
+	Glossary   map[string]GlossaryEntry      `json:"Glossary"`
+	Techniques map[string]TechniqueExplainer `json:"Techniques"`
+	Categories map[string]CategoryExplainer  `json:"Categories"`
+}
+
+// GraphNodeDetail is the per-node detail payload — title, severity, glossary key, rule
+// description, remediation, references, hop chain, and the IDs of edges this node connects
+// to. Wired up to the SVG <g data-node-id> elements client-side.
+type GraphNodeDetail struct {
+	ID           string    `json:"ID"`
+	Kind         string    `json:"Kind"`     // entry | capability | impact
+	Severity     string    `json:"Severity"` // crit | high | med
+	Title        string    `json:"Title"`
+	Subtitle     string    `json:"Subtitle,omitempty"`
+	GlossaryKey  string    `json:"GlossaryKey,omitempty"`  // entry nodes
+	RuleID       string    `json:"RuleID,omitempty"`       // capability nodes
+	TechniqueKey string    `json:"TechniqueKey,omitempty"` // capability nodes
+	Description  string    `json:"Description,omitempty"`  // capability nodes
+	Remediation  string    `json:"Remediation,omitempty"`  // capability nodes
+	References   []string  `json:"References,omitempty"`   // capability nodes
+	Hops         []HopView `json:"Hops,omitempty"`         // privesc-PATH capability nodes
+	EdgeIDs      []string  `json:"EdgeIDs,omitempty"`      // edges incident on this node
+	EntryKind    string    `json:"EntryKind,omitempty"`    // Subject | Resource (entry filter)
+	RiskCategory string    `json:"RiskCategory,omitempty"` // impact nodes
+}
+
+// GraphEdgeDetail describes one bezier edge for the JS layer.
+type GraphEdgeDetail struct {
+	ID           string `json:"ID"`
+	From         string `json:"From"`
+	To           string `json:"To"`
+	Class        string `json:"Class"` // crit | high | med
+	TechniqueKey string `json:"TechniqueKey,omitempty"`
+	ActionLabel  string `json:"ActionLabel,omitempty"` // human-readable verb (e.g., "abuses", "leads to")
+}
+
+// HopView is one walkthrough step for a privesc-PATH finding — pre-rendered so the JS does
+// no derivation. Step is 1-indexed for display.
+type HopView struct {
+	Step         int    `json:"Step"`
+	From         string `json:"From"`
+	To           string `json:"To"`
+	Action       string `json:"Action"`
+	TechniqueKey string `json:"TechniqueKey"`
+	Permission   string `json:"Permission,omitempty"`
+	Gains        string `json:"Gains,omitempty"`
 }
 
 // htmlReportData is the template input for the HTML dashboard; assembled by BuildHTMLData.
@@ -137,16 +193,18 @@ type htmlReportData struct {
 	TopFindings   []models.Finding
 
 	// Modern-dashboard fields — all derived from Findings so any cluster renders.
-	RiskIndex    int
-	RiskLevel    string // LOW | MODERATE | HIGH | CRITICAL
-	GaugeDash    string // "arcLen gapLen" for stroke-dasharray (circumference = 2π·56 ≈ 351.86)
-	GaugeColor   string // hex for gauge stroke, severity-tinted
-	Headline     string        // data-driven h1 ("2 independent paths to full cluster takeover", etc.)
-	Summaries    template.HTML // short prose under the h1; pre-escaped by buildHeadline so template renders markup
-	Narratives   []NarrativeCard
-	HeatCats     []HeatmapCategory
-	HeatRows     []HeatmapRow
-	Graph        AttackGraph
+	RiskIndex   int
+	RiskLevel   string        // LOW | MODERATE | HIGH | CRITICAL
+	GaugeDash   string        // "arcLen gapLen" for stroke-dasharray (circumference = 2π·56 ≈ 351.86)
+	GaugeColor  string        // hex for gauge stroke, severity-tinted
+	Headline    string        // data-driven h1 ("2 independent paths to full cluster takeover", etc.)
+	Summaries   template.HTML // short prose under the h1; pre-escaped by buildHeadline so template renders markup
+	Narratives  []NarrativeCard
+	HeatCats    []HeatmapCategory
+	HeatRows    []HeatmapRow
+	Graph       AttackGraph
+	GraphJSON   template.JS // JSON-marshaled GraphPayload, rendered into <script type="application/json">
+	GraphScript template.JS // Inline JS that powers the interactive graph (loaded from kpGraphScript const)
 }
 
 // Write emits the requested formats (html, json, csv, sarif) to outputDir along with the snapshot metadata side-file.
@@ -278,6 +336,7 @@ func BuildHTMLData(snapshot models.Snapshot, findings []models.Finding) htmlRepo
 
 	summary := BuildSummary(findings)
 	risk, level, gaugeColor := computeRiskIndex(summary)
+	graph, graphPayload := buildAttackGraph(findings, resourceMap, subjectMap)
 
 	data := htmlReportData{
 		Snapshot:      snapshot,
@@ -295,7 +354,9 @@ func BuildHTMLData(snapshot models.Snapshot, findings []models.Finding) htmlRepo
 		HeatCats:      heatmapCategories(),
 		HeatRows:      buildHeatmap(findings, resourceMap),
 		Narratives:    buildNarratives(findings),
-		Graph:         buildAttackGraph(findings, resourceMap, subjectMap),
+		Graph:         graph,
+		GraphJSON:     marshalGraphPayload(graphPayload),
+		GraphScript:   template.JS(kpGraphScript),
 	}
 	if len(findings) > 5 {
 		data.TopFindings = append([]models.Finding(nil), findings[:5]...)
@@ -304,6 +365,19 @@ func BuildHTMLData(snapshot models.Snapshot, findings []models.Finding) htmlRepo
 	}
 	data.Headline, data.Summaries = buildHeadline(summary, data.Narratives, topNamespaces)
 	return data
+}
+
+// marshalGraphPayload serializes the GraphPayload for inline embedding in a
+// <script type="application/json"> block. encoding/json escapes <, >, & to \uXXXX by default,
+// which prevents the JSON from breaking out of the script tag. On the (essentially impossible)
+// case of a marshal failure we degrade to "{}" so the page still loads — interactivity is off,
+// but the static SVG continues to render.
+func marshalGraphPayload(p GraphPayload) template.JS {
+	b, err := json.Marshal(p)
+	if err != nil {
+		return template.JS("{}")
+	}
+	return template.JS(b)
 }
 
 // writeJSON writes findings as an indented JSON array at path.
@@ -458,9 +532,9 @@ func writeHTML(path string, snapshot models.Snapshot, findings []models.Finding)
 		"score": func(v float64) string {
 			return fmt.Sprintf("%.1f", v)
 		},
-		"add": func(a, b int) int { return a + b },
-		"sub": func(a, b int) int { return a - b },
-		"midY": func(n GraphNode) int { return n.Y + n.Height/2 },
+		"add":    func(a, b int) int { return a + b },
+		"sub":    func(a, b int) int { return a - b },
+		"midY":   func(n GraphNode) int { return n.Y + n.Height/2 },
 		"rightX": func(n GraphNode) int { return n.X + n.Width },
 		"catKey": func(c models.RiskCategory) string { return categoryCSSKey(c) },
 		"pluralize": func(n int, singular, plural string) string {
@@ -953,11 +1027,12 @@ func buildHeadline(s Summary, narratives []NarrativeCard, ns []Hotspot) (string,
 
 // buildAttackGraph composes a 3-column flow diagram (entries → capabilities → impacts) from findings.
 // Coordinates are deterministic so the template only emits SVG, no layout computation.
-func buildAttackGraph(findings []models.Finding, resourceMap, subjectMap map[string][]models.Finding) AttackGraph {
+// Returns the cosmetic AttackGraph (for the SVG template) and a detail GraphPayload (for the
+// inline JSON block that drives the interactive side panel).
+func buildAttackGraph(findings []models.Finding, resourceMap, subjectMap map[string][]models.Finding) (AttackGraph, GraphPayload) {
+	emptyPayload := GraphPayload{Glossary: Glossary, Techniques: Techniques, Categories: Categories}
+
 	// Select capabilities: critical + high findings, deduplicated by rule_id (keep highest-scoring), top 10 by score.
-	type capCandidate struct {
-		f models.Finding
-	}
 	byRule := map[string]models.Finding{}
 	for _, f := range findings {
 		if f.Severity != models.SeverityCritical && f.Severity != models.SeverityHigh {
@@ -987,18 +1062,23 @@ func buildAttackGraph(findings []models.Finding, resourceMap, subjectMap map[str
 		return AttackGraph{
 			Width: 980, Height: 120,
 			Lanes: [3]GraphLane{{X: 20, Label: "Entry point"}, {X: 360, Label: "Abused capability"}, {X: 720, Label: "Impact"}},
-		}
+		}, emptyPayload
 	}
 
 	// Select entry points: the resource/subject each capability is about, deduplicated.
 	// Entry key = subject.Key() when present, else resource.Key(). Label reflects source.
+	// representative remembers a sample finding so we can later resolve a GlossaryKey from
+	// its Subject/Resource without re-walking findings.
 	type entryInfo struct {
-		Key      string
-		Title    string
-		Subtitle string
-		Meta     string
-		SevClass string
-		topScore float64
+		Key            string
+		Title          string
+		Subtitle       string
+		Meta           string
+		SevClass       string
+		topScore       float64
+		representative models.Finding
+		hasRep         bool
+		entryKind      string // "Subject" | "Resource" — used by the JS filter chips.
 	}
 	entries := map[string]*entryInfo{}
 	entryForCap := make([]string, len(caps))
@@ -1010,8 +1090,19 @@ func buildAttackGraph(findings []models.Finding, resourceMap, subjectMap map[str
 		entryForCap[i] = key
 		e, ok := entries[key]
 		if !ok {
-			e = &entryInfo{Key: key, Title: title, Subtitle: subtitle, SevClass: severityClass(f.Severity)}
+			kind := ""
+			switch {
+			case f.Subject != nil:
+				kind = "Subject"
+			case f.Resource != nil:
+				kind = "Resource"
+			}
+			e = &entryInfo{Key: key, Title: title, Subtitle: subtitle, SevClass: severityClass(f.Severity), entryKind: kind}
 			entries[key] = e
+		}
+		if !e.hasRep {
+			e.representative = f
+			e.hasRep = true
 		}
 		if f.Score > e.topScore {
 			e.topScore = f.Score
@@ -1098,9 +1189,9 @@ func buildAttackGraph(findings []models.Finding, resourceMap, subjectMap map[str
 	for _, k := range entryKeys {
 		e := entries[k]
 		// Per-class avg-glyph widths (px) calibrated to the CSS in the template.
-		titleLines := wrapForWidth(e.Title, entryTextPx, 7.2)    // node-title:  13px sans 600
-		subLines := wrapForWidth(e.Subtitle, entryTextPx, 6.6)   // node-sub:    11px monospace
-		metaLines := wrapForWidth(e.Meta, entryTextPx, 5.7)      // node-meta:   10.5px sans
+		titleLines := wrapForWidth(e.Title, entryTextPx, 7.2)  // node-title:  13px sans 600
+		subLines := wrapForWidth(e.Subtitle, entryTextPx, 6.6) // node-sub:    11px monospace
+		metaLines := wrapForWidth(e.Meta, entryTextPx, 5.7)    // node-meta:   10.5px sans
 		lines, height := composeLines(16, []textCluster{
 			{class: "node-title", lineHeight: 17, leadIn: 22, lines: titleLines},
 			{class: "node-sub", lineHeight: 14, leadIn: 18, lines: subLines},
@@ -1141,7 +1232,7 @@ func buildAttackGraph(findings []models.Finding, resourceMap, subjectMap map[str
 	// Build impact nodes.
 	impactNodeList := make([]GraphNode, 0, len(impactKeys))
 	for _, c := range impactKeys {
-		titleLines := wrapForWidth(impactLabel(c), impactTextPx, 8.5)  // impact-title: 13px bold uppercase
+		titleLines := wrapForWidth(impactLabel(c), impactTextPx, 8.5)   // impact-title: 13px bold uppercase
 		metaLines := wrapForWidth(impactSubtitle(c), impactTextPx, 5.7) // node-meta:    10.5px sans
 		lines, height := composeLines(16, []textCluster{
 			{class: "impact-title", lineHeight: 18, leadIn: 26, lines: titleLines},
@@ -1212,26 +1303,124 @@ func buildAttackGraph(findings []models.Finding, resourceMap, subjectMap map[str
 		g.Nodes = append(g.Nodes, impactNodeList[i])
 	}
 
-	// Edges: entry → capability (per finding), capability → impact (by category).
+	// Edges: entry → capability (per finding), capability → impact (by category). Each edge gets
+	// a stable ID derived from the node IDs so the JS layer can highlight by lookup.
+	// edgesByNode tracks which edge IDs touch each node so the side panel can dim everything else
+	// when the user hovers/clicks one node.
+	edgesByNode := map[string][]string{}
+	payload := GraphPayload{Glossary: Glossary, Techniques: Techniques, Categories: Categories}
 	for i, f := range caps {
 		entryNode, okE := entryNodePos[entryForCap[i]]
 		capNode := capNodes[i]
 		impNode, okI := impactNodePos[f.Category]
 		class := severityClass(f.Severity)
+		techKey := TechniqueKeyForFinding(f)
 		if okE {
+			edgeID := "edge-" + entryNode.ID + "-" + capNode.ID
 			g.Edges = append(g.Edges, GraphEdge{
+				ID:    edgeID,
 				Class: class,
 				D:     bezier(entryNode.X+entryNode.Width, entryNode.Y+entryNode.Height/2, capNode.X, capNode.Y+capNode.Height/2),
 			})
+			payload.Edges = append(payload.Edges, GraphEdgeDetail{
+				ID:           edgeID,
+				From:         entryNode.ID,
+				To:           capNode.ID,
+				Class:        class,
+				TechniqueKey: techKey,
+				ActionLabel:  "abuses",
+			})
+			edgesByNode[entryNode.ID] = append(edgesByNode[entryNode.ID], edgeID)
+			edgesByNode[capNode.ID] = append(edgesByNode[capNode.ID], edgeID)
 		}
 		if okI {
+			edgeID := "edge-" + capNode.ID + "-" + impNode.ID
 			g.Edges = append(g.Edges, GraphEdge{
+				ID:    edgeID,
 				Class: class,
 				D:     bezier(capNode.X+capNode.Width, capNode.Y+capNode.Height/2, impNode.X, impNode.Y+impNode.Height/2),
 			})
+			payload.Edges = append(payload.Edges, GraphEdgeDetail{
+				ID:          edgeID,
+				From:        capNode.ID,
+				To:          impNode.ID,
+				Class:       class,
+				ActionLabel: "leads to",
+			})
+			edgesByNode[capNode.ID] = append(edgesByNode[capNode.ID], edgeID)
+			edgesByNode[impNode.ID] = append(edgesByNode[impNode.ID], edgeID)
 		}
 	}
-	return g
+
+	// Build the per-node detail payload now that edge IDs are known. Glossary keys are derived
+	// from the representative finding's Subject/Resource (for entries) or the rule's technique
+	// (for capabilities). Categories carry their own explainer copy.
+	for _, k := range entryKeys {
+		e := entries[k]
+		node := entryNodePos[k]
+		gloss := ""
+		if e.hasRep {
+			if key := GlossaryKeyForSubject(e.representative.Subject); key != "" {
+				gloss = key
+			} else if key := GlossaryKeyForResource(e.representative.Resource); key != "" {
+				gloss = key
+			}
+		}
+		payload.Nodes = append(payload.Nodes, GraphNodeDetail{
+			ID:          node.ID,
+			Kind:        "entry",
+			Severity:    e.SevClass,
+			Title:       e.Title,
+			Subtitle:    e.Subtitle,
+			GlossaryKey: gloss,
+			EntryKind:   e.entryKind,
+			EdgeIDs:     edgesByNode[node.ID],
+		})
+	}
+	for i, f := range caps {
+		node := capNodes[i]
+		hops := make([]HopView, 0, len(f.EscalationPath))
+		for _, h := range f.EscalationPath {
+			hops = append(hops, HopView{
+				Step:         h.Step,
+				From:         h.FromSubject.Key(),
+				To:           h.ToSubject.Key(),
+				Action:       h.Action,
+				TechniqueKey: h.Action, // Techniques map is keyed by the same string
+				Permission:   h.Permission,
+				Gains:        h.Gains,
+			})
+		}
+		payload.Nodes = append(payload.Nodes, GraphNodeDetail{
+			ID:           node.ID,
+			Kind:         "capability",
+			Severity:     severityClass(f.Severity),
+			Title:        f.Title,
+			Subtitle:     fmt.Sprintf("score %.1f · %s", f.Score, categoryLabel(f.Category)),
+			RuleID:       f.RuleID,
+			TechniqueKey: TechniqueKeyForFinding(f),
+			Description:  f.Description,
+			Remediation:  f.Remediation,
+			References:   append([]string(nil), f.References...),
+			Hops:         hops,
+			RiskCategory: string(f.Category),
+			EdgeIDs:      edgesByNode[node.ID],
+		})
+	}
+	for _, c := range impactKeys {
+		node := impactNodePos[c]
+		payload.Nodes = append(payload.Nodes, GraphNodeDetail{
+			ID:           node.ID,
+			Kind:         "impact",
+			Severity:     "crit",
+			Title:        impactLabel(c),
+			Subtitle:     impactSubtitle(c),
+			RiskCategory: string(c),
+			EdgeIDs:      edgesByNode[node.ID],
+		})
+	}
+
+	return g, payload
 }
 
 // entryIdentity returns a stable key + display strings for the entity an attacker would target to exercise this finding.
@@ -1482,7 +1671,7 @@ const htmlTemplate = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Kubesplaining Report{{ if .Snapshot.Metadata.ClusterName }} — {{ .Snapshot.Metadata.ClusterName }}{{ end }}</title>
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
   <style>
     :root {
       --bg-0: #0a0d16; --bg-1: #0f1422;
@@ -1581,18 +1770,130 @@ const htmlTemplate = `<!doctype html>
 
     .graph-intro { color: var(--text-mut); font-size: 14px; max-width: 820px; margin: 0 0 4px; }
     .graph-intro strong { color: var(--text); }
+    .graph-intro .kp-hint { display: inline-block; margin-left: 4px; color: var(--accent); font-size: 12.5px; }
     .graph-wrap { margin-top: 10px; overflow-x: auto; }
+    .kp-graph-card { position: relative; }
     .attack-svg { width: 100%; min-width: 980px; height: auto; display: block; }
+    .attack-svg text { pointer-events: none; user-select: none; }
+    .attack-svg rect.lane-pill { fill: rgba(255,255,255,0.025); stroke: var(--border-soft); stroke-width: 0.6; }
     .attack-svg text.lane-hd { font-size: 10.5px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; fill: #8d99b1; }
     .attack-svg text.node-title { font-size: 13px; font-weight: 600; fill: #e6eaf3; }
     .attack-svg text.node-sub { font-size: 11px; fill: #bdc9df; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; }
     .attack-svg text.node-meta { font-size: 10.5px; fill: #8d99b1; }
     .attack-svg text.rule-id { font-size: 10px; fill: #ff9a3c; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; letter-spacing: 0.03em; }
     .attack-svg text.impact-title { font-size: 13px; font-weight: 700; fill: #ffdbe0; letter-spacing: 0.01em; }
-    .attack-svg .edge { stroke-width: 1.4; fill: none; opacity: 0.85; }
-    .attack-svg .edge.crit { stroke: #ff5568; }
-    .attack-svg .edge.high { stroke: #ff9a3c; }
+    .attack-svg .edge { stroke-width: 1.4; fill: none; opacity: 0.85; transition: opacity 0.18s ease, stroke-width 0.18s ease; }
+    .attack-svg .edge.crit { stroke: #ff5568; stroke-dasharray: 6 8; animation: kp-flow 1.6s linear infinite; stroke-linecap: round; }
+    .attack-svg .edge.high { stroke: #ff9a3c; stroke-dasharray: 6 8; animation: kp-flow 2.2s linear infinite; stroke-linecap: round; }
     .attack-svg .edge.med  { stroke: #6ab7ff; stroke-dasharray: 3 3; opacity: 0.7; }
+    @keyframes kp-flow { from { stroke-dashoffset: 0; } to { stroke-dashoffset: -28; } }
+    @keyframes kp-pulse { 0%,100% { filter: drop-shadow(0 0 4px rgba(255,85,104,0.35)); } 50% { filter: drop-shadow(0 0 12px rgba(255,85,104,0.6)); } }
+
+    .attack-svg .kp-node { cursor: pointer; outline: none; transition: opacity 0.2s ease; }
+    .attack-svg .kp-node rect.kp-node-rect { transition: stroke-width 0.18s ease, stroke-opacity 0.18s ease, filter 0.18s ease; }
+    .attack-svg .kp-node:hover rect.kp-node-rect,
+    .attack-svg .kp-node:focus-visible rect.kp-node-rect { stroke-width: 1.8; stroke-opacity: 0.95; filter: drop-shadow(0 0 8px rgba(255,255,255,0.06)); }
+    .attack-svg .kp-node:focus-visible rect.kp-node-rect { stroke-dasharray: 4 3; }
+    .attack-svg .kp-sev-dot { r: 4.5; }
+    .attack-svg .kp-sev-crit { fill: #ff5568; filter: drop-shadow(0 0 4px rgba(255,85,104,0.55)); }
+    .attack-svg .kp-sev-high { fill: #ff9a3c; filter: drop-shadow(0 0 4px rgba(255,154,60,0.55)); }
+    .attack-svg .kp-sev-med  { fill: #6ab7ff; filter: drop-shadow(0 0 4px rgba(106,183,255,0.55)); }
+    .attack-svg .kp-node-impact rect.kp-node-rect { animation: kp-pulse 3.4s ease-in-out infinite; }
+
+    /* Hover/click highlight: dim non-related, hot-glow related. */
+    .attack-svg.kp-active .kp-node.kp-dim { opacity: 0.18; }
+    .attack-svg.kp-active [data-edge-id].kp-dim { opacity: 0.12; }
+    .attack-svg.kp-active .kp-node.kp-hot rect.kp-node-rect { stroke-width: 2.2; stroke-opacity: 1; filter: drop-shadow(0 0 14px rgba(255,154,60,0.45)); }
+    .attack-svg.kp-active [data-edge-id].kp-hot { opacity: 1; stroke-width: 2.4; }
+
+    /* Filter chips */
+    .kp-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 14px 0 6px; }
+    .kp-filters-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.14em; color: var(--text-mut); padding-right: 6px; }
+    .kp-filters-sep { width: 1px; height: 16px; background: var(--border-soft); margin: 0 6px; }
+    .kp-chip { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12px; font-weight: 600; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,0.02); color: var(--text); cursor: pointer; transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease; }
+    .kp-chip:hover { border-color: var(--border-strong); background: var(--surface-hover); }
+    .kp-chip[aria-pressed="false"] { color: var(--text-dim); background: transparent; border-style: dashed; }
+    .kp-chip[aria-pressed="false"] .kp-chip-dot { opacity: 0.3; }
+    .kp-chip-dot { width: 8px; height: 8px; border-radius: 999px; display: inline-block; }
+    .kp-chip-dot.crit { background: var(--critical); }
+    .kp-chip-dot.high { background: var(--high); }
+    .kp-chip-dot.med  { background: var(--medium); }
+    .kp-chip-reset { color: var(--accent); border-color: rgba(106,183,255,0.35); }
+
+    /* Filter dim rules: pure CSS so toggling is reflow-free. */
+    .attack-svg.kp-hide-sev-crit [data-sev="crit"]   { opacity: 0.10; pointer-events: none; }
+    .attack-svg.kp-hide-sev-high [data-sev="high"]   { opacity: 0.10; pointer-events: none; }
+    .attack-svg.kp-hide-sev-med  [data-sev="med"]    { opacity: 0.10; pointer-events: none; }
+    .attack-svg.kp-hide-sev-crit .edge.crit { opacity: 0.08; }
+    .attack-svg.kp-hide-sev-high .edge.high { opacity: 0.08; }
+    .attack-svg.kp-hide-sev-med  .edge.med  { opacity: 0.08; }
+
+    /* Side detail panel */
+    .kp-detail { position: fixed; top: 80px; right: 24px; width: 380px; max-width: calc(100vw - 48px); max-height: calc(100vh - 110px); overflow-y: auto; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 14px; padding: 18px 20px 22px; z-index: 50; box-shadow: 0 18px 60px rgba(0,0,0,0.55); transform: translateX(20px); opacity: 0; transition: transform 0.22s ease, opacity 0.18s ease; }
+    .kp-detail.kp-open { transform: translateX(0); opacity: 1; }
+    .kp-detail-hd { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+    .kp-detail-hd h3 { font-size: 16px; line-height: 1.3; flex: 1; }
+    .kp-detail-close { background: transparent; border: 1px solid var(--border); color: var(--text-mut); width: 28px; height: 28px; border-radius: 8px; font-size: 18px; cursor: pointer; line-height: 1; padding: 0; }
+    .kp-detail-close:hover { color: var(--text); border-color: var(--border-strong); }
+    .kp-panel-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
+    .kp-panel-sub { color: var(--text-mut); font-size: 12px; word-break: break-all; margin-bottom: 12px; }
+    .kp-sev-badge { font-size: 10.5px; font-weight: 700; padding: 3px 8px; border-radius: 999px; letter-spacing: 0.06em; }
+    .kp-sev-badge.kp-sev-crit { background: var(--critical-soft); color: #ffb4be; border: 1px solid var(--critical-edge); }
+    .kp-sev-badge.kp-sev-high { background: var(--high-soft); color: #ffc89a; border: 1px solid var(--high-edge); }
+    .kp-sev-badge.kp-sev-med  { background: var(--medium-soft); color: #ffe9a1; border: 1px solid var(--medium-edge); }
+    .kp-kind-badge { font-size: 10.5px; padding: 3px 8px; border-radius: 999px; background: rgba(106,183,255,0.10); color: #bedbff; border: 1px solid rgba(106,183,255,0.28); letter-spacing: 0.04em; }
+    .kp-rule { font-size: 11px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-mut); background: rgba(255,255,255,0.02); }
+    .kp-section { margin-top: 16px; }
+    .kp-section h4 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-mut); font-weight: 700; margin-bottom: 6px; }
+    .kp-prose { color: var(--text); font-size: 13.5px; line-height: 1.6; margin: 0; }
+    .kp-prose p { margin: 0 0 8px; }
+    .kp-prose p:last-child { margin-bottom: 0; }
+    .kp-prose code { background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+    .kp-prose strong { color: var(--text); }
+    .kp-prose em { color: #ffdbe0; font-style: normal; }
+    .kp-prose ul, .kp-prose ol { margin: 6px 0 0; padding-left: 20px; }
+    .kp-prose li { margin: 3px 0; }
+    .kp-doc-link { margin-top: 8px; font-size: 12.5px; }
+    .kp-tech .kp-mitre { display: inline-block; margin-top: 8px; padding: 2px 8px; font-size: 11px; font-family: "JetBrains Mono", monospace; color: #ffc89a; background: var(--high-soft); border: 1px solid var(--high-edge); border-radius: 6px; letter-spacing: 0.02em; }
+    .kp-steps-hd { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-mut); font-weight: 700; margin: 12px 0 4px; }
+    .kp-steps { margin: 0; padding-left: 20px; font-size: 12.5px; line-height: 1.6; color: var(--text); }
+    .kp-steps li { margin: 4px 0; font-family: "JetBrains Mono", monospace; word-break: break-word; }
+    .kp-fix { background: rgba(106,183,255,0.05); border: 1px solid rgba(106,183,255,0.18); border-radius: 10px; padding: 10px 12px; margin-top: 16px; }
+    .kp-fix h4 { color: var(--accent); margin-bottom: 4px; }
+    .kp-refs { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--text-mut); }
+    .kp-refs li { margin: 3px 0; }
+    .kp-refs a { word-break: break-all; }
+    .kp-examples { margin: 6px 0 0; padding-left: 18px; color: var(--text-mut); font-size: 12.5px; line-height: 1.55; }
+    .kp-walk-btn { display: inline-flex; align-items: center; gap: 8px; font: inherit; font-weight: 600; font-size: 13px; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--high-edge); background: var(--high-soft); color: #ffc89a; cursor: pointer; margin-top: 4px; }
+    .kp-walk-btn:hover { background: rgba(255,154,60,0.2); }
+    .kp-walk-nav { display: flex; gap: 8px; margin-bottom: 12px; }
+    .kp-walk-nav button { font: inherit; font-size: 12px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,0.02); color: var(--text); cursor: pointer; }
+    .kp-walk-nav button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .kp-walk-exit { color: var(--text-mut) !important; border-style: dashed !important; }
+    .kp-walk-progress { color: var(--text-mut); font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 700; margin-bottom: 10px; }
+    .kp-walk-card { padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border); background: rgba(255,255,255,0.02); }
+    .kp-walk-from { border-color: rgba(106,183,255,0.3); background: rgba(106,183,255,0.06); }
+    .kp-walk-action { border-color: var(--high-edge); background: rgba(255,154,60,0.06); margin-top: 0; }
+    .kp-walk-to { border-color: var(--critical-edge); background: rgba(255,85,104,0.06); }
+    .kp-walk-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--text-mut); font-weight: 700; margin-bottom: 4px; }
+    .kp-walk-id { font-size: 13px; color: var(--text); word-break: break-all; }
+    .kp-walk-perm { color: var(--text-mut); font-size: 11.5px; margin-top: 4px; word-break: break-word; }
+    .kp-walk-explainer { margin-top: 8px; }
+    .kp-walk-gain { color: var(--text-mut); font-size: 12.5px; margin-top: 4px; }
+    .kp-walk-arrow { text-align: center; color: var(--high); font-size: 18px; line-height: 1; margin: 6px 0; }
+
+    /* Floating tooltip */
+    .kp-tooltip { position: absolute; transform: translate(-50%, -100%); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 10px; padding: 8px 12px; max-width: 320px; z-index: 60; box-shadow: 0 12px 32px rgba(0,0,0,0.5); pointer-events: none; }
+    .kp-tt-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
+    .kp-tt-body { font-size: 12px; color: var(--text-mut); margin-top: 4px; line-height: 1.5; }
+    .kp-tt-prose { margin-top: 4px; }
+    .kp-tt-prose p { margin: 0 0 4px; }
+    .kp-tt-prose code { background: rgba(255,255,255,0.05); padding: 1px 4px; border-radius: 4px; }
+
+    @media (max-width: 980px) {
+      .kp-detail { position: relative; top: auto; right: auto; width: 100%; max-width: 100%; margin-top: 12px; transform: translateY(8px); }
+      .kp-detail.kp-open { transform: translateY(0); }
+    }
 
     .narratives { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; }
     .narrative { border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; background: var(--surface); position: relative; overflow: hidden; }
@@ -1796,7 +2097,7 @@ const htmlTemplate = `<!doctype html>
 
     {{ if .Graph.Nodes }}
     <section>
-      <div class="card">
+      <div class="card kp-graph-card">
         <div class="card-hd">
           <div>
             <div class="kicker">Think in graphs</div>
@@ -1807,49 +2108,78 @@ const htmlTemplate = `<!doctype html>
             <span class="legend-item"><span class="legend-dot high"></span>high edge</span>
           </div>
         </div>
-        <p class="graph-intro">Defenders look at findings as a list. <strong>Attackers chain them</strong>. This graph walks each entry point through the capability it grants to the impact it achieves — so a finding's real danger is the <em>path</em> it joins, not its individual score.</p>
+        <p class="graph-intro">Defenders look at findings as a list. <strong>Attackers chain them</strong>. This graph walks each entry point through the capability it grants to the impact it achieves — so a finding's real danger is the <em>path</em> it joins, not its individual score. <span class="kp-hint">Hover for context · click any node for a plain-language explainer.</span></p>
+        <div class="kp-filters" role="toolbar" aria-label="Filter the attack graph">
+          <span class="kp-filters-label">Show</span>
+          <button type="button" class="kp-chip" data-filter="sev" data-value="crit" aria-pressed="true"><span class="kp-chip-dot crit"></span>Critical</button>
+          <button type="button" class="kp-chip" data-filter="sev" data-value="high" aria-pressed="true"><span class="kp-chip-dot high"></span>High</button>
+          <button type="button" class="kp-chip" data-filter="sev" data-value="med" aria-pressed="true"><span class="kp-chip-dot med"></span>Medium</button>
+          <span class="kp-filters-sep" aria-hidden="true"></span>
+          <button type="button" class="kp-chip" data-filter="kind" data-value="Subject" aria-pressed="true">Subjects</button>
+          <button type="button" class="kp-chip" data-filter="kind" data-value="Resource" aria-pressed="true">Resources</button>
+          <span class="kp-filters-sep" aria-hidden="true"></span>
+          <button type="button" class="kp-chip kp-chip-reset" data-action="reset">Reset</button>
+        </div>
         <div class="graph-wrap">
-          <svg class="attack-svg" viewBox="0 0 {{ .Graph.Width }} {{ .Graph.Height }}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Attack path graph">
+          <svg class="attack-svg" viewBox="0 0 {{ .Graph.Width }} {{ .Graph.Height }}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Attack path graph — interactive">
             <defs>
               <linearGradient id="impact-crit" x1="0" x2="1" y1="0" y2="0">
                 <stop offset="0%" stop-color="#3a1018"/><stop offset="100%" stop-color="#1d0b10"/>
               </linearGradient>
+              <symbol id="kp-icon-sa" viewBox="0 0 16 16">
+                <circle cx="8" cy="6" r="3" fill="none" stroke="currentColor" stroke-width="1.4"/>
+                <path d="M2.5 14c0-2.8 2.5-4.5 5.5-4.5s5.5 1.7 5.5 4.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              </symbol>
+              <symbol id="kp-icon-group" viewBox="0 0 16 16">
+                <circle cx="5" cy="6" r="2.4" fill="none" stroke="currentColor" stroke-width="1.4"/>
+                <circle cx="11" cy="6" r="2.4" fill="none" stroke="currentColor" stroke-width="1.4"/>
+                <path d="M1.5 13.5c0-2 1.7-3.4 3.5-3.4s3.5 1.4 3.5 3.4M7.5 13.5c0-2 1.7-3.4 3.5-3.4s3.5 1.4 3.5 3.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              </symbol>
+              <symbol id="kp-icon-resource" viewBox="0 0 16 16">
+                <path d="M8 1.5l5.5 3v7L8 14.5 2.5 11.5v-7z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+                <path d="M2.5 4.5L8 7.5l5.5-3M8 7.5v7" fill="none" stroke="currentColor" stroke-width="1.4"/>
+              </symbol>
+              <symbol id="kp-icon-key" viewBox="0 0 16 16">
+                <circle cx="5" cy="11" r="2.6" fill="none" stroke="currentColor" stroke-width="1.4"/>
+                <path d="M6.8 9.2L13.5 2.5M11 5l1.5 1.5M9 7l1.5 1.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              </symbol>
             </defs>
             {{ range $i, $lane := .Graph.Lanes }}
+              <rect class="lane-pill" x="{{ sub $lane.X 6 }}" y="6" width="120" height="22" rx="11"/>
               <text class="lane-hd" x="{{ $lane.X }}" y="22">{{ $lane.Label }}</text>
             {{ end }}
             <line x1="340" y1="36" x2="340" y2="{{ sub .Graph.Height 10 }}" stroke="#1a2134" stroke-dasharray="2 4"/>
             <line x1="700" y1="36" x2="700" y2="{{ sub .Graph.Height 10 }}" stroke="#1a2134" stroke-dasharray="2 4"/>
             {{ range .Graph.Edges }}
-              <path class="edge {{ .Class }}" d="{{ .D }}"/>
+              <path class="edge {{ .Class }}" data-edge-id="{{ .ID }}" d="{{ .D }}"/>
             {{ end }}
             {{ range .Graph.Nodes }}
               {{ $node := . }}
               {{ if eq .Kind "entry" }}
-                <g>
-                  <rect x="{{ .X }}" y="{{ .Y }}" width="{{ .Width }}" height="{{ .Height }}" rx="10"
+                <g class="kp-node kp-node-entry" data-node-id="{{ .ID }}" data-kind="entry" data-sev="{{ .SevClass }}" tabindex="0" role="button" aria-label="Entry point">
+                  <rect class="kp-node-rect" x="{{ .X }}" y="{{ .Y }}" width="{{ .Width }}" height="{{ .Height }}" rx="10"
                         fill="#151c2c"
                         stroke="{{ if eq .SevClass "crit" }}#ff5568{{ else if eq .SevClass "high" }}#ff9a3c{{ else }}#6ab7ff{{ end }}"
                         stroke-opacity="0.55"/>
-                  <rect x="{{ .X }}" y="{{ .Y }}" width="4" height="{{ .Height }}" rx="2"
-                        fill="{{ if eq .SevClass "crit" }}#ff5568{{ else if eq .SevClass "high" }}#ff9a3c{{ else }}#6ab7ff{{ end }}"/>
+                  <circle class="kp-sev-dot kp-sev-{{ .SevClass }}" cx="{{ add .X 12 }}" cy="{{ add .Y 14 }}" r="4"/>
                   {{ range .Lines }}
                     <text class="{{ .Class }}" x="{{ add $node.X .OffsetX }}" y="{{ add $node.Y .OffsetY }}">{{ .Text }}</text>
                   {{ end }}
                 </g>
               {{ else if eq .Kind "capability" }}
-                <g>
-                  <rect x="{{ .X }}" y="{{ .Y }}" width="{{ .Width }}" height="{{ .Height }}" rx="8"
+                <g class="kp-node kp-node-cap" data-node-id="{{ .ID }}" data-kind="capability" data-sev="{{ .SevClass }}" tabindex="0" role="button" aria-label="Abused capability">
+                  <rect class="kp-node-rect" x="{{ .X }}" y="{{ .Y }}" width="{{ .Width }}" height="{{ .Height }}" rx="8"
                         fill="#1a2338"
                         stroke="{{ if eq .SevClass "crit" }}#ff5568{{ else }}#ff9a3c{{ end }}"
                         stroke-opacity="0.55"/>
+                  <circle class="kp-sev-dot kp-sev-{{ .SevClass }}" cx="{{ add .X 11 }}" cy="{{ add .Y 13 }}" r="4"/>
                   {{ range .Lines }}
                     <text class="{{ .Class }}" x="{{ add $node.X .OffsetX }}" y="{{ add $node.Y .OffsetY }}">{{ .Text }}</text>
                   {{ end }}
                 </g>
               {{ else if eq .Kind "impact" }}
-                <g>
-                  <rect x="{{ .X }}" y="{{ .Y }}" width="{{ .Width }}" height="{{ .Height }}" rx="10"
+                <g class="kp-node kp-node-impact" data-node-id="{{ .ID }}" data-kind="impact" data-sev="{{ .SevClass }}" tabindex="0" role="button" aria-label="Impact">
+                  <rect class="kp-node-rect" x="{{ .X }}" y="{{ .Y }}" width="{{ .Width }}" height="{{ .Height }}" rx="10"
                         fill="url(#impact-crit)" stroke="#ff5568" stroke-width="1.2"/>
                   {{ range .Lines }}
                     <text class="{{ .Class }}" x="{{ add $node.X .OffsetX }}" y="{{ add $node.Y .OffsetY }}">{{ .Text }}</text>
@@ -1860,6 +2190,22 @@ const htmlTemplate = `<!doctype html>
           </svg>
         </div>
       </div>
+
+      <aside class="kp-detail" hidden role="dialog" aria-modal="false" aria-labelledby="kp-detail-title">
+        <header class="kp-detail-hd">
+          <h3 id="kp-detail-title">Click a node</h3>
+          <button type="button" class="kp-detail-close" aria-label="Close">×</button>
+        </header>
+        <div class="kp-detail-body" id="kp-detail-body"></div>
+      </aside>
+
+      <div class="kp-tooltip" hidden role="tooltip">
+        <div class="kp-tt-title"></div>
+        <div class="kp-tt-body" hidden></div>
+      </div>
+
+      <script type="application/json" id="kp-graph-data">{{ .GraphJSON }}</script>
+      <script>{{ .GraphScript }}</script>
     </section>
     {{ end }}
 

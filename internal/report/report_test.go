@@ -3,6 +3,7 @@ package report
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hardik/kubesplaining/internal/models"
@@ -125,5 +126,53 @@ func TestBuildHTMLDataGroupsFindings(t *testing.T) {
 	}
 	if len(data.TopNamespaces) == 0 || data.TopNamespaces[0].Label != "default" {
 		t.Fatalf("unexpected top namespaces: %#v", data.TopNamespaces)
+	}
+}
+
+// TestHTMLReportInteractiveGraph verifies the rendered HTML carries the markup the JS layer
+// requires (CSP allows scripts, JSON payload is embedded, nodes/edges have data IDs). It is a
+// smoke test for the contract between Go and the embedded interactivity, not a behaviour test.
+func TestHTMLReportInteractiveGraph(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	snapshot := models.NewSnapshot()
+	findings := []models.Finding{
+		{
+			ID:       "f-cap",
+			RuleID:   "KUBE-PRIVESC-009",
+			Severity: models.SeverityCritical,
+			Score:    9.5,
+			Category: models.CategoryPrivilegeEscalation,
+			Title:    "RBAC bind/escalate permission",
+			Subject:  &models.SubjectRef{Kind: "ServiceAccount", Name: "risky", Namespace: "default"},
+			Tags:     []string{"module:rbac"},
+		},
+	}
+
+	if _, err := Write(tmpDir, []string{"html"}, snapshot, findings); err != nil {
+		t.Fatalf("Write html: %v", err)
+	}
+
+	htmlBytes, err := os.ReadFile(filepath.Join(tmpDir, "report.html"))
+	if err != nil {
+		t.Fatalf("read report.html: %v", err)
+	}
+	html := string(htmlBytes)
+
+	mustContain := []string{
+		`script-src 'unsafe-inline'`,
+		`<script type="application/json" id="kp-graph-data">`,
+		`data-node-id=`,
+		`data-edge-id=`,
+		`class="kp-filters"`,
+		`class="kp-detail"`,
+		`class="kp-tooltip"`,
+		`KUBE-PRIVESC-009`,
+	}
+	for _, needle := range mustContain {
+		if !strings.Contains(html, needle) {
+			t.Errorf("rendered HTML missing %q", needle)
+		}
 	}
 }
