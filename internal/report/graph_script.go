@@ -15,6 +15,174 @@
 package report
 
 const kpGraphScript = `
+// --- Tabs / cross-tab helpers (run regardless of graph presence) -----------
+(function() {
+  var validTabs = { overview: 1, attack: 1, findings: 1 };
+
+  function activate(name) {
+    if (!validTabs[name]) name = 'attack';
+    document.body.dataset.activeTab = name;
+    var btns = document.querySelectorAll('.tab[data-tab]');
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].setAttribute('aria-selected', btns[i].getAttribute('data-tab') === name ? 'true' : 'false');
+    }
+  }
+
+  // Expose for other IIFEs (narrative chip click, chart click → switch tab).
+  window.kpActivateTab = activate;
+
+  // Wire tab buttons.
+  document.addEventListener('click', function(ev) {
+    var btn = ev.target && ev.target.closest && ev.target.closest('.tab[data-tab]');
+    if (!btn) return;
+    ev.preventDefault();
+    activate(btn.getAttribute('data-tab'));
+  });
+
+  // ---- Findings filter (driven by chart clicks) ------------------------
+  // State is { severity, module, category, resource } — each either a string or null.
+  // Clicking a chart row/cell sets the relevant fields, switches to the findings tab,
+  // and re-applies the predicate on every <article class="finding">.
+  var filterState = { severity: null, module: null, category: null, resource: null };
+  var FILTER_KEYS = ['severity', 'module', 'category', 'resource'];
+  var FILTER_LABELS = { severity: 'Severity', module: 'Module', category: 'Category', resource: 'Resource' };
+
+  function parseFilterTarget(s) {
+    if (!s) return {};
+    var out = {};
+    s.split('|').forEach(function(part) {
+      var p = part.split(':');
+      if (p.length === 2) out[p[0]] = p[1];
+    });
+    return out;
+  }
+
+  function applyFindingsFilter() {
+    var articles = document.querySelectorAll('article.finding');
+    var n = 0;
+    for (var i = 0; i < articles.length; i++) {
+      var a = articles[i];
+      var keep = true;
+      for (var k = 0; k < FILTER_KEYS.length; k++) {
+        var key = FILTER_KEYS[k];
+        var want = filterState[key];
+        if (want == null) continue;
+        var got = a.getAttribute('data-' + key) || '';
+        if (key === 'module') {
+          var sec = a.closest('.module-section');
+          got = sec ? (sec.getAttribute('data-module') || '') : '';
+        }
+        if (got !== want) { keep = false; break; }
+      }
+      a.style.display = keep ? '' : 'none';
+      if (keep) n++;
+    }
+    // Hide module sections whose findings are all filtered out.
+    var sections = document.querySelectorAll('section.module-section');
+    for (var s = 0; s < sections.length; s++) {
+      var visible = sections[s].querySelectorAll('article.finding:not([style*="display: none"])').length;
+      sections[s].style.display = visible ? '' : 'none';
+    }
+    renderFilterChips();
+  }
+
+  function renderFilterChips() {
+    var bar = document.getElementById('fl-active');
+    var clear = document.getElementById('fl-clear');
+    if (!bar || !clear) return;
+    bar.innerHTML = '';
+    var any = false;
+    FILTER_KEYS.forEach(function(key) {
+      var v = filterState[key];
+      if (v == null) return;
+      any = true;
+      var chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'fl-chip fl-chip-active';
+      chip.setAttribute('data-fl-key', key);
+      chip.innerHTML = '<span class="fl-chip-key">' + FILTER_LABELS[key] + '</span> <span class="fl-chip-val"></span> <span class="fl-chip-x" aria-hidden="true">×</span>';
+      chip.querySelector('.fl-chip-val').textContent = v;
+      chip.title = 'Remove ' + FILTER_LABELS[key] + ' filter';
+      chip.addEventListener('click', function() {
+        filterState[key] = null;
+        applyFindingsFilter();
+      });
+      bar.appendChild(chip);
+    });
+    bar.hidden = !any;
+    clear.hidden = !any;
+    var wrap = bar.closest('.findings-filters');
+    if (wrap) wrap.hidden = !any;
+  }
+
+  // Wire chart row + heatmap cell clicks → set filter, switch to findings tab.
+  document.addEventListener('click', function(ev) {
+    var t = ev.target && ev.target.closest && ev.target.closest('[data-fl-target]');
+    if (!t) return;
+    ev.preventDefault();
+    var fields = parseFilterTarget(t.getAttribute('data-fl-target'));
+    // Reset other fields for clarity — chart clicks set a fresh filter.
+    filterState = { severity: null, module: null, category: null, resource: null };
+    Object.keys(fields).forEach(function(k) { if (filterState.hasOwnProperty(k)) filterState[k] = fields[k]; });
+    activate('findings');
+    applyFindingsFilter();
+    requestAnimationFrame(function() {
+      var nav = document.querySelector('.findings-filters');
+      if (nav) nav.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+
+  // Clear-all button.
+  document.addEventListener('click', function(ev) {
+    if (!ev.target.closest || !ev.target.closest('#fl-clear')) return;
+    filterState = { severity: null, module: null, category: null, resource: null };
+    applyFindingsFilter();
+  });
+
+  // Narrative rule-ID chip → switch to findings tab and scroll the matching finding into view.
+  document.addEventListener('click', function(ev) {
+    var a = ev.target && ev.target.closest && ev.target.closest('a.chip-link[data-rule]');
+    if (!a) return;
+    var rule = a.getAttribute('data-rule');
+    if (!rule) return;
+    var target = document.getElementById('finding-' + rule);
+    if (!target) return;
+    ev.preventDefault();
+    activate('findings');
+    requestAnimationFrame(function() {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      target.classList.add('finding-flash');
+      setTimeout(function() { target.classList.remove('finding-flash'); }, 1600);
+    });
+  });
+
+  // Initial activation: parse URL hash. #tab-X selects tab X. #finding-XXX implies findings tab.
+  // Default (no hash, unrecognized hash) is the attack-paths tab — the report's primary view.
+  function fromHash() {
+    var h = (window.location.hash || '').replace(/^#/, '');
+    if (!h) return 'attack';
+    if (/^tab-(.+)$/.test(h)) return RegExp.$1;
+    if (/^finding-/.test(h)) return 'findings';
+    var modEl = document.getElementById(h);
+    if (modEl && modEl.classList.contains('module-section')) return 'findings';
+    return 'attack';
+  }
+
+  // Re-scroll to the hash AFTER activation so the target is in the laid-out
+  // visible tab; without this, anchor jumps land on a hidden element and end
+  // up at a stale y-offset when the correct tab fades in.
+  function reanchor() {
+    var h = (window.location.hash || '').replace(/^#/, '');
+    if (!h) return;
+    var el = document.getElementById(h);
+    if (el) requestAnimationFrame(function() { el.scrollIntoView({ block: 'start' }); });
+  }
+
+  activate(fromHash());
+  window.addEventListener('hashchange', function() { activate(fromHash()); reanchor(); });
+})();
+
+// --- Attack-graph interactivity (skipped if there's no graph) --------------
 (function() {
   var dataEl = document.getElementById('kp-graph-data');
   if (!dataEl) return;
@@ -194,10 +362,14 @@ const kpGraphScript = `
       ]);
       if (tech.Mitre) ts.appendChild(el('div', { class: 'kp-mitre', text: 'MITRE ATT&CK · ' + tech.Mitre }));
       if (tech.AttackerSteps && tech.AttackerSteps.length) {
-        var ol = el('ol', { class: 'kp-steps' });
-        tech.AttackerSteps.forEach(function(s) { ol.appendChild(el('li', { text: s })); });
         ts.appendChild(el('div', { class: 'kp-steps-hd', text: "What they'd actually run" }));
-        ts.appendChild(ol);
+        tech.AttackerSteps.forEach(function(s) {
+          if (s.Cmd) {
+            ts.appendChild(makeCmdBlock(s.Cmd, s.Note || ''));
+          } else if (s.Note) {
+            ts.appendChild(el('p', { class: 'kp-step-note', text: s.Note }));
+          }
+        });
       }
       panelBody.appendChild(ts);
     }
@@ -213,10 +385,13 @@ const kpGraphScript = `
     }
 
     if (node.Remediation) {
-      panelBody.appendChild(el('section', { class: 'kp-section kp-fix' }, [
-        el('h4', { text: 'How to fix' }),
-        el('p', { class: 'kp-prose', text: node.Remediation })
-      ]));
+      var fixSec = el('section', { class: 'kp-section kp-fix' }, [
+        el('h4', { text: 'How to fix' })
+      ]);
+      var rem = renderRemediation(node.Remediation);
+      fixSec.appendChild(rem.prose);
+      rem.commands.forEach(function(c) { fixSec.appendChild(makeCmdBlock(c, '')); });
+      panelBody.appendChild(fixSec);
     }
 
     if (node.References && node.References.length) {
@@ -306,15 +481,78 @@ const kpGraphScript = `
     if (lastFocused) { try { lastFocused.focus(); } catch (e) {} }
   }
 
+  // makeCmdBlock builds a copy-able command block. Optional note is a one-line
+  // explanation rendered below the command. The Copy button uses delegation
+  // (handler attached at panel level below) so it works for dynamically inserted
+  // blocks too.
+  function makeCmdBlock(commandText, note) {
+    var pre = el('pre', {}, [el('code', { text: commandText })]);
+    var copy = el('button', { type: 'button', class: 'kp-copy', text: 'Copy' });
+    var block = el('div', { class: 'kp-cmd' }, [copy, pre]);
+    if (note) block.appendChild(el('p', { class: 'kp-cmd-note', text: note }));
+    return block;
+  }
+
+  // renderRemediation parses a remediation string. Backtick spans that look
+  // like full commands (contain spaces or start with kubectl/kubeadm/helm) are
+  // emitted as separate code blocks AFTER the prose; short identifier-style
+  // backticks render as inline <code>. Non-backtick text becomes plain text
+  // (via textContent — never innerHTML).
+  function renderRemediation(text) {
+    var prose = el('p', { class: 'kp-prose' });
+    var commands = [];
+    var re = /` + "`" + `([^` + "`" + `]+)` + "`" + `/g;
+    var lastIdx = 0;
+    var m;
+    while ((m = re.exec(text)) !== null) {
+      if (m.index > lastIdx) prose.appendChild(document.createTextNode(text.slice(lastIdx, m.index)));
+      var inner = m[1];
+      var isCmd = /\s/.test(inner) || /^(kubectl|kubeadm|helm|kubectl-)/.test(inner);
+      if (isCmd) {
+        commands.push(inner);
+        prose.appendChild(el('code', { text: inner }));
+      } else {
+        prose.appendChild(el('code', { text: inner }));
+      }
+      lastIdx = m.index + m[0].length;
+    }
+    if (lastIdx < text.length) prose.appendChild(document.createTextNode(text.slice(lastIdx)));
+    return { prose: prose, commands: commands };
+  }
+
+  function firstSentence(s, maxLen) {
+    if (!s) return '';
+    var i = s.indexOf('. ');
+    var out = i > 0 ? s.slice(0, i + 1) : s;
+    if (out.length > maxLen) out = out.slice(0, maxLen - 1).replace(/\s+\S*$/, '') + '…';
+    return out;
+  }
+
+  function tooltipBody(node) {
+    var lines = [];
+    var glossary = node.GlossaryKey && payload.Glossary ? payload.Glossary[node.GlossaryKey] : null;
+    if (node.Subtitle) lines.push('<div class="kp-tt-sub">' + escapeHtml(node.Subtitle) + '</div>');
+    if (glossary && glossary.Short) lines.push('<div>' + escapeHtml(glossary.Short) + '</div>');
+    if (node.Kind === 'capability' && node.Description) {
+      lines.push('<div class="kp-tt-why"><span class="kp-tt-tag">Why it matters</span><br>' + escapeHtml(firstSentence(node.Description, 140)) + '</div>');
+    }
+    if (node.Kind === 'impact') {
+      var cat = node.RiskCategory && payload.Categories ? payload.Categories[node.RiskCategory] : null;
+      if (cat && cat.Examples && cat.Examples.length) {
+        lines.push('<div class="kp-tt-why"><span class="kp-tt-tag">Example</span><br>' + escapeHtml(cat.Examples[0]) + '</div>');
+      }
+    }
+    lines.push('<div class="kp-tt-hint">Click for full explainer →</div>');
+    return lines.join('');
+  }
+
   $$('[data-node-id]', svg).forEach(function(g) {
     var id = g.getAttribute('data-node-id');
     var node = nodeIndex[id];
     if (!node) return;
     g.addEventListener('mouseenter', function() {
       highlightNode(node);
-      var glossary = node.GlossaryKey && payload.Glossary ? payload.Glossary[node.GlossaryKey] : null;
-      var tip = glossary ? glossary.Short : (node.Subtitle || '');
-      showTooltip(g, node.Title || '', tip ? '<div>' + escapeHtml(tip) + '</div>' : '');
+      showTooltip(g, node.Title || '', tooltipBody(node));
     });
     g.addEventListener('mouseleave', function() {
       if (!panel.classList.contains('kp-open')) clearHighlights();
@@ -346,6 +584,46 @@ const kpGraphScript = `
   if (panelClose) panelClose.addEventListener('click', closePanel);
   document.addEventListener('keydown', function(ev) {
     if (ev.key === 'Escape' && panel.classList.contains('kp-open')) closePanel();
+  });
+
+  // Delegated copy-button handler for kp-cmd blocks built dynamically inside
+  // the panel. Reads the sibling <code> textContent and writes to clipboard,
+  // then briefly swaps the button label.
+  panel.addEventListener('click', function(ev) {
+    var btn = ev.target && ev.target.closest && ev.target.closest('.kp-copy');
+    if (!btn) return;
+    ev.preventDefault();
+    var block = btn.closest('.kp-cmd');
+    var code = block && block.querySelector('code');
+    if (!code) return;
+    var text = code.textContent || '';
+    var done = function() {
+      var orig = btn.textContent;
+      btn.textContent = 'Copied';
+      btn.classList.add('kp-copied');
+      setTimeout(function() { btn.textContent = orig; btn.classList.remove('kp-copied'); }, 1200);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function() {
+        // Fallback below.
+        try {
+          var ta = document.createElement('textarea');
+          ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+          document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+          document.body.removeChild(ta); done();
+        } catch (e) { /* clipboard not available */ }
+      });
+    }
+  });
+
+  // Click outside the panel (and outside the graph itself) closes the panel.
+  // Clicks on graph nodes don't close — they swap content via openPanel().
+  document.addEventListener('mousedown', function(ev) {
+    if (!panel.classList.contains('kp-open')) return;
+    var t = ev.target;
+    if (!t || !t.closest) return;
+    if (t.closest('.kp-detail') || t.closest('.attack-svg') || t.closest('.kp-tooltip')) return;
+    closePanel();
   });
 
   // Filter chips: toggle aria-pressed and a class on the SVG for CSS-only dimming.

@@ -43,8 +43,10 @@ type ModuleSection struct {
 }
 
 // CategorySection groups findings by RiskCategory for the "By Attack Theme" panel; it does not carry the findings themselves.
+// CSSKey is the short heatmap-style key (privesc | lateral | exfil | infra | evasion) used for filter matching.
 type CategorySection struct {
 	Key     string
+	CSSKey  string
 	Label   string
 	Summary Summary
 }
@@ -54,15 +56,26 @@ type CategorySection struct {
 type NarrativeCard struct {
 	Title    string
 	Severity string // CRITICAL / HIGH
-	Steps    []string
+	Steps    []NarrativeStep
 	RuleIDs  []string
 }
 
+// NarrativeStep is one numbered step in a NarrativeCard. Items is optional; when non-empty
+// the template renders a bulleted sublist under Text — used to surface long subject/resource
+// lists (e.g. thousands of service accounts) without ballooning the card width.
+type NarrativeStep struct {
+	Text  string
+	Items []string
+}
+
 // HeatmapCell is one cell of the Resource × Category heatmap. Level is 0..5 for CSS intensity class.
+// Resource is duplicated on every cell to keep the template flat — clicking a cell needs both the
+// row's resource and the column's category to set Findings-tab filter chips.
 type HeatmapCell struct {
 	Count    int
 	CatClass string // privesc | lateral | exfil | infra | evasion
 	Level    int    // 0..5
+	Resource string // resourceDisplay() of the row, copied for click-handler convenience
 }
 
 // HeatmapRow is one row of the Resource × Category heatmap.
@@ -91,9 +104,14 @@ type AttackGraph struct {
 }
 
 // GraphLane labels one of the three columns at the top of the attack graph.
+// X is the lane's left edge (matches the X of nodes in that lane). LabelX/LabelW
+// position the centered header pill — they are pre-computed so the template can
+// emit `text-anchor=middle` and snug the pill width to its label.
 type GraphLane struct {
-	X     int
-	Label string
+	X      int
+	Label  string
+	LabelX int
+	LabelW int
 }
 
 // GraphNode is a rendered rectangle in the attack graph. Kind is "entry" | "capability" | "impact".
@@ -203,8 +221,9 @@ type htmlReportData struct {
 	HeatCats    []HeatmapCategory
 	HeatRows    []HeatmapRow
 	Graph       AttackGraph
-	GraphJSON   template.JS // JSON-marshaled GraphPayload, rendered into <script type="application/json">
-	GraphScript template.JS // Inline JS that powers the interactive graph (loaded from kpGraphScript const)
+	GraphJSON   template.JS       // JSON-marshaled GraphPayload, rendered into <script type="application/json">
+	GraphScript template.JS       // Inline JS that powers the interactive graph (loaded from kpGraphScript const)
+	AnchorByID  map[string]string // Finding.ID → "finding-<RuleID>" for the first finding of each rule
 }
 
 // Write emits the requested formats (html, json, csv, sarif) to outputDir along with the snapshot metadata side-file.
@@ -322,6 +341,7 @@ func BuildHTMLData(snapshot models.Snapshot, findings []models.Finding) htmlRepo
 	for key, categoryFindings := range categoryMap {
 		categories = append(categories, CategorySection{
 			Key:     string(key),
+			CSSKey:  categoryCSSKey(key),
 			Label:   categoryLabel(key),
 			Summary: BuildSummary(categoryFindings),
 		})
@@ -337,6 +357,23 @@ func BuildHTMLData(snapshot models.Snapshot, findings []models.Finding) htmlRepo
 	summary := BuildSummary(findings)
 	risk, level, gaugeColor := computeRiskIndex(summary)
 	graph, graphPayload := buildAttackGraph(findings, resourceMap, subjectMap)
+
+	// AnchorByFindingID maps Finding.ID → the rule-level anchor ("finding-<RuleID>") on
+	// the FIRST occurrence of each rule across all modules in render order. The narrative
+	// chips link to these anchors so a click jumps straight to a representative finding.
+	// Only the first finding per rule gets the anchor — duplicate ids would break browser
+	// jumps.
+	anchorByID := map[string]string{}
+	seenRule := map[string]bool{}
+	for _, m := range modules {
+		for _, f := range m.Findings {
+			if seenRule[f.RuleID] {
+				continue
+			}
+			seenRule[f.RuleID] = true
+			anchorByID[f.ID] = "finding-" + f.RuleID
+		}
+	}
 
 	data := htmlReportData{
 		Snapshot:      snapshot,
@@ -357,6 +394,7 @@ func BuildHTMLData(snapshot models.Snapshot, findings []models.Finding) htmlRepo
 		Graph:         graph,
 		GraphJSON:     marshalGraphPayload(graphPayload),
 		GraphScript:   template.JS(kpGraphScript),
+		AnchorByID:    anchorByID,
 	}
 	if len(findings) > 5 {
 		data.TopFindings = append([]models.Finding(nil), findings[:5]...)
@@ -534,6 +572,7 @@ func writeHTML(path string, snapshot models.Snapshot, findings []models.Finding)
 		},
 		"add":    func(a, b int) int { return a + b },
 		"sub":    func(a, b int) int { return a - b },
+		"div":    func(a, b int) int { return a / b },
 		"midY":   func(n GraphNode) int { return n.Y + n.Height/2 },
 		"rightX": func(n GraphNode) int { return n.X + n.Width },
 		"catKey": func(c models.RiskCategory) string { return categoryCSSKey(c) },
@@ -822,6 +861,7 @@ func buildHeatmap(findings []models.Finding, resourceMap map[string][]models.Fin
 				Count:    n,
 				CatClass: k.Key,
 				Level:    heatLevel(n),
+				Resource: e.label,
 			})
 		}
 		switch top {
@@ -885,11 +925,12 @@ func buildNarratives(findings []models.Finding) []NarrativeCard {
 		if nodeEscapeHits["KUBE-ESCAPE-001"] || nodeEscapeHits["KUBE-ESCAPE-006"] {
 			sev = "CRITICAL"
 		}
-		steps := []string{
-			fmt.Sprintf("An attacker gains code execution in a workload co-scheduled with, or targeting, %s.", joinOrList(resList)),
-			"The workload is configured to trust the host in one or more ways — privileged mode grants all capabilities; a hostPath of / mounts the node's root filesystem; hostPID/hostIPC share the host's process and IPC namespaces.",
-			"Any one of these alone is enough for a straightforward container escape: write into the host filesystem, exec through /proc/1, or interact with the kubelet's unix socket.",
-			"From there, the attacker reads projected tokens for every other pod on the node and pivots into the cluster with those identities.",
+		steps := []NarrativeStep{
+			subjectListStep("An attacker gains code execution in a workload co-scheduled with, or targeting, one of:",
+				"An attacker gains code execution in a workload co-scheduled with, or targeting, %s.", resList),
+			{Text: "The workload is configured to trust the host in one or more ways — privileged mode grants all capabilities; a hostPath of / mounts the node's root filesystem; hostPID/hostIPC share the host's process and IPC namespaces."},
+			{Text: "Any one of these alone is enough for a straightforward container escape: write into the host filesystem, exec through /proc/1, or interact with the kubelet's unix socket."},
+			{Text: "From there, the attacker reads projected tokens for every other pod on the node and pivots into the cluster with those identities."},
 		}
 		narratives = append(narratives, NarrativeCard{
 			Title:    "Privileged workload → node root",
@@ -922,11 +963,12 @@ func buildNarratives(findings []models.Finding) []NarrativeCard {
 	}
 	sort.Strings(dualSubjects)
 	if len(dualSubjects) > 0 {
-		steps := []string{
-			fmt.Sprintf("The attacker lands on a workload that mounts %s, or phishes a kubeconfig bound to it.", joinOrList(dualSubjects)),
-			"That identity holds cluster-wide get/list on secrets — including service-account tokens in every namespace. The attacker lists kube-system secrets and reads tokens belonging to powerful controllers.",
-			"Even without the token read, the same identity can create pods cluster-wide. The attacker schedules a pod that mounts the target service account, execs in, and acts as it.",
-			"Either path converges on a cluster-admin-equivalent identity; all policies, secrets, and workloads are now under attacker control.",
+		steps := []NarrativeStep{
+			subjectListStep("The attacker lands on a workload that mounts one of the following service accounts (or phishes a kubeconfig bound to one):",
+				"The attacker lands on a workload that mounts %s, or phishes a kubeconfig bound to it.", dualSubjects),
+			{Text: "That identity holds cluster-wide get/list on secrets — including service-account tokens in every namespace. The attacker lists kube-system secrets and reads tokens belonging to powerful controllers."},
+			{Text: "Even without the token read, the same identity can create pods cluster-wide. The attacker schedules a pod that mounts the target service account, execs in, and acts as it."},
+			{Text: "Either path converges on a cluster-admin-equivalent identity; all policies, secrets, and workloads are now under attacker control."},
 		}
 		narratives = append(narratives, NarrativeCard{
 			Title:    "Token theft → cluster-admin impersonation",
@@ -940,17 +982,17 @@ func buildNarratives(findings []models.Finding) []NarrativeCard {
 	admissionRules := []string{"KUBE-ADMISSION-001", "KUBE-ADMISSION-002", "KUBE-ADMISSION-003"}
 	presentAdmission := presentRules(index, admissionRules)
 	if len(presentAdmission) > 0 {
-		steps := []string{}
+		steps := []NarrativeStep{}
 		if contains(presentAdmission, "KUBE-ADMISSION-001") {
-			steps = append(steps, "The webhook that should block dangerous pods fails open: failurePolicy: Ignore means any backend outage (or a targeted denial-of-service) silently disables enforcement for the window the attacker needs.")
+			steps = append(steps, NarrativeStep{Text: "The webhook that should block dangerous pods fails open: failurePolicy: Ignore means any backend outage (or a targeted denial-of-service) silently disables enforcement for the window the attacker needs."})
 		}
 		if contains(presentAdmission, "KUBE-ADMISSION-003") {
-			steps = append(steps, "Its namespace selector excludes at least one sensitive namespace — workloads placed there skip admission entirely.")
+			steps = append(steps, NarrativeStep{Text: "Its namespace selector excludes at least one sensitive namespace — workloads placed there skip admission entirely."})
 		}
 		if contains(presentAdmission, "KUBE-ADMISSION-002") {
-			steps = append(steps, "The webhook keys off a workload-controlled label. Omit the label and admission doesn't apply.")
+			steps = append(steps, NarrativeStep{Text: "The webhook keys off a workload-controlled label. Omit the label and admission doesn't apply."})
 		}
-		steps = append(steps, "Any one of the above is a full bypass of the admission gate you thought was catching misconfigurations — every other chain in this report becomes easier to execute.")
+		steps = append(steps, NarrativeStep{Text: "Any one of the above is a full bypass of the admission gate you thought was catching misconfigurations — every other chain in this report becomes easier to execute."})
 		narratives = append(narratives, NarrativeCard{
 			Title:    "Admission gap → silent enforcement bypass",
 			Severity: "HIGH",
@@ -963,17 +1005,17 @@ func buildNarratives(findings []models.Finding) []NarrativeCard {
 	networkRules := []string{"KUBE-NETPOL-COVERAGE-001", "KUBE-NETPOL-WEAKNESS-001", "KUBE-NETPOL-WEAKNESS-002"}
 	presentNetwork := presentRules(index, networkRules)
 	if len(presentNetwork) > 0 {
-		steps := []string{}
+		steps := []NarrativeStep{}
 		if contains(presentNetwork, "KUBE-NETPOL-COVERAGE-001") {
-			steps = append(steps, "Namespaces with no NetworkPolicies treat every pod as reachable from every other pod — there is no default-deny, so a compromised workload can reach every service on every pod.")
+			steps = append(steps, NarrativeStep{Text: "Namespaces with no NetworkPolicies treat every pod as reachable from every other pod — there is no default-deny, so a compromised workload can reach every service on every pod."})
 		}
 		if contains(presentNetwork, "KUBE-NETPOL-WEAKNESS-001") {
-			steps = append(steps, "An allow-from-all-namespaces policy is effectively no policy: traffic from any namespace matches, including attacker-controlled namespaces.")
+			steps = append(steps, NarrativeStep{Text: "An allow-from-all-namespaces policy is effectively no policy: traffic from any namespace matches, including attacker-controlled namespaces."})
 		}
 		if contains(presentNetwork, "KUBE-NETPOL-WEAKNESS-002") {
-			steps = append(steps, "Egress 0.0.0.0/0 gives the attacker free outbound reach — stolen tokens, secrets, and staging data leave the cluster with nothing in the way.")
+			steps = append(steps, NarrativeStep{Text: "Egress 0.0.0.0/0 gives the attacker free outbound reach — stolen tokens, secrets, and staging data leave the cluster with nothing in the way."})
 		}
-		steps = append(steps, "Combined, the attacker sweeps every pod in the cluster for vulnerable services and exfiltrates data without tripping a segmentation boundary.")
+		steps = append(steps, NarrativeStep{Text: "Combined, the attacker sweeps every pod in the cluster for vulnerable services and exfiltrates data without tripping a segmentation boundary."})
 		narratives = append(narratives, NarrativeCard{
 			Title:    "Flat network → unrestricted lateral reach",
 			Severity: "HIGH",
@@ -1061,7 +1103,11 @@ func buildAttackGraph(findings []models.Finding, resourceMap, subjectMap map[str
 	if len(caps) == 0 {
 		return AttackGraph{
 			Width: 980, Height: 120,
-			Lanes: [3]GraphLane{{X: 20, Label: "Entry point"}, {X: 360, Label: "Abused capability"}, {X: 720, Label: "Impact"}},
+			Lanes: [3]GraphLane{
+				{X: 20, Label: "Entry point", LabelX: 170, LabelW: 110},
+				{X: 360, Label: "Abused capability", LabelX: 530, LabelW: 175},
+				{X: 720, Label: "Impact", LabelX: 840, LabelW: 80},
+			},
 		}, emptyPayload
 	}
 
@@ -1169,17 +1215,18 @@ func buildAttackGraph(findings []models.Finding, resourceMap, subjectMap map[str
 		// Inner text-budget per lane (box width minus left padding minus right breathing room).
 		// wrapForWidth uses these to break long strings across multiple lines so the full
 		// text shows — this tool is educational, so we never truncate.
-		entryTextPx  = laneEntryW - 16 - 12  // 272
-		capTextPx    = laneCapW - 12 - 12    // 316
+		// Entry/cap left padding is 26/22px to clear the severity dot at top-left.
+		entryTextPx  = laneEntryW - 26 - 12  // 262
+		capTextPx    = laneCapW - 22 - 12    // 306
 		impactTextPx = laneImpactW - 16 - 12 // 212
 	)
 
 	g := AttackGraph{
 		Width: 980,
 		Lanes: [3]GraphLane{
-			{X: laneEntryX, Label: "Entry point"},
-			{X: laneCapX, Label: "Abused capability"},
-			{X: laneImpactX, Label: "Impact"},
+			{X: laneEntryX, Label: "Entry point", LabelX: laneEntryX + laneEntryW/2, LabelW: 110},
+			{X: laneCapX, Label: "Abused capability", LabelX: laneCapX + laneCapW/2, LabelW: 175},
+			{X: laneImpactX, Label: "Impact", LabelX: laneImpactX + laneImpactW/2, LabelW: 80},
 		},
 	}
 
@@ -1192,7 +1239,7 @@ func buildAttackGraph(findings []models.Finding, resourceMap, subjectMap map[str
 		titleLines := wrapForWidth(e.Title, entryTextPx, 7.2)  // node-title:  13px sans 600
 		subLines := wrapForWidth(e.Subtitle, entryTextPx, 6.6) // node-sub:    11px monospace
 		metaLines := wrapForWidth(e.Meta, entryTextPx, 5.7)    // node-meta:   10.5px sans
-		lines, height := composeLines(16, []textCluster{
+		lines, height := composeLines(26, []textCluster{
 			{class: "node-title", lineHeight: 17, leadIn: 22, lines: titleLines},
 			{class: "node-sub", lineHeight: 14, leadIn: 18, lines: subLines},
 			{class: "node-meta", lineHeight: 14, leadIn: 17, lines: metaLines},
@@ -1214,7 +1261,7 @@ func buildAttackGraph(findings []models.Finding, resourceMap, subjectMap map[str
 		ruleMeta := fmt.Sprintf("%s  ·  score %.1f", f.RuleID, f.Score)
 		ruleLines := wrapForWidth(ruleMeta, capTextPx, 6.3) // rule-id:    10px monospace + letter-spacing
 		titleLines := wrapForWidth(f.Title, capTextPx, 7.2) // node-title: 13px sans 600
-		lines, height := composeLines(12, []textCluster{
+		lines, height := composeLines(22, []textCluster{
 			{class: "rule-id", lineHeight: 14, leadIn: 18, lines: ruleLines},
 			{class: "node-title", lineHeight: 17, leadIn: 22, lines: titleLines},
 		}, 14)
@@ -1633,18 +1680,30 @@ func sortedKeys(m map[string]bool) []string {
 	return out
 }
 
-// joinOrList formats ["a","b","c"] as "a, b, or c" for prose; short lists stay natural.
-func joinOrList(items []string) string {
-	switch len(items) {
-	case 0:
-		return ""
-	case 1:
-		return items[0]
-	case 2:
-		return items[0] + " or " + items[1]
-	default:
-		return strings.Join(items[:len(items)-1], ", ") + ", or " + items[len(items)-1]
+// subjectListStep renders a narrative step that injects a list of subjects/resources.
+// For 1–2 items it stays inline as natural prose (proseFmt is a Sprintf template with one %s).
+// For 3+ items it switches to a lead-in sentence (listLead) plus a bulleted sublist, capped
+// to keep the card compact even with thousands of subjects in a real cluster.
+func subjectListStep(listLead, proseFmt string, items []string) NarrativeStep {
+	const cap = 5
+	if len(items) <= 2 {
+		var inline string
+		switch len(items) {
+		case 0:
+			inline = ""
+		case 1:
+			inline = items[0]
+		case 2:
+			inline = items[0] + " or " + items[1]
+		}
+		return NarrativeStep{Text: fmt.Sprintf(proseFmt, inline)}
 	}
+	if len(items) <= cap {
+		return NarrativeStep{Text: listLead, Items: items}
+	}
+	out := append([]string{}, items[:cap]...)
+	out = append(out, fmt.Sprintf("…and %d more", len(items)-cap))
+	return NarrativeStep{Text: listLead, Items: out}
 }
 
 // pluralizeSimple picks the right word form by count; used when a template func can't be used.
@@ -1721,6 +1780,20 @@ const htmlTemplate = `<!doctype html>
     .topbar-meta { display: flex; gap: 6px 14px; color: var(--text-mut); font-size: 13px; margin-left: auto; flex-wrap: wrap; align-items: center; }
     .topbar-meta strong { color: var(--text); font-weight: 500; }
     .topbar-meta .sep { width: 4px; height: 4px; border-radius: 999px; background: var(--text-dim); display: inline-block; margin: 0 4px; }
+
+    .tabs { max-width: 1280px; margin: 0 auto; padding: 0 28px; display: flex; gap: 6px; align-items: center; }
+    .tab { font: inherit; font-size: 13px; font-weight: 600; color: var(--text-mut); background: transparent; border: 0; border-bottom: 2px solid transparent; padding: 10px 14px 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; transition: color 0.15s ease, border-color 0.15s ease; letter-spacing: 0.01em; }
+    .tab:hover { color: var(--text); }
+    .tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+    .tab-count { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: rgba(255,255,255,0.05); color: var(--text-mut); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; letter-spacing: 0; }
+    .tab[aria-selected="true"] .tab-count { background: rgba(106,183,255,0.18); color: var(--accent); }
+    body[data-active-tab="overview"] main [data-tab="attack"],
+    body[data-active-tab="overview"] main [data-tab="findings"] { display: none; }
+    body[data-active-tab="attack"] main [data-tab="overview"],
+    body[data-active-tab="attack"] main [data-tab="findings"] { display: none; }
+    body[data-active-tab="findings"] main [data-tab="overview"],
+    body[data-active-tab="findings"] main [data-tab="attack"] { display: none; }
+    .tabs-empty { color: var(--text-dim); font-size: 13px; padding: 30px 0; text-align: center; }
 
     main { max-width: 1280px; margin: 0 auto; padding: 24px 28px 80px; }
     section { margin-bottom: 24px; }
@@ -1855,11 +1928,18 @@ const htmlTemplate = `<!doctype html>
     .kp-prose li { margin: 3px 0; }
     .kp-doc-link { margin-top: 8px; font-size: 12.5px; }
     .kp-tech .kp-mitre { display: inline-block; margin-top: 8px; padding: 2px 8px; font-size: 11px; font-family: "JetBrains Mono", monospace; color: #ffc89a; background: var(--high-soft); border: 1px solid var(--high-edge); border-radius: 6px; letter-spacing: 0.02em; }
-    .kp-steps-hd { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-mut); font-weight: 700; margin: 12px 0 4px; }
-    .kp-steps { margin: 0; padding-left: 20px; font-size: 12.5px; line-height: 1.6; color: var(--text); }
-    .kp-steps li { margin: 4px 0; font-family: "JetBrains Mono", monospace; word-break: break-word; }
+    .kp-steps-hd { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-mut); font-weight: 700; margin: 12px 0 6px; }
+    .kp-cmd { position: relative; margin: 8px 0; }
+    .kp-cmd pre { padding: 10px 64px 10px 12px; font-size: 12px; line-height: 1.55; max-height: 240px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .kp-cmd pre code { background: transparent; padding: 0; font-size: 12px; }
+    .kp-copy { position: absolute; top: 6px; right: 6px; font: inherit; font-size: 11px; font-weight: 600; padding: 4px 9px; border-radius: 6px; border: 1px solid var(--border); background: rgba(255,255,255,0.04); color: var(--text-mut); cursor: pointer; transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease; letter-spacing: 0.04em; }
+    .kp-copy:hover { color: var(--text); border-color: var(--border-strong); background: rgba(255,255,255,0.08); }
+    .kp-copy.kp-copied { color: #a6f2cf; border-color: rgba(82,227,164,0.45); background: rgba(82,227,164,0.10); }
+    .kp-cmd-note { color: var(--text-mut); font-size: 12px; margin: 4px 2px 0; line-height: 1.55; }
+    .kp-step-note { color: var(--text); font-size: 12.5px; margin: 8px 2px; line-height: 1.55; }
     .kp-fix { background: rgba(106,183,255,0.05); border: 1px solid rgba(106,183,255,0.18); border-radius: 10px; padding: 10px 12px; margin-top: 16px; }
     .kp-fix h4 { color: var(--accent); margin-bottom: 4px; }
+    .kp-fix .kp-prose code { background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
     .kp-refs { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--text-mut); }
     .kp-refs li { margin: 3px 0; }
     .kp-refs a { word-break: break-all; }
@@ -1889,6 +1969,10 @@ const htmlTemplate = `<!doctype html>
     .kp-tt-prose { margin-top: 4px; }
     .kp-tt-prose p { margin: 0 0 4px; }
     .kp-tt-prose code { background: rgba(255,255,255,0.05); padding: 1px 4px; border-radius: 4px; }
+    .kp-tt-sub { color: var(--text-dim); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11px; word-break: break-all; margin-bottom: 4px; }
+    .kp-tt-why { margin-top: 5px; color: var(--text-mut); }
+    .kp-tt-tag { display: inline-block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; padding: 1px 6px; margin-right: 5px; border-radius: 999px; background: rgba(106,183,255,0.12); color: var(--accent); border: 1px solid rgba(106,183,255,0.25); vertical-align: middle; }
+    .kp-tt-hint { margin-top: 6px; color: var(--accent); font-size: 11px; opacity: 0.8; }
 
     @media (max-width: 980px) {
       .kp-detail { position: relative; top: auto; right: auto; width: 100%; max-width: 100%; margin-top: 12px; transform: translateY(8px); }
@@ -1904,17 +1988,29 @@ const htmlTemplate = `<!doctype html>
     .badge-sev.med  { background: var(--medium-soft); color: #ffe9a1; border: 1px solid var(--medium-edge); }
     .badge-sev.low  { background: var(--low-soft); color: #a6f2cf; border: 1px solid var(--low-edge); }
     .narrative ol { margin: 10px 0 0; padding-left: 18px; color: var(--text-mut); font-size: 14px; line-height: 1.58; }
+    .narrative ol li { overflow-wrap: anywhere; word-break: break-word; }
     .narrative ol li + li { margin-top: 6px; }
+    .narrative ol .step-items { margin: 6px 0 2px; padding-left: 18px; list-style: disc; color: var(--text); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 12.5px; line-height: 1.55; }
+    .narrative ol .step-items li { margin-top: 0; }
+    .narrative ol .step-items li + li { margin-top: 2px; }
     .narrative ol strong { color: var(--text); font-weight: 600; }
     .narrative .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
     .chip { font-size: 11px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-mut); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; letter-spacing: 0.02em; }
     .chip.crit { color: #ffb4be; border-color: var(--critical-edge); background: var(--critical-soft); }
     .chip.high { color: #ffc89a; border-color: var(--high-edge); background: var(--high-soft); }
     .chip.med  { color: #ffe9a1; border-color: var(--medium-edge); background: var(--medium-soft); }
+    a.chip-link { text-decoration: none; cursor: pointer; transition: filter 0.15s ease, transform 0.1s ease; border-bottom: 1px solid transparent; }
+    a.chip-link:hover { filter: brightness(1.18); border-bottom: 1px solid currentColor; }
+    a.chip-link:active { transform: translateY(1px); }
+    @keyframes findingFlash { 0% { box-shadow: 0 0 0 0 rgba(106,183,255,0.55); } 60% { box-shadow: 0 0 0 8px rgba(106,183,255,0.15); } 100% { box-shadow: 0 0 0 0 rgba(106,183,255,0); } }
+    .finding.finding-flash { animation: findingFlash 1.5s ease-out; }
 
     .two-col { display: grid; grid-template-columns: 1.2fr 1fr; gap: 16px; }
     .dist-list { display: grid; gap: 12px; }
-    .dist-row { display: grid; grid-template-columns: 170px 1fr 48px; gap: 14px; align-items: center; }
+    .dist-row { display: grid; grid-template-columns: 170px 1fr 48px; gap: 14px; align-items: center; width: 100%; padding: 0; background: transparent; border: 0; color: inherit; font: inherit; text-align: left; }
+    .dist-row-clickable { cursor: pointer; padding: 6px 8px; border-radius: 8px; transition: background 0.15s ease; }
+    .dist-row-clickable:hover { background: rgba(255,255,255,0.03); }
+    .dist-row-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     .dist-label { font-size: 13.5px; color: var(--text); font-weight: 500; }
     .dist-label .dl-sub { display: block; color: var(--text-dim); font-size: 11.5px; font-weight: 400; margin-top: 1px; letter-spacing: 0.01em; }
     .dist-bar { height: 22px; background: rgba(255,255,255,0.02); border-radius: 7px; display: flex; overflow: hidden; border: 1px solid var(--border-soft); }
@@ -1936,7 +2032,13 @@ const htmlTemplate = `<!doctype html>
     .heat { display: grid; grid-template-columns: minmax(220px, 1.2fr) repeat(5, minmax(80px, 1fr)); gap: 6px; margin-top: 4px; }
     .heat-hd { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-mut); padding: 8px 6px; text-align: center; border-bottom: 1px solid var(--border-soft); }
     .heat-hd.res { text-align: left; }
-    .heat-res { font-size: 12.5px; padding: 10px 6px; color: var(--text); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; border-top: 1px solid var(--border-soft); display: flex; align-items: center; gap: 8px; word-break: break-all; }
+    .heat-res { font-size: 12.5px; padding: 10px 6px; color: var(--text); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; border-top: 1px solid var(--border-soft); display: flex; align-items: center; gap: 8px; word-break: break-all; background: transparent; border-left: 0; border-right: 0; border-bottom: 0; text-align: left; font-weight: inherit; }
+    .heat-res-clickable { cursor: pointer; transition: background 0.15s ease; }
+    .heat-res-clickable:hover { background: rgba(255,255,255,0.03); }
+    .heat-res-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .heat-cell-clickable { cursor: pointer; border-left: 0; border-right: 0; border-bottom: 0; transition: filter 0.15s ease, transform 0.1s ease; font: inherit; padding: 0; }
+    .heat-cell-clickable:hover { filter: brightness(1.25); }
+    .heat-cell-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
     .heat-res .heat-sev { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px; letter-spacing: 0.04em; flex-shrink: 0; }
     .heat-sev.crit { color: #ffb4be; background: var(--critical-soft); border: 1px solid var(--critical-edge); }
     .heat-sev.high { color: #ffc89a; background: var(--high-soft); border: 1px solid var(--high-edge); }
@@ -1973,7 +2075,20 @@ const htmlTemplate = `<!doctype html>
     .heat-note { color: var(--text-mut); font-size: 12px; margin-top: 8px; }
     .heat-note strong { color: var(--text); }
 
-    .modules-nav { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); position: sticky; top: 60px; z-index: 4; }
+    .modules-nav { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); position: sticky; top: 100px; z-index: 4; }
+    .findings-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 16px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+    .fl-active { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .fl-active[hidden] { display: none; }
+    .fl-chip { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,0.02); color: var(--text); cursor: pointer; }
+    .fl-chip-active { color: var(--accent); border-color: rgba(106,183,255,0.45); background: rgba(106,183,255,0.10); }
+    .fl-chip-active:hover { background: rgba(106,183,255,0.18); }
+    .fl-chip-key { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-mut); }
+    .fl-chip-active .fl-chip-key { color: var(--accent); opacity: 0.85; }
+    .fl-chip-val { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; word-break: break-all; }
+    .fl-chip-x { color: var(--text-dim); margin-left: 2px; font-size: 14px; line-height: 1; }
+    .fl-clear { font: inherit; font-size: 12px; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--text-mut); cursor: pointer; }
+    .fl-clear:hover { color: var(--text); border-color: var(--border-strong); }
+    .fl-clear[hidden] { display: none; }
     .modules-nav .mn-title { color: var(--text-mut); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.14em; padding: 6px 8px 6px 2px; border-right: 1px solid var(--border-soft); margin-right: 6px; align-self: center; }
     .module-link { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; color: var(--text); background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; font-size: 13px; }
     .module-link:hover { background: var(--surface-hover); border-color: var(--border-strong); }
@@ -2024,11 +2139,11 @@ const htmlTemplate = `<!doctype html>
     @media (max-width: 640px) {
       main { padding: 16px 16px 60px; }
       .topbar-inner { padding: 12px 16px; }
-      .modules-nav { top: 58px; }
+      .modules-nav { top: 96px; }
     }
   </style>
 </head>
-<body>
+<body data-active-tab="attack">
   <header class="topbar">
     <div class="topbar-inner">
       <div class="brand">
@@ -2042,10 +2157,15 @@ const htmlTemplate = `<!doctype html>
         {{ if .Snapshot.Metadata.SnapshotTimestamp }}<span>Snapshot <strong>{{ .Snapshot.Metadata.SnapshotTimestamp }}</strong></span>{{ end }}
       </div>
     </div>
+    <nav class="tabs" role="tablist" aria-label="Report sections">
+      <button type="button" class="tab" role="tab" id="tabbtn-attack" aria-controls="tab-attack" aria-selected="true" data-tab="attack">Attack paths</button>
+      <button type="button" class="tab" role="tab" id="tabbtn-overview" aria-controls="tab-overview" aria-selected="false" data-tab="overview">Risk overview</button>
+      <button type="button" class="tab" role="tab" id="tabbtn-findings" aria-controls="tab-findings" aria-selected="false" data-tab="findings">Findings <span class="tab-count">{{ .Summary.Total }}</span></button>
+    </nav>
   </header>
 
   <main>
-    <section class="hero">
+    <section class="hero" data-tab="overview">
       <div class="card soft">
         <div class="kicker">Executive summary</div>
         <h1>{{ .Headline }}</h1>
@@ -2096,7 +2216,7 @@ const htmlTemplate = `<!doctype html>
     </section>
 
     {{ if .Graph.Nodes }}
-    <section>
+    <section data-tab="attack">
       <div class="card kp-graph-card">
         <div class="card-hd">
           <div>
@@ -2145,8 +2265,8 @@ const htmlTemplate = `<!doctype html>
               </symbol>
             </defs>
             {{ range $i, $lane := .Graph.Lanes }}
-              <rect class="lane-pill" x="{{ sub $lane.X 6 }}" y="6" width="120" height="22" rx="11"/>
-              <text class="lane-hd" x="{{ $lane.X }}" y="22">{{ $lane.Label }}</text>
+              <rect class="lane-pill" x="{{ sub $lane.LabelX (div $lane.LabelW 2) }}" y="6" width="{{ $lane.LabelW }}" height="22" rx="11"/>
+              <text class="lane-hd" text-anchor="middle" x="{{ $lane.LabelX }}" y="22">{{ $lane.Label }}</text>
             {{ end }}
             <line x1="340" y1="36" x2="340" y2="{{ sub .Graph.Height 10 }}" stroke="#1a2134" stroke-dasharray="2 4"/>
             <line x1="700" y1="36" x2="700" y2="{{ sub .Graph.Height 10 }}" stroke="#1a2134" stroke-dasharray="2 4"/>
@@ -2161,7 +2281,7 @@ const htmlTemplate = `<!doctype html>
                         fill="#151c2c"
                         stroke="{{ if eq .SevClass "crit" }}#ff5568{{ else if eq .SevClass "high" }}#ff9a3c{{ else }}#6ab7ff{{ end }}"
                         stroke-opacity="0.55"/>
-                  <circle class="kp-sev-dot kp-sev-{{ .SevClass }}" cx="{{ add .X 12 }}" cy="{{ add .Y 14 }}" r="4"/>
+                  <circle class="kp-sev-dot kp-sev-{{ .SevClass }}" cx="{{ add .X 13 }}" cy="{{ add .Y 22 }}" r="4"/>
                   {{ range .Lines }}
                     <text class="{{ .Class }}" x="{{ add $node.X .OffsetX }}" y="{{ add $node.Y .OffsetY }}">{{ .Text }}</text>
                   {{ end }}
@@ -2172,7 +2292,7 @@ const htmlTemplate = `<!doctype html>
                         fill="#1a2338"
                         stroke="{{ if eq .SevClass "crit" }}#ff5568{{ else }}#ff9a3c{{ end }}"
                         stroke-opacity="0.55"/>
-                  <circle class="kp-sev-dot kp-sev-{{ .SevClass }}" cx="{{ add .X 11 }}" cy="{{ add .Y 13 }}" r="4"/>
+                  <circle class="kp-sev-dot kp-sev-{{ .SevClass }}" cx="{{ add .X 11 }}" cy="{{ add .Y 18 }}" r="4"/>
                   {{ range .Lines }}
                     <text class="{{ .Class }}" x="{{ add $node.X .OffsetX }}" y="{{ add $node.Y .OffsetY }}">{{ .Text }}</text>
                   {{ end }}
@@ -2205,12 +2325,11 @@ const htmlTemplate = `<!doctype html>
       </div>
 
       <script type="application/json" id="kp-graph-data">{{ .GraphJSON }}</script>
-      <script>{{ .GraphScript }}</script>
     </section>
     {{ end }}
 
     {{ if .Narratives }}
-    <section>
+    <section data-tab="attack">
       <div class="card-hd" style="margin-bottom: 10px">
         <div>
           <div class="kicker">Walkthroughs</div>
@@ -2223,11 +2342,11 @@ const htmlTemplate = `<!doctype html>
         <article class="narrative">
           <h3>{{ .Title }} <span class="badge-sev {{ sevClass .Severity }}">{{ .Severity }}</span></h3>
           <ol>
-            {{ range .Steps }}<li>{{ . }}</li>{{ end }}
+            {{ range .Steps }}<li>{{ .Text }}{{ if .Items }}<ul class="step-items">{{ range .Items }}<li>{{ . }}</li>{{ end }}</ul>{{ end }}</li>{{ end }}
           </ol>
           {{ if .RuleIDs }}
           <div class="chips">
-            {{ range .RuleIDs }}<span class="chip high">{{ . }}</span>{{ end }}
+            {{ range .RuleIDs }}<a class="chip high chip-link" href="#finding-{{ . }}" data-rule="{{ . }}">{{ . }}</a>{{ end }}
           </div>
           {{ end }}
         </article>
@@ -2236,7 +2355,7 @@ const htmlTemplate = `<!doctype html>
     </section>
     {{ end }}
 
-    <section>
+    <section data-tab="overview">
       <div class="two-col">
         <div class="card">
           <div class="card-hd">
@@ -2253,7 +2372,7 @@ const htmlTemplate = `<!doctype html>
           </div>
           <div class="dist-list">
             {{ range .Categories }}
-            <div class="dist-row">
+            <button type="button" class="dist-row dist-row-clickable" data-fl-target="category:{{ .CSSKey }}" aria-label="Show findings in category {{ .Label }}">
               <div class="dist-label">{{ .Label }}</div>
               <div class="dist-bar">
                 {{ if .Summary.Critical }}<div class="dist-seg crit" style="flex: {{ .Summary.Critical }}">{{ .Summary.Critical }}</div>{{ end }}
@@ -2262,7 +2381,7 @@ const htmlTemplate = `<!doctype html>
                 {{ if .Summary.Low }}<div class="dist-seg low" style="flex: {{ .Summary.Low }}">{{ .Summary.Low }}</div>{{ end }}
               </div>
               <div class="dist-count">{{ .Summary.Total }}</div>
-            </div>
+            </button>
             {{ end }}
           </div>
         </div>
@@ -2276,7 +2395,7 @@ const htmlTemplate = `<!doctype html>
           </div>
           <div class="dist-list">
             {{ range .Modules }}
-            <div class="dist-row">
+            <button type="button" class="dist-row dist-row-clickable" data-fl-target="module:{{ .ID }}" aria-label="Show {{ .Label }} findings">
               <div class="dist-label">{{ .Label }}</div>
               <div class="dist-bar">
                 {{ if .Summary.Critical }}<div class="dist-seg crit" style="flex: {{ .Summary.Critical }}">{{ .Summary.Critical }}</div>{{ end }}
@@ -2285,7 +2404,7 @@ const htmlTemplate = `<!doctype html>
                 {{ if .Summary.Low }}<div class="dist-seg low" style="flex: {{ .Summary.Low }}">{{ .Summary.Low }}</div>{{ end }}
               </div>
               <div class="dist-count">{{ .Summary.Total }}</div>
-            </div>
+            </button>
             {{ end }}
           </div>
         </div>
@@ -2293,7 +2412,7 @@ const htmlTemplate = `<!doctype html>
     </section>
 
     {{ if .HeatRows }}
-    <section>
+    <section data-tab="overview">
       <div class="card">
         <div class="card-hd">
           <div>
@@ -2306,9 +2425,9 @@ const htmlTemplate = `<!doctype html>
           <div class="heat-hd res">Resource</div>
           {{ range .HeatCats }}<div class="heat-hd">{{ .Label }}</div>{{ end }}
           {{ range .HeatRows }}
-            <div class="heat-res"><span class="heat-sev {{ .SevClass }}">{{ .SevLabel }}</span>{{ .Label }}</div>
+            <button type="button" class="heat-res heat-res-clickable" data-fl-target="resource:{{ .Label }}" aria-label="Show findings on {{ .Label }}"><span class="heat-sev {{ .SevClass }}">{{ .SevLabel }}</span>{{ .Label }}</button>
             {{ range .Cells }}
-              <div class="heat-cell {{ .CatClass }} n{{ .Level }}"><span>{{ .Count }}</span></div>
+              {{ if .Count }}<button type="button" class="heat-cell heat-cell-clickable {{ .CatClass }} n{{ .Level }}" data-fl-target="resource:{{ .Resource }}|category:{{ .CatClass }}" aria-label="Show {{ .Count }} findings"><span>{{ .Count }}</span></button>{{ else }}<div class="heat-cell {{ .CatClass }} n{{ .Level }}"><span>{{ .Count }}</span></div>{{ end }}
             {{ end }}
           {{ end }}
         </div>
@@ -2317,7 +2436,7 @@ const htmlTemplate = `<!doctype html>
     {{ end }}
 
     {{ if .Snapshot.Metadata.CollectionWarnings }}
-    <section>
+    <section data-tab="overview">
       <div class="card">
         <div class="card-hd"><div><div class="kicker">Collection notes</div><h2>Signal gaps in this scan</h2></div></div>
         <ul class="notes">
@@ -2328,20 +2447,26 @@ const htmlTemplate = `<!doctype html>
     {{ end }}
 
     {{ if .Modules }}
-    <nav class="modules-nav" aria-label="Module navigation">
+    <div class="findings-filters" data-tab="findings" role="toolbar" aria-label="Filter findings" hidden>
+      <span class="kp-filters-label">Filter</span>
+      <div class="fl-active" id="fl-active" hidden></div>
+      <button type="button" class="fl-clear" id="fl-clear" hidden>Clear filters</button>
+    </div>
+    <nav class="modules-nav" data-tab="findings" aria-label="Module navigation">
       <div class="mn-title">Jump to module</div>
       {{ range .Modules }}<a class="module-link" href="#{{ .ID }}">{{ .Label }} <span class="mn-count">{{ .Summary.Total }}</span></a>{{ end }}
     </nav>
 
     {{ range .Modules }}
-    <section class="module-section" id="{{ .ID }}">
+    <section class="module-section" data-tab="findings" data-module="{{ .ID }}" id="{{ .ID }}">
       <div class="module-hd">
         <h2>{{ .Label }}</h2>
         <span class="mh-count">{{ .Summary.Total }} {{ pluralize .Summary.Total "finding" "findings" }} · {{ .Summary.Critical }} critical · {{ .Summary.High }} high · {{ .Summary.Medium }} medium · {{ .Summary.Low }} low</span>
       </div>
       <div class="finding-list">
         {{ range .Findings }}
-        <article class="finding {{ sevClass .Severity }}">
+        {{ $anchor := index $.AnchorByID .ID }}
+        <article class="finding {{ sevClass .Severity }}"{{ if $anchor }} id="{{ $anchor }}"{{ end }} data-rule="{{ .RuleID }}" data-severity="{{ sevClass .Severity }}" data-category="{{ catKey .Category }}"{{ if .Resource }} data-resource="{{ resource .Resource }}"{{ end }}>
           <div class="finding-hd">
             <h3>{{ .Title }}</h3>
             <span class="badge-sev {{ sevClass .Severity }}">{{ sevShort .Severity }}</span>
@@ -2378,5 +2503,6 @@ const htmlTemplate = `<!doctype html>
 
     <p class="footer">Kubesplaining · {{ if .Snapshot.Metadata.KubesplainingVersion }}{{ .Snapshot.Metadata.KubesplainingVersion }} · {{ end }}{{ .Summary.Total }} findings · {{ len .Modules }} modules</p>
   </main>
+  <script>{{ .GraphScript }}</script>
 </body>
 </html>`

