@@ -24,6 +24,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 		outputFormats        []string
 		severityThreshold    string
 		exclusionsFile       string
+		exclusionsPreset     string
 		namespaces           []string
 		excludeNamespaces    []string
 		includeManagedFields bool
@@ -60,14 +61,11 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 				return err
 			}
 
-			excludedCount := 0
-			if exclusionsFile != "" {
-				cfg, err := exclusions.Load(exclusionsFile)
-				if err != nil {
-					return err
-				}
-				findings, excludedCount = exclusions.Apply(cfg, findings)
+			cfg, err := loadExclusions(exclusionsPreset, exclusionsFile)
+			if err != nil {
+				return err
 			}
+			findings, _ = exclusions.Apply(cfg, findings)
 
 			if outputDir == "" {
 				outputDir = filepath.Join(".", "kubesplaining-report")
@@ -88,11 +86,6 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 				summary.Total, summary.Critical, summary.High, summary.Medium, summary.Low, summary.Info); err != nil {
 				return err
 			}
-			if exclusionsFile != "" {
-				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "excluded findings: %d\n", excludedCount); err != nil {
-					return err
-				}
-			}
 
 			if ciMode {
 				if summary.Critical > ciMaxCritical {
@@ -112,7 +105,8 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 	cmd.Flags().StringVar(&outputDir, "output-dir", filepath.Join(".", "kubesplaining-report"), "Directory for report output")
 	cmd.Flags().StringSliceVar(&outputFormats, "output-format", []string{"html", "json"}, "Output formats: html,json,csv,sarif")
 	cmd.Flags().StringVar(&severityThreshold, "severity-threshold", "low", "Minimum severity to include: critical,high,medium,low,info")
-	cmd.Flags().StringVar(&exclusionsFile, "exclusions-file", "", "Path to an exclusions YAML file")
+	cmd.Flags().StringVar(&exclusionsFile, "exclusions-file", "", "Path to a user-supplied exclusions YAML file (merged on top of --exclusions-preset)")
+	cmd.Flags().StringVar(&exclusionsPreset, "exclusions-preset", "standard", "Built-in exclusions preset: standard|minimal|strict|none")
 	cmd.Flags().StringSliceVar(&namespaces, "namespaces", nil, "Namespaces to include during live collection")
 	cmd.Flags().StringSliceVar(&excludeNamespaces, "exclude-namespaces", nil, "Namespaces to exclude during live collection")
 	cmd.Flags().BoolVar(&includeManagedFields, "include-managed-fields", false, "Include managedFields in live-collected resources")

@@ -87,6 +87,25 @@ func matchesGlobal(cfg GlobalConfig, finding models.Finding) (string, bool) {
 		}
 	}
 
+	if finding.Subject != nil {
+		for _, subject := range cfg.ExcludeSubjects {
+			if subject.Kind != "" && subject.Kind != finding.Subject.Kind {
+				continue
+			}
+			if subject.Name != "" && !matchesPattern(subject.Name, finding.Subject.Name) {
+				continue
+			}
+			if subject.Namespace != "" && !matchesPattern(subject.Namespace, finding.Subject.Namespace) {
+				continue
+			}
+			reason := subject.Reason
+			if reason == "" {
+				reason = "matched global.exclude_subjects"
+			}
+			return reason, true
+		}
+	}
+
 	if finding.Resource != nil && finding.Resource.Kind == "RBACRule" && matchesAny(cfg.ExcludeClusterRoles, finding.Resource.Name) {
 		return "matched global.exclude_cluster_roles", true
 	}

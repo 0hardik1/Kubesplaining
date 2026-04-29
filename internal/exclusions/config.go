@@ -1,6 +1,8 @@
-// Package exclusions loads user-supplied YAML rules that mute specific findings (system namespaces, expected
-// workloads, etc.) and applies them to analyzer output. A Finding is never dropped; it is annotated with
-// Excluded=true and an ExclusionReason so the report can still show suppressed items.
+// Package exclusions loads YAML rules that mute specific findings (system namespaces, expected workloads, etc.)
+// and applies them to analyzer output. The standard preset is auto-applied by the scan/scan-resource/report
+// commands so built-in Kubernetes noise (kube-system, system:*, kubeadm:*) is suppressed by default; the user
+// can opt out with --exclusions-preset=none. Apply drops matched findings from the slice (the Excluded field
+// on Finding is reserved for future audit-mode rendering, not used today).
 package exclusions
 
 import (
@@ -24,10 +26,11 @@ type Config struct {
 
 // GlobalConfig holds exclusions that apply across all modules (namespaces, specific subjects, specific rule IDs).
 type GlobalConfig struct {
-	ExcludeNamespaces      []string `yaml:"exclude_namespaces,omitempty"`
-	ExcludeServiceAccounts []string `yaml:"exclude_service_accounts,omitempty"` // "ns:name" patterns, wildcards allowed
-	ExcludeClusterRoles    []string `yaml:"exclude_cluster_roles,omitempty"`
-	ExcludeFindingIDs      []string `yaml:"exclude_finding_ids,omitempty"`
+	ExcludeNamespaces      []string           `yaml:"exclude_namespaces,omitempty"`
+	ExcludeServiceAccounts []string           `yaml:"exclude_service_accounts,omitempty"` // "ns:name" patterns, wildcards allowed
+	ExcludeClusterRoles    []string           `yaml:"exclude_cluster_roles,omitempty"`
+	ExcludeFindingIDs      []string           `yaml:"exclude_finding_ids,omitempty"`
+	ExcludeSubjects        []SubjectExclusion `yaml:"exclude_subjects,omitempty"` // matches Subject Kind/Name/Namespace patterns regardless of module
 }
 
 // RBACConfig scopes subject-level RBAC exclusions.
@@ -103,7 +106,10 @@ func Write(path string, cfg Config) error {
 	return nil
 }
 
-// Preset returns one of the built-in exclusion profiles: "standard" (default), "minimal", or "strict" (no exclusions).
+// Preset returns one of the built-in exclusion profiles. "standard" (default) suppresses built-in
+// Kubernetes noise — kube-system / system:* / kubeadm:* — and is auto-applied by scan/scan-resource/report
+// unless the user passes --exclusions-preset=none (or its alias "strict") to opt out. "minimal" only filters
+// the most obvious system noise; "none" / "strict" return an empty config so every finding surfaces.
 func Preset(name string) (Config, error) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "", "standard":
@@ -111,7 +117,13 @@ func Preset(name string) (Config, error) {
 			Global: GlobalConfig{
 				ExcludeNamespaces:      []string{"kube-system", "kube-public", "kube-node-lease", "gatekeeper-system"},
 				ExcludeServiceAccounts: []string{"system:*", "kube-system:*"},
-				ExcludeClusterRoles:    []string{"system:*"},
+				ExcludeClusterRoles:    []string{"system:*", "kubeadm:*"},
+				ExcludeSubjects: []SubjectExclusion{
+					{Kind: "Group", Name: "system:*", Reason: "Built-in Kubernetes group"},
+					{Kind: "User", Name: "system:*", Reason: "Built-in Kubernetes user"},
+					{Kind: "Group", Name: "kubeadm:*", Reason: "Built-in kubeadm group"},
+					{Kind: "User", Name: "kubeadm:*", Reason: "Built-in kubeadm user"},
+				},
 			},
 			PodSecurity: PodSecurityConfig{
 				ExcludeChecks: []CheckExclusion{
@@ -119,7 +131,7 @@ func Preset(name string) (Config, error) {
 				},
 			},
 			NetworkPolicy: NetworkPolicyConfig{
-				ExcludeNamespaces: []string{"kube-system"},
+				ExcludeNamespaces: []string{"kube-system", "kube-public", "kube-node-lease"},
 			},
 		}, nil
 	case "minimal":
@@ -130,11 +142,53 @@ func Preset(name string) (Config, error) {
 				ExcludeClusterRoles:    []string{"system:*"},
 			},
 		}, nil
-	case "strict":
+	case "strict", "none":
 		return Config{}, nil
 	default:
 		return Config{}, fmt.Errorf("unsupported exclusions preset %q", name)
 	}
+}
+
+// Merge returns the union of base and overlay: each slice field is concatenated with base entries first,
+// and string-slice fields are deduplicated by exact match. Struct slices (subject/workload/check exclusions)
+// are concatenated as-is — duplicates are harmless because the matcher returns on first match. Used to layer
+// a user-supplied --exclusions-file on top of the built-in --exclusions-preset.
+func Merge(base, overlay Config) Config {
+	return Config{
+		Global: GlobalConfig{
+			ExcludeNamespaces:      mergeStrings(base.Global.ExcludeNamespaces, overlay.Global.ExcludeNamespaces),
+			ExcludeServiceAccounts: mergeStrings(base.Global.ExcludeServiceAccounts, overlay.Global.ExcludeServiceAccounts),
+			ExcludeClusterRoles:    mergeStrings(base.Global.ExcludeClusterRoles, overlay.Global.ExcludeClusterRoles),
+			ExcludeFindingIDs:      mergeStrings(base.Global.ExcludeFindingIDs, overlay.Global.ExcludeFindingIDs),
+			ExcludeSubjects:        append(append([]SubjectExclusion{}, base.Global.ExcludeSubjects...), overlay.Global.ExcludeSubjects...),
+		},
+		RBAC: RBACConfig{
+			ExcludeSubjects: append(append([]SubjectExclusion{}, base.RBAC.ExcludeSubjects...), overlay.RBAC.ExcludeSubjects...),
+		},
+		PodSecurity: PodSecurityConfig{
+			ExcludeWorkloads: append(append([]WorkloadExclusion{}, base.PodSecurity.ExcludeWorkloads...), overlay.PodSecurity.ExcludeWorkloads...),
+			ExcludeChecks:    append(append([]CheckExclusion{}, base.PodSecurity.ExcludeChecks...), overlay.PodSecurity.ExcludeChecks...),
+		},
+		NetworkPolicy: NetworkPolicyConfig{
+			ExcludeNamespaces: mergeStrings(base.NetworkPolicy.ExcludeNamespaces, overlay.NetworkPolicy.ExcludeNamespaces),
+		},
+	}
+}
+
+// mergeStrings concatenates base and overlay, preserving order and dropping exact-match duplicates.
+func mergeStrings(base, overlay []string) []string {
+	out := make([]string, 0, len(base)+len(overlay))
+	seen := make(map[string]struct{}, len(base)+len(overlay))
+	for _, src := range [][]string{base, overlay} {
+		for _, s := range src {
+			if _, dup := seen[s]; dup {
+				continue
+			}
+			seen[s] = struct{}{}
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // EnrichFromSnapshot reads a snapshot and auto-adds any kube-*/-system namespaces to ExcludeNamespaces so a preset can adapt to the target cluster.
