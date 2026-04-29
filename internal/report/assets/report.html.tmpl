@@ -39,7 +39,7 @@
        overrides further down may bump this up but should not dim it. Block-level <pre><code>
        overrides this back to transparent (see .kp-cmd pre code, etc.). */
     code { background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.06);
-           padding: 1px 4px; border-radius: 4px; }
+           padding: 1px 2px; border-radius: 4px; }
     pre { margin: 0; background: #0b1120; color: #c1cde3; border: 1px solid var(--border-soft);
           border-radius: 10px; padding: 12px 14px; overflow-x: auto; line-height: 1.6; }
     pre code { background: transparent; border: 0; padding: 0; }
@@ -94,12 +94,12 @@
     .hero { display: grid; grid-template-columns: 1.6fr 1fr; gap: 16px; }
     .hero .cluster-line { color: var(--text-mut); font-size: 13.5px; margin: 10px 0 0; }
     .hero .cluster-line strong { color: var(--text); font-weight: 500; }
-    .hero .cluster-line code { color: var(--accent); background: rgba(106,183,255,0.08); padding: 2px 6px; border-radius: 6px; }
+    .hero .cluster-line code { color: var(--accent); background: rgba(106,183,255,0.08); padding: 2px 4px; border-radius: 6px; }
     .tldr { margin-top: 14px; font-size: 15.5px; line-height: 1.62; color: var(--text-mut);
       padding: 14px 16px; border-left: 2px solid var(--critical);
       background: linear-gradient(90deg, var(--critical-soft), transparent 80%); border-radius: 0 10px 10px 0; }
     .tldr strong { color: var(--text); font-weight: 600; }
-    .tldr code { color: #ffdbe0; background: rgba(255,85,104,0.12); padding: 1px 4px; border-radius: 4px; }
+    .tldr code { color: #ffdbe0; background: rgba(255,85,104,0.12); padding: 1px 2px; border-radius: 4px; }
 
     .sev-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 16px; }
     .sev-tile { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px 12px 22px;
@@ -134,7 +134,7 @@
     .graph-intro .kp-hint { display: inline-block; margin-left: 4px; color: var(--accent); font-size: 12.5px; }
     .graph-truncated-notice { color: var(--text-mut); font-size: 12.5px; flex: 1 1 360px; min-width: 280px; padding: 8px 12px; background: rgba(255,154,60,0.06); border-left: 2px solid rgba(255,154,60,0.55); border-radius: 4px; line-height: 1.5; }
     .graph-truncated-notice strong { color: var(--text); }
-    .graph-truncated-badge { display: inline-block; font-weight: 600; color: var(--text); margin-right: 6px; padding: 1px 4px; background: rgba(255,154,60,0.18); border-radius: 3px; font-size: 11.5px; letter-spacing: 0.02em; }
+    .graph-truncated-badge { display: inline-block; font-weight: 600; color: var(--text); margin-right: 6px; padding: 1px 2px; background: rgba(255,154,60,0.18); border-radius: 3px; font-size: 11.5px; letter-spacing: 0.02em; }
     .graph-wrap { margin-top: 10px; overflow-x: auto; }
     .kp-graph-card { position: relative; }
     .attack-svg { width: 100%; min-width: 1080px; height: auto; display: block; }
@@ -212,7 +212,7 @@
     .kp-prose { color: var(--text); font-size: 13.5px; line-height: 1.6; margin: 0; }
     .kp-prose p { margin: 0 0 8px; }
     .kp-prose p:last-child { margin-bottom: 0; }
-    .kp-prose code { background: rgba(255,255,255,0.10); padding: 1px 4px; border-radius: 4px; font-size: 12.5px; }
+    .kp-prose code { background: rgba(255,255,255,0.10); padding: 1px 2px; border-radius: 4px; font-size: 12.5px; }
     .kp-prose strong { color: var(--text); }
     .kp-prose em { color: #ffdbe0; font-style: normal; }
     .kp-prose ul, .kp-prose ol { margin: 6px 0 0; padding-left: 20px; }
@@ -230,7 +230,7 @@
     .kp-step-note { color: var(--text); font-size: 12.5px; margin: 8px 2px; line-height: 1.55; }
     .kp-fix { background: rgba(106,183,255,0.05); border: 1px solid rgba(106,183,255,0.18); border-radius: 10px; padding: 10px 12px; margin-top: 16px; }
     .kp-fix h4 { color: var(--accent); margin-bottom: 4px; }
-    .kp-fix .kp-prose code { background: rgba(255,255,255,0.10); padding: 1px 4px; border-radius: 4px; font-size: 12px; }
+    .kp-fix .kp-prose code { background: rgba(255,255,255,0.10); padding: 1px 2px; border-radius: 4px; font-size: 12px; }
     .kp-refs { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--text-mut); }
     .kp-refs li { margin: 3px 0; }
     .kp-refs a { word-break: break-all; }
@@ -259,10 +259,10 @@
     .kp-tt-body { font-size: 12px; color: var(--text-mut); margin-top: 4px; line-height: 1.5; }
     .kp-tt-prose { margin-top: 4px; }
     .kp-tt-prose p { margin: 0 0 4px; }
-    .kp-tt-prose code { background: rgba(255,255,255,0.10); padding: 1px 4px; border-radius: 4px; }
+    .kp-tt-prose code { background: rgba(255,255,255,0.10); padding: 1px 2px; border-radius: 4px; }
     .kp-tt-sub { color: var(--text-dim); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11px; word-break: break-all; margin-bottom: 4px; }
     .kp-tt-why { margin-top: 5px; color: var(--text-mut); }
-    .kp-tt-tag { display: inline-block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; padding: 1px 4px; margin-right: 5px; border-radius: 999px; background: rgba(106,183,255,0.12); color: var(--accent); border: 1px solid rgba(106,183,255,0.25); vertical-align: middle; }
+    .kp-tt-tag { display: inline-block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; padding: 1px 2px; margin-right: 5px; border-radius: 999px; background: rgba(106,183,255,0.12); color: var(--accent); border: 1px solid rgba(106,183,255,0.25); vertical-align: middle; }
     .kp-tt-hint { margin-top: 6px; color: var(--accent); font-size: 11px; opacity: 0.8; }
 
     @media (max-width: 1180px) {
@@ -339,7 +339,7 @@
     .heat-cell-clickable { cursor: pointer; border-left: 0; border-right: 0; border-bottom: 0; transition: filter 0.15s ease, transform 0.1s ease; font: inherit; padding: 0; }
     .heat-cell-clickable:hover { filter: brightness(1.25); }
     .heat-cell-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-    .heat-res .heat-sev { font-size: 10px; font-weight: 700; padding: 1px 4px; border-radius: 4px; letter-spacing: 0.04em; flex-shrink: 0; }
+    .heat-res .heat-sev { font-size: 10px; font-weight: 700; padding: 1px 2px; border-radius: 4px; letter-spacing: 0.04em; flex-shrink: 0; }
     .heat-sev.crit { color: #ffb4be; background: var(--critical-soft); border: 1px solid var(--critical-edge); }
     .heat-sev.high { color: #ffc89a; background: var(--high-soft); border: 1px solid var(--high-edge); }
     .heat-sev.med  { color: #ffe9a1; background: var(--medium-soft); border: 1px solid var(--medium-edge); }
@@ -463,7 +463,7 @@
     .rule-group.low  { border-left-color: var(--low); border-color: var(--border-soft); }
     .rule-hd { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; }
     .rule-hd .rule-title { flex: 1 1 320px; font-size: 16.5px; line-height: 1.35; letter-spacing: -0.01em; }
-    .rule-hd .rule-title code { background: rgba(255,255,255,0.10); padding: 1px 4px; border-radius: 4px; font-size: 12.5px; }
+    .rule-hd .rule-title code { background: rgba(255,255,255,0.10); padding: 1px 2px; border-radius: 4px; font-size: 12.5px; }
     .rule-meta-pills { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
     .rule-group .rule { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11px; color: var(--text-mut); padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; background: rgba(255,255,255,0.02); letter-spacing: 0.02em; }
     .rule-group .score-lbl { font-size: 12px; color: var(--text-mut); }
@@ -491,7 +491,7 @@
     .instance.finding > .instance-hd:hover { background: rgba(255,255,255,0.025); }
     .instance.finding > .instance-hd:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 10px; }
     .instance-title { flex: 1 1 240px; min-width: 0; font-size: 13.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
-    .instance-title code { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 12.5px; background: rgba(255,255,255,0.10); padding: 1px 4px; border-radius: 4px; color: var(--text); }
+    .instance-title code { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 12.5px; background: rgba(255,255,255,0.10); padding: 1px 2px; border-radius: 4px; color: var(--text); }
     .instance-scope { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-mut); padding: 2px 7px; border: 1px solid var(--border-soft); border-radius: 999px; background: rgba(255,255,255,0.02); }
     .instance-score { font-size: 12px; color: var(--text-mut); font-variant-numeric: tabular-nums; }
     .instance-body { padding: 4px 16px 14px; border-top: 1px solid var(--border-soft); }
@@ -511,10 +511,10 @@
     .finding .scope-chip.workload { color: #a89cf6; border-color: rgba(168,156,246,0.4); background: rgba(168,156,246,0.08); }
     .finding .scope-chip.object { color: #88d49f; border-color: rgba(136,212,159,0.4); background: rgba(136,212,159,0.08); }
     .finding .scope-detail { color: var(--text); font-size: 13px; font-weight: 500; }
-    .finding .scope-detail code { background: rgba(255,255,255,0.10); padding: 1px 4px; border-radius: 4px; font-size: 12px; }
+    .finding .scope-detail code { background: rgba(255,255,255,0.10); padding: 1px 2px; border-radius: 4px; font-size: 12px; }
     .finding .meta { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 10px 0; color: var(--text-mut); font-size: 12.5px; }
     .finding .meta .k { color: var(--text-dim); }
-    .finding .meta code { background: rgba(255,255,255,0.10); padding: 1px 4px; border-radius: 4px; color: var(--text); }
+    .finding .meta code { background: rgba(255,255,255,0.10); padding: 1px 2px; border-radius: 4px; color: var(--text); }
     .finding .desc { margin: 6px 0 12px; color: #cfd6e5; font-size: 14px; line-height: 1.58; }
     .finding .desc p { margin-bottom: 8px; }
     .finding .desc p:last-child { margin-bottom: 0; }
@@ -536,12 +536,12 @@
     .finding .education .edu-cards { display: grid; gap: 8px; }
     .finding .education .edu-card { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: rgba(255,255,255,0.02); }
     .finding .education .edu-hd { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin-bottom: 4px; }
-    .finding .education .edu-label { font-size: 10.5px; color: var(--text-dim); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; padding: 1px 4px; border: 1px solid var(--border); border-radius: 999px; background: rgba(255,255,255,0.03); }
+    .finding .education .edu-label { font-size: 10.5px; color: var(--text-dim); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; padding: 1px 2px; border: 1px solid var(--border); border-radius: 999px; background: rgba(255,255,255,0.03); }
     .finding .education .edu-title { color: var(--text); font-weight: 600; font-size: 13px; }
     .finding .education .edu-body { color: var(--text-mut); font-size: 12.5px; line-height: 1.55; }
     .finding .education .edu-body p { margin: 0 0 6px; }
     .finding .education .edu-body p:last-child { margin-bottom: 0; }
-    .finding .education .edu-body code { background: rgba(255,255,255,0.10); padding: 1px 4px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--text); }
+    .finding .education .edu-body code { background: rgba(255,255,255,0.10); padding: 1px 2px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--text); }
     .finding .education .edu-body strong { color: var(--text); font-weight: 600; }
     .finding .education .edu-body em { color: var(--text); font-style: italic; }
     .finding .education .edu-body ul { margin: 4px 0 6px; padding-left: 18px; }
@@ -554,11 +554,11 @@
     .finding .rem ol { margin: 0; padding-left: 20px; color: var(--text); font-size: 13px; line-height: 1.6; }
     .finding .rem ol li { margin-bottom: 4px; }
     .finding .rem ol li:last-child { margin-bottom: 0; }
-    .finding .rem code { background: rgba(255,255,255,0.10); padding: 1px 4px; border-radius: 4px; font-size: 12px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; }
+    .finding .rem code { background: rgba(255,255,255,0.10); padding: 1px 2px; border-radius: 4px; font-size: 12px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; }
     .finding details.refs { margin-top: 10px; font-size: 13px; color: var(--text-mut); }
     .finding details.refs summary { cursor: pointer; user-select: none; font-size: 12px; color: var(--text-mut); padding: 6px 10px; border: 1px dashed var(--border); border-radius: 8px; display: inline-flex; align-items: center; gap: 6px; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; }
     .finding details.refs[open] summary { color: var(--accent); border-color: var(--border-strong); border-style: solid; }
-    .finding details.refs summary .ref-count { font-size: 10.5px; color: var(--text-dim); background: rgba(255,255,255,0.06); padding: 1px 4px; border-radius: 999px; letter-spacing: 0; text-transform: none; font-weight: 600; }
+    .finding details.refs summary .ref-count { font-size: 10.5px; color: var(--text-dim); background: rgba(255,255,255,0.06); padding: 1px 2px; border-radius: 999px; letter-spacing: 0; text-transform: none; font-weight: 600; }
     .finding details.refs[open] summary .ref-count { color: var(--accent); background: rgba(106,183,255,0.12); }
     .finding details.refs a { word-break: break-all; }
     .finding details.refs ul { list-style: none; padding-left: 0; margin: 8px 0 0; display: grid; gap: 4px; }
@@ -610,14 +610,14 @@
     .finding .scenario .step-explainer { margin: 4px 0 8px; color: var(--text-mut); font-size: 12.5px; line-height: 1.55; }
     .finding .scenario .step-explainer p { margin: 0 0 6px; }
     .finding .scenario .step-explainer p:last-child { margin-bottom: 0; }
-    .finding .scenario .step-explainer code { background: rgba(255,255,255,0.10); padding: 1px 4px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--text); }
+    .finding .scenario .step-explainer code { background: rgba(255,255,255,0.10); padding: 1px 2px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--text); }
     .finding .scenario .step-explainer strong { color: var(--text); font-weight: 600; }
     .finding .scenario .step-explainer em { color: var(--text); font-style: italic; }
     .finding .scenario .step-edge { color: var(--text-mut); margin-bottom: 4px; font-size: 13px; }
-    .finding .scenario .step-edge code { background: rgba(255,255,255,0.10); padding: 1px 4px; border-radius: 4px; font-size: 11.5px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; color: var(--text); }
+    .finding .scenario .step-edge code { background: rgba(255,255,255,0.10); padding: 1px 2px; border-radius: 4px; font-size: 11.5px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; color: var(--text); }
     .finding .scenario .step-meta { font-size: 12.5px; color: var(--text-mut); margin-top: 2px; }
     .finding .scenario .step-meta .k { display: inline; color: var(--text-dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 6px; }
-    .finding .scenario .step-meta code { background: rgba(255,255,255,0.10); padding: 1px 4px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; }
+    .finding .scenario .step-meta code { background: rgba(255,255,255,0.10); padding: 1px 2px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; }
 
     /* Humanized Evidence section */
     .finding .evidence { margin-top: 12px; padding: 10px 12px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 10px; }
@@ -629,15 +629,15 @@
     .finding .ev-key { color: var(--text-dim); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; white-space: nowrap; }
     .finding .ev-val { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-width: 0; }
     .finding .ev-val.ev-stack { flex-direction: column; align-items: stretch; gap: 6px; }
-    .finding .ev-val code { background: rgba(255,255,255,0.10); padding: 1px 4px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--text); word-break: break-all; }
+    .finding .ev-val code { background: rgba(255,255,255,0.10); padding: 1px 2px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--text); word-break: break-all; }
     .finding .ev-chip { display: inline-flex; padding: 1px 7px; border: 1px solid var(--border); border-radius: 6px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11px; color: var(--text); background: rgba(255,255,255,0.03); }
     .finding .ev-chip.danger { border-color: rgba(255,154,60,0.5); color: #ffb060; background: rgba(255,154,60,0.08); }
     .finding .ev-chip.wild { border-color: rgba(255,90,90,0.5); color: #ff7777; background: rgba(255,90,90,0.1); font-weight: 700; }
     .finding .ev-hints { grid-column: 2; display: grid; gap: 1px; margin-top: 2px; }
     .finding .ev-hint { font-size: 11.5px; color: var(--text-mut); padding-left: 0; }
-    .finding .ev-hint code { background: rgba(255,255,255,0.10); padding: 1px 4px; border-radius: 4px; font-size: 11px; }
+    .finding .ev-hint code { background: rgba(255,255,255,0.10); padding: 1px 2px; border-radius: 4px; font-size: 11px; }
     .finding .ev-sentence { font-size: 12.5px; color: var(--text); }
-    .finding .ev-sentence code { background: rgba(255,255,255,0.10); padding: 1px 4px; border-radius: 4px; font-size: 11px; }
+    .finding .ev-sentence code { background: rgba(255,255,255,0.10); padding: 1px 2px; border-radius: 4px; font-size: 11px; }
     .finding .ev-rule { padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,255,255,0.02); display: grid; gap: 3px; }
     .finding .ev-rule-head { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 12.5px; color: var(--text); }
     .finding .ev-rule-meta { font-size: 11.5px; color: var(--text-mut); }
