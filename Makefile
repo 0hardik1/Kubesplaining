@@ -39,6 +39,9 @@ scan: build
 
 delete:
 	kind delete cluster --name $(KIND_CLUSTER_NAME)
+	@if [ -f "$(HOME)/.kube/config" ]; then \
+		KUBECONFIG="$(HOME)/.kube/config" kind delete cluster --name $(KIND_CLUSTER_NAME) >/dev/null 2>&1 || true; \
+	fi
 
 clean:
 	rm -rf ./bin ./kubesplaining-report ./.tmp

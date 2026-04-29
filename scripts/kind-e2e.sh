@@ -5,7 +5,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-kubesplaining-e2e}"
 KUBECONFIG_PATH="${KUBECONFIG:-${ROOT_DIR}/.tmp/kubeconfig}"
-KEEP_CLUSTER="${KEEP_CLUSTER:-0}"
+KEEP_CLUSTER="${KEEP_CLUSTER:-1}"
+USER_KUBECONFIG="${USER_KUBECONFIG:-${HOME}/.kube/config}"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -29,12 +30,20 @@ mkdir -p "${ROOT_DIR}/.tmp"
 cleanup() {
   if [[ "${KEEP_CLUSTER}" != "1" ]]; then
     kind delete cluster --name "${KIND_CLUSTER_NAME}" >/dev/null 2>&1 || true
+    if [[ -f "${USER_KUBECONFIG}" ]]; then
+      KUBECONFIG="${USER_KUBECONFIG}" kind delete cluster --name "${KIND_CLUSTER_NAME}" >/dev/null 2>&1 || true
+    fi
   fi
 }
 
 trap cleanup EXIT
 
+# Always start fresh: tear down any prior cluster of the same name, including
+# the stale entry in the user's default kubeconfig from a previous run.
 kind delete cluster --name "${KIND_CLUSTER_NAME}" >/dev/null 2>&1 || true
+if [[ -f "${USER_KUBECONFIG}" ]]; then
+  KUBECONFIG="${USER_KUBECONFIG}" kind delete cluster --name "${KIND_CLUSTER_NAME}" >/dev/null 2>&1 || true
+fi
 kind create cluster --name "${KIND_CLUSTER_NAME}" --kubeconfig "${KUBECONFIG_PATH}" --wait 90s
 
 kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f "${ROOT_DIR}/testdata/e2e/vulnerable.yaml"
@@ -95,5 +104,14 @@ if (( ${#missing[@]} > 0 )); then
   exit 1
 fi
 echo "all ${#EXPECTED_RULES[@]} expected rule IDs present"
+
+if [[ "${KEEP_CLUSTER}" == "1" ]]; then
+  mkdir -p "$(dirname "${USER_KUBECONFIG}")"
+  touch "${USER_KUBECONFIG}"
+  KUBECONFIG="${USER_KUBECONFIG}" kind export kubeconfig --name "${KIND_CLUSTER_NAME}" >/dev/null
+  echo "kubectl context set to kind-${KIND_CLUSTER_NAME} in ${USER_KUBECONFIG}"
+  echo "  try: kubectl get pods -A"
+  echo "  to remove: make delete"
+fi
 
 echo "kind e2e completed successfully"
