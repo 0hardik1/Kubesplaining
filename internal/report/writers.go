@@ -167,6 +167,33 @@ func writeHTML(path string, snapshot models.Snapshot, findings []models.Finding)
 			}
 			return fmt.Sprintf("%s/%s/%s", resource.Kind, resource.Namespace, resource.Name)
 		},
+		// subjectCode / resourceCode emit a <code> wrapper annotated with data-glossary-key
+		// when the Kind has a Glossary entry. The JS layer reuses the existing .kp-tooltip
+		// element to pop the entry on hover. Falls back to a plain <code> when no glossary
+		// match exists, so unknown kinds keep their inline-code styling without becoming
+		// "hoverable for nothing."
+		"subjectCode": func(s *models.SubjectRef) template.HTML {
+			if s == nil {
+				return template.HTML("<code>-</code>")
+			}
+			label := template.HTMLEscapeString(subjectDisplay(s))
+			if key := GlossaryKeyForSubject(s); key != "" {
+				return template.HTML(`<code class="gloss" data-glossary-key="` +
+					template.HTMLEscapeString(key) + `">` + label + `</code>`)
+			}
+			return template.HTML("<code>" + label + "</code>")
+		},
+		"resourceCode": func(r *models.ResourceRef) template.HTML {
+			if r == nil {
+				return template.HTML("<code>-</code>")
+			}
+			label := template.HTMLEscapeString(resourceDisplay(r))
+			if key := GlossaryKeyForResource(r); key != "" {
+				return template.HTML(`<code class="gloss" data-glossary-key="` +
+					template.HTMLEscapeString(key) + `">` + label + `</code>`)
+			}
+			return template.HTML("<code>" + label + "</code>")
+		},
 		"json": func(raw json.RawMessage) string {
 			if len(raw) == 0 {
 				return ""

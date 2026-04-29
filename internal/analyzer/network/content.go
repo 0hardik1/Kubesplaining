@@ -99,7 +99,7 @@ func contentNetpolWeakness002(namespace, policyName, cidr string) ruleContent {
 			"They open an outbound TLS connection to `c2.attacker.example` on 443 (covered by the same broad rule) and exfiltrate harvested secrets.",
 			"They abuse the same broad CIDR to reach other in-cluster Services unless `except:` carves out the cluster ranges.",
 		},
-		Remediation: "Replace `0.0.0.0/0` with the specific CIDRs the workload needs, or use `namespaceSelector`/`podSelector` for in-cluster destinations, and explicitly carve out the IMDS range.",
+		Remediation: "Replace `0.0.0.0/0` with the specific CIDRs the workload needs, or use `namespaceSelector/podSelector` for in-cluster destinations, and explicitly carve out the IMDS range.",
 		RemediationSteps: []string{
 			fmt.Sprintf("Inventory what `%s`'s selected pods actually need to reach (use `kubectl exec ... -- ss -tnp` or VPC flow logs).", policyName),
 			"Replace the `0.0.0.0/0` rule with a specific allowlist — ipBlocks for required SaaS CIDRs, namespaceSelector/podSelector for in-cluster targets.",

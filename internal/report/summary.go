@@ -504,6 +504,19 @@ func ruleTitleForGroup(f models.Finding) string {
 			return "Subjects " + rest
 		}
 	}
+	// Trailing-subject pattern: titles ending in " — `SUBJ`" or " (`SUBJ`)" carry the
+	// affected subject as a tail tag. For the rule card we drop that tail so the title
+	// reads as a rule statement; the affected subject is shown per-instance below.
+	for _, suffix := range []string{
+		" — `" + subj + "`",
+		" (`" + subj + "`)",
+		" — " + subj,
+		" (" + subj + ")",
+	} {
+		if strings.HasSuffix(title, suffix) {
+			return strings.TrimSuffix(title, suffix)
+		}
+	}
 	return title
 }
 

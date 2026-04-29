@@ -99,7 +99,7 @@ func contentSecrets002(name string) ruleContent {
 		AttackScenario: []string{
 			"Attacker gains a `kube-system` ServiceAccount token with `get secrets` (e.g., compromised addon, addon-installer Job, helm-release Secret reader).",
 			fmt.Sprintf("They `kubectl get secret %s -n kube-system -o yaml` and decode each `data` key.", name),
-			"They identify the credential type: AWS access key (`aws_access_key_id`/`aws_secret_access_key`), GCP service-account JSON, Azure tenant/client ID, Docker config (registry credentials), or an inline kubeconfig.",
+			"They identify the credential type: AWS access key (`aws_access_key_id/aws_secret_access_key`), GCP service-account JSON, Azure tenant/client ID, Docker config (registry credentials), or an inline kubeconfig.",
 			"They authenticate out-of-cluster with the credential — cloud account compromise, registry image-publishing for supply-chain implant, or a parallel kubeconfig that survives in-cluster RBAC revocation.",
 			"They persist by issuing a new IAM key / pushing an unsigned image / writing a kubeconfig to a hidden location, then cover by deleting their access logs.",
 		},
@@ -180,8 +180,8 @@ func contentConfigMap002() ruleContent {
 		},
 		Remediation: "Audit each `rewrite` and `forward` directive against expected DNS topology, lock down write access to the `kube-system/coredns` ConfigMap, and add change detection.",
 		RemediationSteps: []string{
-			"`kubectl get cm coredns -n kube-system -o yaml` and review every `rewrite`/`forward` line. Confirm with the platform/networking team that each is intentional.",
-			"For `forward` to public resolvers: prefer the cloud provider's private resolver (which respects VPC routing and is logged) over `8.8.8.8`/`1.1.1.1`. If public is required, restrict via egress NetworkPolicy.",
+			"`kubectl get cm coredns -n kube-system -o yaml` and review every `rewrite/forward` line. Confirm with the platform/networking team that each is intentional.",
+			"For `forward` to public resolvers: prefer the cloud provider's private resolver (which respects VPC routing and is logged) over `8.8.8.8/1.1.1.1`. If public is required, restrict via egress NetworkPolicy.",
 			"`kubectl auth can-i update configmaps -n kube-system --as=system:serviceaccount:<ns>:<sa>` for every SA — most do not need this. Tighten RBAC and remove cluster-wide `*` resource grants.",
 			"Wire change detection: an admission policy (Kyverno) that alerts on any ConfigMap update in `kube-system` named `coredns`, or a GitOps source-of-truth so manual edits diverge visibly.",
 			"Add a periodic CronJob that diffs the live Corefile against the GitOps version and pages on drift.",

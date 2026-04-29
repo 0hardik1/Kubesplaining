@@ -24,12 +24,16 @@
   });
 
   // ---- Findings filter (driven by chart clicks) ------------------------
-  // State is { severity, module, category, resource } — each either a string or null.
-  // Clicking a chart row/cell sets the relevant fields, switches to the findings tab,
-  // and re-applies the predicate on every <article class="finding">.
+  // State is { severity, module, category, resource } — each either a string or null,
+  // plus a free-text searchQuery (already lowercased). Clicking a chart row/cell sets
+  // the relevant fields, switches to the findings tab, and re-applies the predicate on
+  // every .finding[data-rule] instance. State changes flow through commitFilters() which
+  // also persists to location.hash so a filtered view is shareable.
   var filterState = { severity: null, module: null, category: null, resource: null };
+  var searchQuery = '';
   var FILTER_KEYS = ['severity', 'module', 'category', 'resource'];
   var FILTER_LABELS = { severity: 'Severity', module: 'Module', category: 'Category', resource: 'Resource' };
+  var suppressHashWrite = false; // set during programmatic restore so we don't loop hashchange→write→hashchange
 
   function parseFilterTarget(s) {
     if (!s) return {};
@@ -41,31 +45,59 @@
     return out;
   }
 
+  // matchesSearch builds a lowercase haystack lazily for each instance and caches it on
+  // the element. The report is static — instances don't move, attributes don't change —
+  // so the cache is safe for the page's lifetime.
+  function matchesSearch(el, q) {
+    if (!q) return true;
+    if (el.__searchHay == null) {
+      var parts = [
+        el.getAttribute('data-rule') || '',
+        el.getAttribute('data-subject') || '',
+        el.getAttribute('data-resource') || '',
+        el.getAttribute('data-category') || ''
+      ];
+      var titleEl = el.querySelector('.instance-title');
+      if (titleEl) parts.push(titleEl.textContent || '');
+      var ruleCard = el.closest('.rule-group');
+      if (ruleCard) {
+        var ruleTitleEl = ruleCard.querySelector('.rule-title');
+        if (ruleTitleEl) parts.push(ruleTitleEl.textContent || '');
+      }
+      el.__searchHay = parts.join(' ').toLowerCase();
+    }
+    return el.__searchHay.indexOf(q) !== -1;
+  }
+
   function applyFindingsFilter() {
-    // Findings are now rendered as per-subject .finding instances inside .rule-group cards.
+    // Findings are rendered as per-subject .finding instances inside .rule-group cards.
     // Filter at instance granularity, then roll the visibility up to rule groups and module
     // sections so empty containers collapse cleanly.
     var instances = document.querySelectorAll('.finding[data-rule]');
     // When any filter narrows the result set, auto-open matching <details> instances so
     // the user lands on relevant evidence without an extra click.
-    var anyFilter = false;
-    for (var fk = 0; fk < FILTER_KEYS.length; fk++) {
-      if (filterState[FILTER_KEYS[fk]] != null) { anyFilter = true; break; }
+    var anyFilter = !!searchQuery;
+    if (!anyFilter) {
+      for (var fk = 0; fk < FILTER_KEYS.length; fk++) {
+        if (filterState[FILTER_KEYS[fk]] != null) { anyFilter = true; break; }
+      }
     }
     var n = 0;
     for (var i = 0; i < instances.length; i++) {
       var a = instances[i];
-      var keep = true;
-      for (var k = 0; k < FILTER_KEYS.length; k++) {
-        var key = FILTER_KEYS[k];
-        var want = filterState[key];
-        if (want == null) continue;
-        var got = a.getAttribute('data-' + key) || '';
-        if (key === 'module') {
-          var sec = a.closest('.module-section');
-          got = sec ? (sec.getAttribute('data-module') || '') : '';
+      var keep = matchesSearch(a, searchQuery);
+      if (keep) {
+        for (var k = 0; k < FILTER_KEYS.length; k++) {
+          var key = FILTER_KEYS[k];
+          var want = filterState[key];
+          if (want == null) continue;
+          var got = a.getAttribute('data-' + key) || '';
+          if (key === 'module') {
+            var sec = a.closest('.module-section');
+            got = sec ? (sec.getAttribute('data-module') || '') : '';
+          }
+          if (got !== want) { keep = false; break; }
         }
-        if (got !== want) { keep = false; break; }
       }
       a.style.display = keep ? '' : 'none';
       if (keep) {
@@ -107,7 +139,7 @@
       chip.title = 'Remove ' + FILTER_LABELS[key] + ' filter';
       chip.addEventListener('click', function() {
         filterState[key] = null;
-        applyFindingsFilter();
+        commitFilters();
       });
       bar.appendChild(chip);
     });
@@ -115,6 +147,84 @@
     clear.hidden = !any;
     var wrap = bar.closest('.findings-filters');
     if (wrap) wrap.hidden = !any;
+  }
+
+  // commitFilters re-applies the predicate AND mirrors the current filter+search state
+  // into location.hash so a filtered view is shareable. Skip the hash write when we're
+  // restoring state from the hash itself (avoids feedback loops on hashchange).
+  function commitFilters() {
+    applyFindingsFilter();
+    if (!suppressHashWrite) writeHash();
+  }
+
+  // Hash format: <anchor>?<params>
+  //   anchor   — existing semantics (#tab-X, #finding-X, #module-id, or empty)
+  //   params   — &-separated key=value: q (search), severity, module, category, resource
+  // Examples:
+  //   #findings?q=cluster-admin&severity=crit
+  //   #finding-KUBE-PRIVESC-PATH-CLUSTER-ADMIN?severity=crit
+  function parseHash() {
+    var raw = (window.location.hash || '').replace(/^#/, '');
+    var qpos = raw.indexOf('?');
+    var anchor = qpos >= 0 ? raw.slice(0, qpos) : raw;
+    var query = qpos >= 0 ? raw.slice(qpos + 1) : '';
+    var params = {};
+    if (query) {
+      query.split('&').forEach(function(pair) {
+        if (!pair) return;
+        var eq = pair.indexOf('=');
+        if (eq < 0) return;
+        var k = decodeURIComponent(pair.slice(0, eq));
+        var v = decodeURIComponent(pair.slice(eq + 1));
+        if (k) params[k] = v;
+      });
+    }
+    return { anchor: anchor, params: params };
+  }
+
+  function writeHash() {
+    var current = parseHash();
+    var parts = [];
+    if (searchQuery) parts.push('q=' + encodeURIComponent(searchQuery));
+    FILTER_KEYS.forEach(function(k) {
+      if (filterState[k] != null) parts.push(k + '=' + encodeURIComponent(filterState[k]));
+    });
+    var anchor = current.anchor;
+    // When filters/search are present and there's no existing anchor, default to the findings
+    // tab so a refresh lands on the right view. When filters/search are cleared, drop the
+    // query entirely but keep any existing anchor (#tab-X / #finding-Y / module id).
+    var newHash;
+    if (parts.length === 0) {
+      newHash = anchor ? '#' + anchor : '';
+    } else {
+      newHash = '#' + (anchor || 'findings') + '?' + parts.join('&');
+    }
+    if (newHash === window.location.hash) return;
+    if (newHash === '' && !window.location.hash) return;
+    // Use replaceState rather than location.hash assignment so we don't pollute the back stack
+    // on every keystroke / chip toggle.
+    try {
+      history.replaceState(null, '', newHash || window.location.pathname + window.location.search);
+    } catch (_) {
+      // file:// URLs in some browsers reject replaceState — fall back gracefully.
+      window.location.hash = newHash;
+    }
+  }
+
+  // applyHashState restores filterState + searchQuery + the search input value from the
+  // URL hash. Called on initial load and on hashchange. suppressHashWrite blocks the
+  // commit cascade from re-writing the hash and looping.
+  function applyHashState() {
+    var p = parseHash();
+    var nextFilter = { severity: null, module: null, category: null, resource: null };
+    FILTER_KEYS.forEach(function(k) { if (p.params[k] != null) nextFilter[k] = p.params[k]; });
+    var nextQuery = p.params.q != null ? String(p.params.q).toLowerCase() : '';
+    filterState = nextFilter;
+    searchQuery = nextQuery;
+    var input = document.getElementById('findings-search-input');
+    if (input) input.value = p.params.q != null ? p.params.q : '';
+    suppressHashWrite = true;
+    try { applyFindingsFilter(); } finally { suppressHashWrite = false; }
   }
 
   // Wire chart row + heatmap cell clicks → set filter, switch to findings tab.
@@ -127,19 +237,95 @@
     filterState = { severity: null, module: null, category: null, resource: null };
     Object.keys(fields).forEach(function(k) { if (filterState.hasOwnProperty(k)) filterState[k] = fields[k]; });
     activate('findings');
-    applyFindingsFilter();
+    commitFilters();
     requestAnimationFrame(function() {
       var nav = document.querySelector('.findings-filters');
       if (nav) nav.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
   });
 
-  // Clear-all button.
+  // Clear-all button — also clears the search input so the URL hash drops back to bare.
   document.addEventListener('click', function(ev) {
     if (!ev.target.closest || !ev.target.closest('#fl-clear')) return;
     filterState = { severity: null, module: null, category: null, resource: null };
-    applyFindingsFilter();
+    searchQuery = '';
+    var input = document.getElementById('findings-search-input');
+    if (input) input.value = '';
+    commitFilters();
   });
+
+  // Findings search input — debounced free-text filter on the rendered cards.
+  // "/" focuses from anywhere outside form fields; Esc clears + blurs.
+  function initFindingsSearch() {
+    var input = document.getElementById('findings-search-input');
+    if (!input) return;
+    var debounce;
+    input.addEventListener('input', function() {
+      clearTimeout(debounce);
+      debounce = setTimeout(function() {
+        searchQuery = (input.value || '').trim().toLowerCase();
+        commitFilters();
+      }, 80);
+    });
+    input.addEventListener('keydown', function(ev) {
+      if (ev.key === 'Escape') {
+        if (input.value) {
+          input.value = '';
+          searchQuery = '';
+          commitFilters();
+        } else {
+          input.blur();
+        }
+        ev.preventDefault();
+      }
+    });
+    document.addEventListener('keydown', function(ev) {
+      if (ev.key !== '/') return;
+      var t = ev.target;
+      if (!t) return;
+      var tag = (t.tagName || '').toUpperCase();
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || t.isContentEditable === true) return;
+      ev.preventDefault();
+      input.focus();
+      input.select();
+    });
+  }
+  initFindingsSearch();
+
+  // Module-nav scroll-spy: highlight the .module-link whose .module-section is currently
+  // crossing the viewport. rootMargin offsets account for the sticky topbar (~80px) at the
+  // top and discount the lower half of the viewport so a "section is active" only when it's
+  // actually being read. Most-overlapping section wins when multiple are partially visible.
+  function initModuleScrollSpy() {
+    var nav = document.querySelector('.modules-nav');
+    if (!nav) return;
+    var sections = document.querySelectorAll('.module-section[id]');
+    if (!sections.length) return;
+    if (typeof IntersectionObserver === 'undefined') return; // gracefully no-op on legacy browsers
+    var linksByID = {};
+    nav.querySelectorAll('a.module-link').forEach(function(a) {
+      var href = a.getAttribute('href') || '';
+      if (href.charAt(0) === '#') linksByID[href.slice(1)] = a;
+    });
+    var visible = {};
+    var observer = new IntersectionObserver(function(entries) {
+      entries.forEach(function(e) {
+        if (e.isIntersecting) visible[e.target.id] = e.intersectionRatio;
+        else delete visible[e.target.id];
+      });
+      // Pick the section with the largest currently-visible ratio; clear the rest.
+      var best = null, bestRatio = 0;
+      Object.keys(visible).forEach(function(id) {
+        if (visible[id] > bestRatio) { bestRatio = visible[id]; best = id; }
+      });
+      Object.keys(linksByID).forEach(function(id) {
+        if (id === best) linksByID[id].classList.add('active');
+        else linksByID[id].classList.remove('active');
+      });
+    }, { rootMargin: '-120px 0px -50% 0px', threshold: [0, 0.25, 0.5, 0.75, 1] });
+    sections.forEach(function(s) { observer.observe(s); });
+  }
+  initModuleScrollSpy();
 
   // Narrative rule-ID chip → switch to findings tab and scroll the matching finding into view.
   document.addEventListener('click', function(ev) {
@@ -159,11 +345,18 @@
   });
 
   // Initial activation: parse URL hash. #tab-X selects tab X. #finding-XXX implies findings tab.
+  // Hash with ?params (filters/search) implies findings tab when no other anchor was given.
   // Default (no hash, unrecognized hash) is the attack-paths tab — the report's primary view.
   function fromHash() {
-    var h = (window.location.hash || '').replace(/^#/, '');
-    if (!h) return 'attack';
+    var p = parseHash();
+    var h = p.anchor;
+    if (!h) {
+      // No anchor but params present (e.g. "#?q=...") → findings tab.
+      if (Object.keys(p.params).length > 0) return 'findings';
+      return 'attack';
+    }
     if (/^tab-(.+)$/.test(h)) return RegExp.$1;
+    if (h === 'findings') return 'findings';
     if (/^finding-/.test(h)) return 'findings';
     var modEl = document.getElementById(h);
     if (modEl && modEl.classList.contains('module-section')) return 'findings';
@@ -174,14 +367,19 @@
   // visible tab; without this, anchor jumps land on a hidden element and end
   // up at a stale y-offset when the correct tab fades in.
   function reanchor() {
-    var h = (window.location.hash || '').replace(/^#/, '');
-    if (!h) return;
-    var el = document.getElementById(h);
+    var p = parseHash();
+    if (!p.anchor) return;
+    var el = document.getElementById(p.anchor);
     if (el) requestAnimationFrame(function() { el.scrollIntoView({ block: 'start' }); });
   }
 
   activate(fromHash());
-  window.addEventListener('hashchange', function() { activate(fromHash()); reanchor(); });
+  applyHashState();
+  window.addEventListener('hashchange', function() {
+    activate(fromHash());
+    applyHashState();
+    reanchor();
+  });
 })();
 
 // --- Attack-graph interactivity (skipped if there's no graph) --------------
@@ -783,4 +981,60 @@
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
   }
+})();
+
+// --- Inline glossary tooltips on <code class="gloss" data-glossary-key="..."> ---------
+// Reuses the existing .kp-tooltip element (shared with the graph IIFE — only one tooltip
+// is ever visible at a time, so this is safe). Glossary lookup goes through the same
+// inline JSON payload that the graph side-panel reads. No-op when neither the tooltip
+// element nor the payload is present (e.g. snapshots with zero findings).
+(function() {
+  var tooltip = document.querySelector('.kp-tooltip');
+  if (!tooltip) return;
+  var titleEl = tooltip.querySelector('.kp-tt-title');
+  var bodyEl = tooltip.querySelector('.kp-tt-body');
+  if (!titleEl || !bodyEl) return;
+
+  var dataEl = document.getElementById('kp-graph-data');
+  var glossary = {};
+  if (dataEl) {
+    try {
+      var payload = JSON.parse(dataEl.textContent || '{}');
+      glossary = (payload && payload.Glossary) || {};
+    } catch (_) {
+      glossary = {};
+    }
+  }
+  if (!glossary || !Object.keys(glossary).length) return;
+
+  function showFor(el, entry) {
+    var rect = el.getBoundingClientRect();
+    tooltip.style.left = (rect.left + window.pageXOffset + Math.min(rect.width / 2, 220)) + 'px';
+    tooltip.style.top = (rect.top + window.pageYOffset - 12) + 'px';
+    titleEl.textContent = entry.Title || '';
+    if (entry.Short) {
+      bodyEl.textContent = entry.Short;
+      bodyEl.hidden = false;
+    } else {
+      bodyEl.textContent = '';
+      bodyEl.hidden = true;
+    }
+    tooltip.hidden = false;
+  }
+
+  document.addEventListener('mouseover', function(ev) {
+    var el = ev.target.closest && ev.target.closest('code.gloss[data-glossary-key]');
+    if (!el) return;
+    var entry = glossary[el.getAttribute('data-glossary-key')];
+    if (!entry) return;
+    showFor(el, entry);
+  });
+  document.addEventListener('mouseout', function(ev) {
+    if (!ev.target.closest || !ev.target.closest('code.gloss[data-glossary-key]')) return;
+    tooltip.hidden = true;
+  });
+  // Hide on scroll so the tooltip doesn't drift away from its anchor.
+  window.addEventListener('scroll', function() {
+    if (!tooltip.hidden) tooltip.hidden = true;
+  }, true);
 })();

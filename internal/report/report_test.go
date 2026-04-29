@@ -358,6 +358,18 @@ func TestRuleTitleForGroup(t *testing.T) {
 			subj:  &models.SubjectRef{Kind: "ServiceAccount", Name: "x", Namespace: "y"},
 			want:  "Privesc path",
 		},
+		{
+			// Trailing em-dash pattern with backticked subject (rbac titles).
+			title: "Cluster-wide `impersonate` permission — `ServiceAccount/rbac-fixtures/sa-impersonate`",
+			subj:  &models.SubjectRef{Kind: "ServiceAccount", Name: "sa-impersonate", Namespace: "rbac-fixtures"},
+			want:  "Cluster-wide `impersonate` permission",
+		},
+		{
+			// Trailing parenthesized backticked subject (rbac titles).
+			title: "Cluster-wide `bind/escalate` on roles — RBAC bypass (`ServiceAccount/ns/sa`)",
+			subj:  &models.SubjectRef{Kind: "ServiceAccount", Name: "sa", Namespace: "ns"},
+			want:  "Cluster-wide `bind/escalate` on roles — RBAC bypass",
+		},
 	}
 	for _, tc := range cases {
 		got := ruleTitleForGroup(models.Finding{Title: tc.title, Subject: tc.subj})

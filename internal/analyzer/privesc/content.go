@@ -100,13 +100,13 @@ func hopNarrative(hop models.EscalationHop) string {
 
 	case "bind_or_escalate":
 		if hasTo {
-			return fmt.Sprintf("Acting as %s, the attacker uses the RBAC `bind`/`escalate` bypass (%s) to grant themselves a role they do not currently hold and bind to %s. `bind`/`escalate` is the carve-out that lets the holder escape RBAC's normal \"you can only grant what you have\" guardrail.", from, perm, to)
+			return fmt.Sprintf("Acting as %s, the attacker uses the RBAC `bind/escalate` bypass (%s) to grant themselves a role they do not currently hold and bind to %s. `bind/escalate` is the carve-out that lets the holder escape RBAC's normal \"you can only grant what you have\" guardrail.", from, perm, to)
 		}
-		return fmt.Sprintf("Acting as %s, the attacker uses the RBAC `bind`/`escalate` bypass (%s) to grant themselves any role they choose — typically `cluster-admin`. `bind`/`escalate` is the carve-out that lets the holder escape RBAC's normal \"you can only grant what you have\" guardrail.", from, perm)
+		return fmt.Sprintf("Acting as %s, the attacker uses the RBAC `bind/escalate` bypass (%s) to grant themselves any role they choose — typically `cluster-admin`. `bind/escalate` is the carve-out that lets the holder escape RBAC's normal \"you can only grant what you have\" guardrail.", from, perm)
 
 	case "impersonate":
 		if hasTo {
-			return fmt.Sprintf("Acting as %s, the attacker uses RBAC impersonation (the `impersonate` verb on %s) to send API requests as %s — the kube-apiserver honours the `Impersonate-User` / `Impersonate-Group` headers and authorizes the request against the impersonated identity's permissions instead of the attacker's.", from, perm, to)
+			return fmt.Sprintf("Acting as %s, the attacker uses RBAC impersonation (the `impersonate` verb on %s) to send API requests as %s — the kube-apiserver honours the `Impersonate-User/Impersonate-Group` headers and authorizes the request against the impersonated identity's permissions instead of the attacker's.", from, perm, to)
 		}
 		return fmt.Sprintf("Acting as %s, the attacker uses RBAC impersonation (the `impersonate` verb on %s) to send API requests as any identity in the cluster — including `system:masters`, which the apiserver hard-codes as cluster-admin. Granting `impersonate` on `groups: [\"*\"]` is functionally a cluster-admin grant.", from, perm)
 
@@ -245,7 +245,7 @@ func contentNodeEscapePath(source models.SubjectRef, hops []models.EscalationHop
 		Scope: scopeForPath(source, models.TargetNodeEscape),
 		Description: fmt.Sprintf("Subject `%s` has a privesc path that terminates in the ability to schedule a pod with host-level access (`hostPath: /`, `privileged: true`, `hostPID`, or hostNetwork) — which is structurally equivalent to root on the worker node. Once an attacker has node root, all defense-in-depth at the Kubernetes layer is bypassed: pod isolation depends on the kernel and runtime, not on RBAC, and node root reads every other pod's filesystem (including projected ServiceAccount tokens) and every kubelet credential.\n\n"+
 			"The chain (%d hop(s); each step uses an explicit RBAC verb or pod primitive the engine validated):\n%s\n\n"+
-			"Node escape is qualitatively different from cluster-admin: cluster-admin gives API control; node escape gives *operational* control over a host. With node root the attacker can plant a persistent rootkit, install a kernel module, capture every container's network traffic via tcpdump on the host's `cni0`/`flannel.1`/`cali*` interface, and exfiltrate every projected ServiceAccount token by reading `/var/lib/kubelet/pods/*/volumes/.../token`. From there, those tokens cascade into more cluster-admin paths.",
+			"Node escape is qualitatively different from cluster-admin: cluster-admin gives API control; node escape gives *operational* control over a host. With node root the attacker can plant a persistent rootkit, install a kernel module, capture every container's network traffic via tcpdump on the host's `cni0/flannel.1/cali*` interface, and exfiltrate every projected ServiceAccount token by reading `/var/lib/kubelet/pods/*/volumes/.../token`. From there, those tokens cascade into more cluster-admin paths.",
 			source.Key(), hopCount, formatHopList(hops)),
 		Impact:         fmt.Sprintf("Compromise of `%s` yields host root on a worker node — every co-located pod's filesystem and every projected SA token are immediately readable, and the kubelet client cert can be used to access node-level APIs.", source.Key()),
 		AttackScenario: steps,
