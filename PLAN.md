@@ -137,8 +137,8 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started. Partial items list wha
 ## Exclusions
 
 - [x] YAML parser + matcher — [internal/exclusions/](internal/exclusions/)
-- [ ] Preset profiles (`minimal` / `standard` / `strict`)
-- [ ] `--from-snapshot` pre-population for `create-exclusions-file`
+- [x] Preset profiles (`minimal` / `standard` / `strict` / `none`) — auto-applied by `scan` / `scan-resource` / `report` via `--exclusions-preset` (default `standard`)
+- [x] `--from-snapshot` pre-population for `create-exclusions-file`
 
 ## Output Formats
 

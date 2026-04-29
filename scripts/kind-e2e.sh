@@ -72,7 +72,8 @@ rewrite name regex (.*)\.evil\.com {1}.example.com
 "${ROOT_DIR}/bin/kubesplaining" scan \
   --input-file "${ROOT_DIR}/.tmp/e2e-snapshot.json" \
   --output-dir "${ROOT_DIR}/.tmp/e2e-report" \
-  --output-format html,json,csv
+  --output-format html,json,csv \
+  --exclusions-preset none
 
 EXPECTED_RULES=(
   KUBE-PRIVESC-001 KUBE-PRIVESC-003 KUBE-PRIVESC-005 KUBE-PRIVESC-008 KUBE-PRIVESC-009

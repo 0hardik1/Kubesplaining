@@ -237,7 +237,19 @@ Implementing this centrally is the **next goal** in [PLAN.md](PLAN.md).
 
 ## Exclusions
 
-Findings can be suppressed via a YAML exclusions file. See [internal/exclusions/](internal/exclusions/) and `kubesplaining create-exclusions-file`. Preset profiles (`minimal` / `standard` / `strict`) and snapshot-driven pre-population are planned.
+`scan`, `scan-resource`, and `report` **auto-apply the `standard` exclusions preset by default**, so findings about built-in Kubernetes plumbing — kube-system / kube-public / kube-node-lease namespaces, kube-controller-manager service accounts (`clusterrole-aggregation-controller`, `generic-garbage-collector`, …), `system:*` users/groups/roles, `kubeadm:*` groups and bootstrap roles — are suppressed up front. None of that is something an operator can change without breaking their cluster, so showing it as risk just buries the things that are actionable.
+
+Pick a different baseline with `--exclusions-preset`:
+
+| Preset | Behavior |
+| --- | --- |
+| `standard` (default) | Auto-applied. Filters kube-system / system:* / kubeadm:* noise. |
+| `minimal` | Filters only `kube-public`, `kube-node-lease`, and `system:*`. |
+| `none` (alias `strict`) | No built-in filtering — every finding surfaces, including control-plane noise. |
+
+Layer custom rules on top with `--exclusions-file path.yml`. The user file is **merged** with the preset, so you keep the defaults and add your own suppressions (specific service accounts, expected workloads, custom rule-ID patterns). Generate a starter file with `kubesplaining create-exclusions-file --preset standard --output-file exclusions.yml`. See [internal/exclusions/](internal/exclusions/) for the YAML schema (Global / RBAC / PodSecurity / NetworkPolicy sections, all matchers support shell-style globs).
+
+Excluded findings are dropped from the report entirely — totals reflect actionable findings only. To audit what the defaults are hiding, re-run with `--exclusions-preset=none` and diff.
 
 ## Access Requirements
 

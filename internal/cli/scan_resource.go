@@ -18,10 +18,11 @@ import (
 // single Kubernetes manifest file offline without requiring cluster access.
 func NewScanResourceCmd() *cobra.Command {
 	var (
-		inputFile      string
-		resourceType   string
-		exclusionsFile string
-		outputFormats  []string
+		inputFile        string
+		resourceType     string
+		exclusionsFile   string
+		exclusionsPreset string
+		outputFormats    []string
 	)
 
 	cmd := &cobra.Command{
@@ -45,13 +46,11 @@ func NewScanResourceCmd() *cobra.Command {
 				return err
 			}
 
-			if exclusionsFile != "" {
-				cfg, err := exclusions.Load(exclusionsFile)
-				if err != nil {
-					return err
-				}
-				findings, _ = exclusions.Apply(cfg, findings)
+			cfg, err := loadExclusions(exclusionsPreset, exclusionsFile)
+			if err != nil {
+				return err
 			}
+			findings, _ = exclusions.Apply(cfg, findings)
 
 			return writeScanResourceOutput(cmd, findings, outputFormats)
 		},
@@ -59,7 +58,8 @@ func NewScanResourceCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&inputFile, "input-file", "", "Path to a YAML or JSON manifest")
 	cmd.Flags().StringVar(&resourceType, "resource-type", "", "Optional resource type hint")
-	cmd.Flags().StringVar(&exclusionsFile, "exclusions-file", "", "Path to an exclusions YAML file")
+	cmd.Flags().StringVar(&exclusionsFile, "exclusions-file", "", "Path to a user-supplied exclusions YAML file (merged on top of --exclusions-preset)")
+	cmd.Flags().StringVar(&exclusionsPreset, "exclusions-preset", "standard", "Built-in exclusions preset: standard|minimal|strict|none")
 	cmd.Flags().StringSliceVar(&outputFormats, "output-format", []string{"table"}, "Output formats: table,json")
 
 	return cmd

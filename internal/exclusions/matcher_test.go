@@ -66,3 +66,91 @@ func TestMatchPodSecurityCheckByTag(t *testing.T) {
 		t.Fatalf("expected finding to match exclusion")
 	}
 }
+
+// TestStandardPresetMatchesBuiltInNoise covers the auto-applied default behavior: the standard preset
+// should suppress findings about kube-controller-manager SAs, system: groups/users, kubeadm:* groups,
+// and kubeadm:* ClusterRoles, while leaving real user-created subjects untouched.
+func TestStandardPresetMatchesBuiltInNoise(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := Preset("standard")
+	if err != nil {
+		t.Fatalf("Preset(standard) failed: %v", err)
+	}
+
+	cases := []struct {
+		name    string
+		finding models.Finding
+		match   bool
+	}{
+		{
+			name: "controller-manager SA in kube-system",
+			finding: models.Finding{
+				ID: "a", RuleID: "KUBE-RBAC-OVERBROAD-001",
+				Subject: &models.SubjectRef{Kind: "ServiceAccount", Namespace: "kube-system", Name: "clusterrole-aggregation-controller"},
+			},
+			match: true,
+		},
+		{
+			name: "system:masters group bound to cluster-admin",
+			finding: models.Finding{
+				ID: "b", RuleID: "KUBE-RBAC-OVERBROAD-001",
+				Subject:  &models.SubjectRef{Kind: "Group", Name: "system:masters"},
+				Resource: &models.ResourceRef{Kind: "RBACRule", Name: "cluster-admin"},
+			},
+			match: true,
+		},
+		{
+			name: "kubeadm:cluster-admins group",
+			finding: models.Finding{
+				ID: "c", RuleID: "KUBE-RBAC-OVERBROAD-001",
+				Subject: &models.SubjectRef{Kind: "Group", Name: "kubeadm:cluster-admins"},
+			},
+			match: true,
+		},
+		{
+			name: "system: user (kube-controller-manager identity)",
+			finding: models.Finding{
+				ID: "d", RuleID: "KUBE-RBAC-OVERBROAD-001",
+				Subject: &models.SubjectRef{Kind: "User", Name: "system:kube-controller-manager"},
+			},
+			match: true,
+		},
+		{
+			name: "kubeadm:get-nodes ClusterRole binding",
+			finding: models.Finding{
+				ID: "e", RuleID: "KUBE-RBAC-OVERBROAD-001",
+				Resource: &models.ResourceRef{Kind: "RBACRule", Name: "kubeadm:get-nodes"},
+			},
+			match: true,
+		},
+		{
+			name: "real user-created Group should not match",
+			finding: models.Finding{
+				ID: "f", RuleID: "KUBE-RBAC-OVERBROAD-001",
+				Subject:  &models.SubjectRef{Kind: "Group", Name: "release-engineering"},
+				Resource: &models.ResourceRef{Kind: "RBACRule", Name: "cluster-admin"},
+			},
+			match: false,
+		},
+		{
+			name: "user SA in user namespace should not match",
+			finding: models.Finding{
+				ID: "g", RuleID: "KUBE-PRIVESC-005",
+				Subject: &models.SubjectRef{Kind: "ServiceAccount", Namespace: "default", Name: "deployer"},
+			},
+			match: false,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			result := Match(cfg, tc.finding)
+			if result.Matched != tc.match {
+				t.Fatalf("expected match=%v, got match=%v reason=%q", tc.match, result.Matched, result.Reason)
+			}
+		})
+	}
+}

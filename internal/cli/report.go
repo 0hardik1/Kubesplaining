@@ -21,6 +21,7 @@ func NewReportCmd() *cobra.Command {
 		outputFormats     []string
 		severityThreshold string
 		exclusionsFile    string
+		exclusionsPreset  string
 		metadataFile      string
 	)
 
@@ -49,14 +50,11 @@ func NewReportCmd() *cobra.Command {
 				}
 			}
 
-			excludedCount := 0
-			if exclusionsFile != "" {
-				cfg, err := exclusions.Load(exclusionsFile)
-				if err != nil {
-					return err
-				}
-				filtered, excludedCount = exclusions.Apply(cfg, filtered)
+			cfg, err := loadExclusions(exclusionsPreset, exclusionsFile)
+			if err != nil {
+				return err
 			}
+			filtered, _ = exclusions.Apply(cfg, filtered)
 
 			snapshot := models.NewSnapshot()
 			snapshot.Metadata.ClusterName = "report-regeneration"
@@ -94,11 +92,6 @@ func NewReportCmd() *cobra.Command {
 				summary.Total, summary.Critical, summary.High, summary.Medium, summary.Low, summary.Info); err != nil {
 				return err
 			}
-			if exclusionsFile != "" {
-				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "excluded findings: %d\n", excludedCount); err != nil {
-					return err
-				}
-			}
 
 			return nil
 		},
@@ -108,7 +101,8 @@ func NewReportCmd() *cobra.Command {
 	cmd.Flags().StringVar(&outputDir, "output-dir", filepath.Join(".", "kubesplaining-report"), "Directory for regenerated report output")
 	cmd.Flags().StringSliceVar(&outputFormats, "output-format", []string{"html", "json"}, "Output formats: html,json,csv,sarif")
 	cmd.Flags().StringVar(&severityThreshold, "severity-threshold", "low", "Minimum severity to include: critical,high,medium,low,info")
-	cmd.Flags().StringVar(&exclusionsFile, "exclusions-file", "", "Path to an exclusions YAML file")
+	cmd.Flags().StringVar(&exclusionsFile, "exclusions-file", "", "Path to a user-supplied exclusions YAML file (merged on top of --exclusions-preset)")
+	cmd.Flags().StringVar(&exclusionsPreset, "exclusions-preset", "standard", "Built-in exclusions preset: standard|minimal|strict|none")
 	cmd.Flags().StringVar(&metadataFile, "metadata-file", "", "Optional path to scan metadata JSON")
 
 	return cmd
