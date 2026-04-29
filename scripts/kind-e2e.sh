@@ -39,6 +39,22 @@ kind create cluster --name "${KIND_CLUSTER_NAME}" --kubeconfig "${KUBECONFIG_PAT
 
 kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f "${ROOT_DIR}/testdata/e2e/vulnerable.yaml"
 kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status deploy/risky-app -n vulnerable --timeout=120s
+kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status deploy/host-ns-app -n vulnerable --timeout=120s
+kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status deploy/socket-mounts-app -n vulnerable --timeout=120s
+kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status deploy/generic-hostpath-app -n vulnerable --timeout=120s
+kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status deploy/root-runner -n vulnerable --timeout=120s
+kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status deploy/wildcard-app -n rbac-fixtures --timeout=120s
+kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status deploy/imp-app -n rbac-fixtures --timeout=120s
+kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status ds/daemon-app -n rbac-fixtures --timeout=120s
+kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status deploy/unmatched -n flat-network --timeout=120s
+kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status deploy/ingress-app -n ingress-only --timeout=120s
+
+# Append a risky 'rewrite' directive to the coredns Corefile (triggers KUBE-CONFIGMAP-002).
+existing_corefile=$(kubectl --kubeconfig "${KUBECONFIG_PATH}" -n kube-system get cm coredns -o jsonpath='{.data.Corefile}')
+kubectl --kubeconfig "${KUBECONFIG_PATH}" -n kube-system create cm coredns \
+  --from-literal=Corefile="${existing_corefile}
+rewrite name regex (.*)\.evil\.com {1}.example.com
+" --dry-run=client -o yaml | kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f -
 
 "${ROOT_DIR}/bin/kubesplaining" download \
   --kubeconfig "${KUBECONFIG_PATH}" \
@@ -49,14 +65,35 @@ kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status deploy/risky-app -n vul
   --output-dir "${ROOT_DIR}/.tmp/e2e-report" \
   --output-format html,json,csv
 
-rg -q "KUBE-PRIVESC-005" "${ROOT_DIR}/.tmp/e2e-report/findings.json"
-rg -q "KUBE-ESCAPE-001" "${ROOT_DIR}/.tmp/e2e-report/findings.json"
-rg -q "KUBE-SA-DEFAULT-001" "${ROOT_DIR}/.tmp/e2e-report/findings.json"
-rg -q "KUBE-NETPOL-COVERAGE-001" "${ROOT_DIR}/.tmp/e2e-report/findings.json"
-rg -q "KUBE-NETPOL-WEAKNESS-002" "${ROOT_DIR}/.tmp/e2e-report/findings.json"
-rg -q "KUBE-SECRETS-001" "${ROOT_DIR}/.tmp/e2e-report/findings.json"
-rg -q "KUBE-CONFIGMAP-001" "${ROOT_DIR}/.tmp/e2e-report/findings.json"
-rg -q "KUBE-ADMISSION-001" "${ROOT_DIR}/.tmp/e2e-report/findings.json"
-rg -q "KUBE-ADMISSION-002" "${ROOT_DIR}/.tmp/e2e-report/findings.json"
+EXPECTED_RULES=(
+  KUBE-PRIVESC-001 KUBE-PRIVESC-003 KUBE-PRIVESC-005 KUBE-PRIVESC-008 KUBE-PRIVESC-009
+  KUBE-PRIVESC-010 KUBE-PRIVESC-012 KUBE-PRIVESC-014 KUBE-PRIVESC-017
+  KUBE-RBAC-OVERBROAD-001
+  KUBE-ESCAPE-001 KUBE-ESCAPE-002 KUBE-ESCAPE-003 KUBE-ESCAPE-004 KUBE-ESCAPE-005
+  KUBE-ESCAPE-006 KUBE-ESCAPE-008
+  KUBE-CONTAINERD-SOCKET-001 KUBE-HOSTPATH-001
+  KUBE-PODSEC-APE-001 KUBE-PODSEC-ROOT-001 KUBE-IMAGE-LATEST-001
+  KUBE-NETPOL-COVERAGE-001 KUBE-NETPOL-COVERAGE-002 KUBE-NETPOL-COVERAGE-003
+  KUBE-NETPOL-WEAKNESS-001 KUBE-NETPOL-WEAKNESS-002
+  KUBE-SECRETS-001 KUBE-SECRETS-002 KUBE-CONFIGMAP-001 KUBE-CONFIGMAP-002
+  KUBE-ADMISSION-001 KUBE-ADMISSION-002 KUBE-ADMISSION-003
+  KUBE-SA-DEFAULT-001 KUBE-SA-DEFAULT-002 KUBE-SA-PRIVILEGED-001 KUBE-SA-PRIVILEGED-002
+  KUBE-SA-DAEMONSET-001
+  KUBE-PRIVESC-PATH-CLUSTER-ADMIN KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS
+  KUBE-PRIVESC-PATH-NODE-ESCAPE KUBE-PRIVESC-PATH-SYSTEM-MASTERS KUBE-PRIVESC-PATH-GENERIC
+)
+
+missing=()
+for rule in "${EXPECTED_RULES[@]}"; do
+  if ! rg -q "\"rule_id\":\s*\"${rule}\"" "${ROOT_DIR}/.tmp/e2e-report/findings.json"; then
+    missing+=("${rule}")
+  fi
+done
+if (( ${#missing[@]} > 0 )); then
+  echo "missing expected rules in findings.json:" >&2
+  printf '  - %s\n' "${missing[@]}" >&2
+  exit 1
+fi
+echo "all ${#EXPECTED_RULES[@]} expected rule IDs present"
 
 echo "kind e2e completed successfully"

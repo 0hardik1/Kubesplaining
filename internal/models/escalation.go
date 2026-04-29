@@ -8,6 +8,7 @@ const (
 	TargetKubeSystemSecrets EscalationTarget = "kube_system_secrets"
 	TargetNodeEscape        EscalationTarget = "node_escape"
 	TargetSystemMasters     EscalationTarget = "system_masters"
+	TargetTokenMint         EscalationTarget = "token_mint"
 )
 
 // EscalationGraph is the directed privilege-escalation graph: subject nodes, sink nodes, and labeled edges.
