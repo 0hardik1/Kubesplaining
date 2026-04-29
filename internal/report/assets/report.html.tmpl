@@ -282,7 +282,7 @@
     a.chip-link:hover { filter: brightness(1.18); border-bottom: 1px solid currentColor; }
     a.chip-link:active { transform: translateY(1px); }
     @keyframes findingFlash { 0% { box-shadow: 0 0 0 0 rgba(106,183,255,0.55); } 60% { box-shadow: 0 0 0 8px rgba(106,183,255,0.15); } 100% { box-shadow: 0 0 0 0 rgba(106,183,255,0); } }
-    .finding.finding-flash { animation: findingFlash 1.5s ease-out; }
+    .finding.finding-flash, .rule-group.finding-flash { animation: findingFlash 1.5s ease-out; }
 
     .two-col { display: grid; grid-template-columns: 1.2fr 1fr; gap: 16px; }
     .dist-list { display: grid; gap: 12px; }
@@ -410,6 +410,52 @@
     .finding.high { border-left-color: var(--high); }
     .finding.med  { border-left-color: var(--medium); }
     .finding.low  { border-left-color: var(--low); }
+
+    /* Rule-group cards collapse all instances sharing a RuleID into one card so the
+       shared educational content (MITRE, References) renders once and per-subject
+       evidence/remediation sits behind a per-instance disclosure. The instances
+       inherit .finding styling above so existing per-finding selectors keep working. */
+    .rule-list { display: grid; gap: 16px; }
+    .rule-group { border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; background: var(--surface); border-left: 4px solid var(--border); }
+    .rule-group.crit { border-left-color: var(--critical); }
+    .rule-group.high { border-left-color: var(--high); }
+    .rule-group.med  { border-left-color: var(--medium); }
+    .rule-group.low  { border-left-color: var(--low); }
+    .rule-hd { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; }
+    .rule-hd .rule-title { flex: 1 1 320px; font-size: 16.5px; line-height: 1.35; letter-spacing: -0.01em; }
+    .rule-hd .rule-title code { background: rgba(255,255,255,0.04); padding: 1px 6px; border-radius: 4px; font-size: 12.5px; }
+    .rule-meta-pills { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+    .rule-group .rule { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11px; color: var(--text-mut); padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; background: rgba(255,255,255,0.02); letter-spacing: 0.02em; }
+    .rule-group .score-lbl { font-size: 12px; color: var(--text-mut); }
+    .rule-group .score-lbl strong { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 600; }
+    .rule-instance-count { font-size: 11.5px; color: var(--text-mut); padding: 3px 8px; border: 1px solid var(--border); border-radius: 999px; background: rgba(255,255,255,0.02); }
+    .rule-shared { padding: 10px 0 4px; border-top: 1px solid var(--border-soft); margin-top: 12px; }
+    .rule-shared .mitre { margin: 4px 0; }
+    .rule-shared > details.refs { margin-top: 6px; }
+    .rule-instances { margin-top: 14px; }
+    .rule-instances-hd { font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-mut); font-weight: 700; margin: 0 0 8px; }
+
+    /* A finding rendered as a per-instance disclosure inside a rule group: collapsed
+       by default for groups with 3+ instances, expanded for 1–2. The summary row
+       gives subject + scope + score; the full content (description, attacker
+       scenario, evidence, remediation) lives in .instance-body. */
+    .instance.finding { border-radius: 10px; padding: 0; border-left-width: 1px; background: rgba(255,255,255,0.012); margin-bottom: 6px; }
+    .instance.finding[open] { background: rgba(255,255,255,0.025); }
+    .instance.finding > .instance-hd { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px; cursor: pointer; user-select: none; list-style: none; outline: none; }
+    .instance.finding > .instance-hd::-webkit-details-marker { display: none; }
+    .instance.finding > .instance-hd::before { content: "▸"; color: var(--text-dim); font-size: 11px; transition: transform 0.15s ease; flex: 0 0 auto; line-height: 1; }
+    .instance.finding[open] > .instance-hd::before { transform: rotate(90deg); }
+    .instance.finding > .instance-hd:hover { background: rgba(255,255,255,0.025); }
+    .instance.finding > .instance-hd:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 10px; }
+    .instance-title { flex: 1 1 240px; min-width: 0; font-size: 13.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+    .instance-title code { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 12.5px; background: rgba(255,255,255,0.04); padding: 1px 6px; border-radius: 4px; color: var(--text); }
+    .instance-scope { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-mut); padding: 2px 7px; border: 1px solid var(--border-soft); border-radius: 999px; background: rgba(255,255,255,0.02); }
+    .instance-score { font-size: 12px; color: var(--text-mut); font-variant-numeric: tabular-nums; }
+    .instance-body { padding: 4px 16px 14px; border-top: 1px solid var(--border-soft); }
+    .instance-body .finding-hd-inner { margin: 8px 0 4px; }
+    .instance-body .finding-title-inner { font-size: 13.5px; font-weight: 600; color: var(--text); margin: 0; }
+    /* Reuse .finding child selectors for instance bodies — the existing CSS for
+       .finding .meta / .desc / .scenario / .evidence already targets descendants. */
     .finding-hd { display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
     .finding-hd h3 { font-size: 16px; flex: 1 1 300px; }
     .finding .rule { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11px; color: var(--text-mut); padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; background: rgba(255,255,255,0.02); letter-spacing: 0.02em; }
@@ -912,101 +958,126 @@
       </div>
     </section>
 
-    {{ range .Modules }}
+    {{ range $module := .Modules }}
     <section class="module-section" data-tab="findings" data-module="{{ .ID }}" id="{{ .ID }}">
       <div class="module-hd">
         <h2>{{ .Label }}</h2>
-        <span class="mh-count">{{ .Summary.Total }} {{ pluralize .Summary.Total "finding" "findings" }} · {{ .Summary.Critical }} critical · {{ .Summary.High }} high · {{ .Summary.Medium }} medium · {{ .Summary.Low }} low</span>
+        <span class="mh-count">{{ .Summary.Total }} {{ pluralize .Summary.Total "finding" "findings" }} · {{ len .RuleGroups }} {{ pluralize (len .RuleGroups) "rule" "rules" }} · {{ .Summary.Critical }} critical · {{ .Summary.High }} high · {{ .Summary.Medium }} medium · {{ .Summary.Low }} low</span>
       </div>
-      <div class="finding-list">
-        {{ range .Findings }}
-        {{ $anchor := index $.AnchorByID .ID }}
-        <article class="finding {{ sevClass .Severity }}"{{ if $anchor }} id="{{ $anchor }}"{{ end }} data-rule="{{ .RuleID }}" data-severity="{{ sevClass .Severity }}" data-category="{{ catKey .Category }}"{{ if .Scope.Level }} data-scope="{{ .Scope.Level }}"{{ end }}{{ if .Resource }} data-resource="{{ resource .Resource }}"{{ end }}>
-          <div class="finding-hd">
-            <h3>{{ inlineHTML .Title }}</h3>
-            <span class="badge-sev {{ sevClass .Severity }}">{{ sevShort .Severity }}</span>
-            <span class="rule">{{ .RuleID }}</span>
-            <span class="score-lbl">Score <strong>{{ score .Score }}</strong></span>
-          </div>
-          {{ if or .Scope.Level .Scope.Detail }}
-          <div class="scope-row">
-            {{ if .Scope.Level }}<span class="scope-chip {{ .Scope.Level }}" title="Blast-radius level">Scope · {{ scopeLabel .Scope.Level }}</span>{{ end }}
-            {{ if .Scope.Detail }}<span class="scope-detail">{{ scopeDetailHTML .Scope.Detail }}</span>{{ end }}
-          </div>
-          {{ end }}
-          <div class="meta">
-            <span><span class="k">Category:</span> {{ catLabel .Category }}</span>
-            {{ if .Subject }}<span><span class="k">Subject:</span> <code>{{ subject .Subject }}</code></span>{{ end }}
-            {{ if .Resource }}<span><span class="k">Resource:</span> <code>{{ resource .Resource }}</code></span>{{ end }}
-            {{ if and (not .Subject) .Namespace }}<span><span class="k">Namespace:</span> <code>{{ .Namespace }}</code></span>{{ end }}
-          </div>
-          <div class="desc">{{ descriptionHTML .Description }}</div>
-          {{ if .Impact }}
-          <div class="impact">
-            <span class="k">Impact</span>
-            <span class="v">{{ inlineHTML .Impact }}</span>
-          </div>
-          {{ end }}
-          {{ $edu := findingEducationHTML . }}
-          {{ if or .AttackScenario .EscalationPath $edu }}
-          <div class="scenario">
-            <span class="k">How an attacker abuses this</span>
-            {{ if $edu }}{{ $edu }}{{ end }}
-            {{ if .AttackScenario }}
-            <ol class="attack-narrative">
-              {{ range .AttackScenario }}<li>{{ inlineHTML . }}</li>{{ end }}
-            </ol>
-            {{ end }}
-            {{ if .EscalationPath }}
-            <div class="attack-chain-wrap">
-              {{ escalationPathHTML .EscalationPath }}
+      <div class="rule-list">
+        {{ range $module.RuleGroups }}
+        <article class="rule-group {{ sevClass .TopSeverity }}" id="{{ .Anchor }}" data-rule="{{ .RuleID }}" data-severity="{{ sevClass .TopSeverity }}">
+          <header class="rule-hd">
+            <span class="badge-sev {{ sevClass .TopSeverity }}">{{ sevShort .TopSeverity }}</span>
+            <h3 class="rule-title">{{ inlineHTML .RuleTitle }}</h3>
+            <span class="rule-meta-pills">
+              <span class="rule">{{ .RuleID }}</span>
+              <span class="rule-instance-count">{{ .InstanceCount }} {{ pluralize .InstanceCount "subject" "subjects" }}</span>
+              <span class="score-lbl">Score <strong>{{ score .MaxScore }}{{ if ne .MaxScore .MinScore }}–{{ score .MinScore }}{{ end }}</strong></span>
+            </span>
+          </header>
+          {{ if or .MitreTechniques .LearnMore .References }}
+          <div class="rule-shared">
+            {{ if .MitreTechniques }}
+            <div class="mitre">
+              <span class="k">MITRE ATT&amp;CK:</span>
+              {{ range .MitreTechniques }}<a href="{{ .URL }}" target="_blank" rel="noopener noreferrer" title="{{ .Name }}">{{ .ID }}</a>{{ end }}
             </div>
             {{ end }}
-          </div>
-          {{ end }}
-          {{ if or .Remediation .RemediationSteps }}
-          <div class="rem">
-            <span class="k">Remediation</span>
-            {{ if .Remediation }}<div class="summary">{{ inlineHTML .Remediation }}</div>{{ end }}
-            {{ if .RemediationSteps }}
-            <ol>
-              {{ range .RemediationSteps }}<li>{{ remediationStepHTML . }}</li>{{ end }}
-            </ol>
+            {{ if .LearnMore }}
+            <details class="refs">
+              <summary>References <span class="ref-count">{{ len .LearnMore }}</span></summary>
+              <ul>
+                {{ range .LearnMore }}<li><a href="{{ .URL }}" target="_blank" rel="noopener noreferrer">{{ .Title }}</a></li>{{ end }}
+              </ul>
+            </details>
+            {{ else if .References }}
+            <details class="refs">
+              <summary>References <span class="ref-count">{{ len .References }}</span></summary>
+              <ul>
+                {{ range .References }}<li><a href="{{ . }}" target="_blank" rel="noopener noreferrer">{{ . }}</a></li>{{ end }}
+              </ul>
+            </details>
             {{ end }}
           </div>
           {{ end }}
-          {{ if .MitreTechniques }}
-          <div class="mitre">
-            <span class="k">MITRE ATT&amp;CK:</span>
-            {{ range .MitreTechniques }}<a href="{{ .URL }}" target="_blank" rel="noopener noreferrer" title="{{ .Name }}">{{ .ID }}</a>{{ end }}
-          </div>
-          {{ end }}
-          {{ $ev := evidenceHTML .Evidence }}
-          {{ if $ev }}
-          <div class="evidence">
-            <span class="k">Evidence</span>
-            {{ $ev }}
-            <details class="evidence-raw">
-              <summary>Show raw JSON</summary>
-              <pre><code>{{ json .Evidence }}</code></pre>
+          <div class="rule-instances">
+            <h4 class="rule-instances-hd">{{ if eq .InstanceCount 1 }}Affected subject{{ else }}Affected subjects ({{ .InstanceCount }}){{ end }}</h4>
+            {{ $group := . }}
+            {{ range $i, $f := .Findings }}
+            <details class="instance finding {{ sevClass $f.Severity }}"{{ if le $group.InstanceCount 2 }} open{{ end }} data-rule="{{ $f.RuleID }}" data-severity="{{ sevClass $f.Severity }}" data-category="{{ catKey $f.Category }}"{{ if $f.Scope.Level }} data-scope="{{ $f.Scope.Level }}"{{ end }}{{ if $f.Resource }} data-resource="{{ resource $f.Resource }}"{{ end }}{{ if $f.Subject }} data-subject="{{ subject $f.Subject }}"{{ end }}>
+              <summary class="instance-hd">
+                <span class="badge-sev {{ sevClass $f.Severity }}">{{ sevShort $f.Severity }}</span>
+                <span class="instance-title">{{ if $f.Subject }}<code>{{ subject $f.Subject }}</code>{{ else if $f.Resource }}<code>{{ resource $f.Resource }}</code>{{ else }}{{ inlineHTML $f.Title }}{{ end }}</span>
+                {{ if $f.Scope.Level }}<span class="instance-scope" title="Blast-radius level">{{ scopeLabel $f.Scope.Level }}</span>{{ end }}
+                <span class="instance-score">{{ score $f.Score }}</span>
+              </summary>
+              <div class="instance-body">
+                <div class="finding-hd-inner">
+                  <h5 class="finding-title-inner">{{ inlineHTML $f.Title }}</h5>
+                </div>
+                {{ if or $f.Scope.Level $f.Scope.Detail }}
+                <div class="scope-row">
+                  {{ if $f.Scope.Level }}<span class="scope-chip {{ $f.Scope.Level }}" title="Blast-radius level">Scope · {{ scopeLabel $f.Scope.Level }}</span>{{ end }}
+                  {{ if $f.Scope.Detail }}<span class="scope-detail">{{ scopeDetailHTML $f.Scope.Detail }}</span>{{ end }}
+                </div>
+                {{ end }}
+                <div class="meta">
+                  <span><span class="k">Category:</span> {{ catLabel $f.Category }}</span>
+                  {{ if $f.Subject }}<span><span class="k">Subject:</span> <code>{{ subject $f.Subject }}</code></span>{{ end }}
+                  {{ if $f.Resource }}<span><span class="k">Resource:</span> <code>{{ resource $f.Resource }}</code></span>{{ end }}
+                  {{ if and (not $f.Subject) $f.Namespace }}<span><span class="k">Namespace:</span> <code>{{ $f.Namespace }}</code></span>{{ end }}
+                </div>
+                <div class="desc">{{ descriptionHTML $f.Description }}</div>
+                {{ if $f.Impact }}
+                <div class="impact">
+                  <span class="k">Impact</span>
+                  <span class="v">{{ inlineHTML $f.Impact }}</span>
+                </div>
+                {{ end }}
+                {{ $edu := findingEducationHTML $f }}
+                {{ if or $f.AttackScenario $f.EscalationPath $edu }}
+                <div class="scenario">
+                  <span class="k">How an attacker abuses this</span>
+                  {{ if $edu }}{{ $edu }}{{ end }}
+                  {{ if $f.AttackScenario }}
+                  <ol class="attack-narrative">
+                    {{ range $f.AttackScenario }}<li>{{ inlineHTML . }}</li>{{ end }}
+                  </ol>
+                  {{ end }}
+                  {{ if $f.EscalationPath }}
+                  <div class="attack-chain-wrap">
+                    {{ escalationPathHTML $f.EscalationPath }}
+                  </div>
+                  {{ end }}
+                </div>
+                {{ end }}
+                {{ if or $f.Remediation $f.RemediationSteps }}
+                <div class="rem">
+                  <span class="k">Remediation</span>
+                  {{ if $f.Remediation }}<div class="summary">{{ inlineHTML $f.Remediation }}</div>{{ end }}
+                  {{ if $f.RemediationSteps }}
+                  <ol>
+                    {{ range $f.RemediationSteps }}<li>{{ remediationStepHTML . }}</li>{{ end }}
+                  </ol>
+                  {{ end }}
+                </div>
+                {{ end }}
+                {{ $ev := evidenceHTML $f.Evidence }}
+                {{ if $ev }}
+                <div class="evidence">
+                  <span class="k">Evidence</span>
+                  {{ $ev }}
+                  <details class="evidence-raw">
+                    <summary>Show raw JSON</summary>
+                    <pre><code>{{ json $f.Evidence }}</code></pre>
+                  </details>
+                </div>
+                {{ end }}
+              </div>
             </details>
+            {{ end }}
           </div>
-          {{ end }}
-          {{ if .LearnMore }}
-          <details class="refs">
-            <summary>References <span class="ref-count">{{ len .LearnMore }}</span></summary>
-            <ul>
-              {{ range .LearnMore }}<li><a href="{{ .URL }}" target="_blank" rel="noopener noreferrer">{{ .Title }}</a></li>{{ end }}
-            </ul>
-          </details>
-          {{ else if .References }}
-          <details class="refs">
-            <summary>References <span class="ref-count">{{ len .References }}</span></summary>
-            <ul>
-              {{ range .References }}<li><a href="{{ . }}" target="_blank" rel="noopener noreferrer">{{ . }}</a></li>{{ end }}
-            </ul>
-          </details>
-          {{ end }}
         </article>
         {{ end }}
       </div>

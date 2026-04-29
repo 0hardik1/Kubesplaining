@@ -25,12 +25,37 @@ type Hotspot struct {
 }
 
 // ModuleSection groups findings by the module that emitted them for per-module display in the HTML report.
+// RuleGroups is the rendering view: findings are bucketed by RuleID so the template can render shared
+// rule-level content (title, MITRE, References) once and list per-subject instances below.
+// Findings is preserved for callers that want the flat list (TOC builders, snapshot exports).
 type ModuleSection struct {
-	ID       string // slug used as an anchor ID
-	Label    string
-	Summary  Summary
-	Findings []models.Finding
-	Entries  []TOCEntry // collapsed one-row-per-RuleID list for the Findings-tab TOC
+	ID         string // slug used as an anchor ID
+	Label      string
+	Summary    Summary
+	Findings   []models.Finding
+	RuleGroups []RuleGroup
+	Entries    []TOCEntry // collapsed one-row-per-RuleID list for the Findings-tab TOC
+}
+
+// RuleGroup collapses all findings sharing a RuleID into a single rendering unit. Each group
+// renders once as a "rule card" with shared educational content (rule title, MITRE techniques,
+// References) at the top, and one collapsed <details> instance per affected subject below.
+//
+// TopSeverity is the highest severity across instances; MaxScore/MinScore bracket the score range.
+// Anchor matches AnchorByID for the first instance — narrative chips and TOC rows already point
+// here, so the rule card lands on existing deep-links without churn.
+type RuleGroup struct {
+	RuleID          string
+	RuleTitle       string // subject-neutralized title for the rule header
+	TopSeverity     models.Severity
+	MaxScore        float64
+	MinScore        float64
+	InstanceCount   int
+	Anchor          string
+	MitreTechniques []models.MitreTechnique
+	LearnMore       []models.Reference
+	References      []string
+	Findings        []models.Finding
 }
 
 // CategorySection groups findings by RiskCategory for the "By Attack Theme" panel; it does not carry the findings themselves.

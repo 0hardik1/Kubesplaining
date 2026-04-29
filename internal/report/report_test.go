@@ -230,6 +230,143 @@ func TestBuildHTMLDataTOCEntries(t *testing.T) {
 	}
 }
 
+func TestBuildHTMLDataRuleGroups(t *testing.T) {
+	t.Parallel()
+
+	snapshot := models.NewSnapshot()
+	findings := []models.Finding{
+		// Three findings sharing one RuleID (different subjects) — should collapse
+		// into one RuleGroup with InstanceCount=3 and the highest severity bubbled up.
+		{
+			ID:       "f1",
+			RuleID:   "KUBE-RBAC-1",
+			Severity: models.SeverityHigh,
+			Score:    8.0,
+			Category: models.CategoryPrivilegeEscalation,
+			Title:    "`ServiceAccount/default/a` can reach cluster-admin",
+			Subject:  &models.SubjectRef{Kind: "ServiceAccount", Name: "a", Namespace: "default"},
+			MitreTechniques: []models.MitreTechnique{
+				{ID: "T1078", Name: "Valid Accounts", URL: "https://attack.mitre.org/techniques/T1078/"},
+			},
+			References: []string{"https://example.com/rbac-1"},
+			Tags:       []string{"module:rbac"},
+		},
+		{
+			ID:       "f2",
+			RuleID:   "KUBE-RBAC-1",
+			Severity: models.SeverityCritical, // top severity for the group
+			Score:    9.5,
+			Category: models.CategoryPrivilegeEscalation,
+			Title:    "`Group/admins` can reach cluster-admin",
+			Subject:  &models.SubjectRef{Kind: "Group", Name: "admins"},
+			Tags:     []string{"module:rbac"},
+		},
+		{
+			ID:       "f3",
+			RuleID:   "KUBE-RBAC-1",
+			Severity: models.SeverityHigh,
+			Score:    7.5,
+			Category: models.CategoryPrivilegeEscalation,
+			Title:    "`ServiceAccount/default/b` can reach cluster-admin",
+			Subject:  &models.SubjectRef{Kind: "ServiceAccount", Name: "b", Namespace: "default"},
+			Tags:     []string{"module:rbac"},
+		},
+		// A second rule in the same module — separate group with InstanceCount=1.
+		{
+			ID:       "f4",
+			RuleID:   "KUBE-RBAC-2",
+			Severity: models.SeverityHigh,
+			Score:    7.0,
+			Category: models.CategoryPrivilegeEscalation,
+			Title:    "Bind/escalate granted",
+			Tags:     []string{"module:rbac"},
+		},
+	}
+
+	data := BuildHTMLData(snapshot, findings)
+
+	var rbac *ModuleSection
+	for i := range data.Modules {
+		if data.Modules[i].ID == "rbac" {
+			rbac = &data.Modules[i]
+			break
+		}
+	}
+	if rbac == nil {
+		t.Fatalf("expected an RBAC module section")
+	}
+	if got := len(rbac.RuleGroups); got != 2 {
+		t.Fatalf("expected 2 RuleGroups (one per RuleID), got %d", got)
+	}
+	first := rbac.RuleGroups[0]
+	if first.RuleID != "KUBE-RBAC-1" {
+		t.Fatalf("first group RuleID: want KUBE-RBAC-1, got %s", first.RuleID)
+	}
+	if first.InstanceCount != 3 {
+		t.Fatalf("first group InstanceCount: want 3, got %d", first.InstanceCount)
+	}
+	if first.TopSeverity != models.SeverityCritical {
+		t.Fatalf("first group TopSeverity: want Critical, got %s", first.TopSeverity)
+	}
+	if first.MaxScore != 9.5 || first.MinScore != 7.5 {
+		t.Fatalf("first group score range: want [7.5, 9.5], got [%v, %v]", first.MinScore, first.MaxScore)
+	}
+	if first.Anchor != "finding-KUBE-RBAC-1" {
+		t.Fatalf("first group Anchor: want finding-KUBE-RBAC-1, got %q", first.Anchor)
+	}
+	// MITRE / References should be lifted from the exemplar (first occurrence).
+	if len(first.MitreTechniques) != 1 || first.MitreTechniques[0].ID != "T1078" {
+		t.Fatalf("first group MitreTechniques: want lifted from exemplar, got %#v", first.MitreTechniques)
+	}
+	if len(first.References) != 1 || first.References[0] != "https://example.com/rbac-1" {
+		t.Fatalf("first group References: want lifted from exemplar, got %#v", first.References)
+	}
+	// RuleTitle should be subject-neutralized — the exemplar's subject was
+	// "Group/admins", which prefixes the title; the helper replaces it with "Subjects".
+	if !strings.Contains(first.RuleTitle, "Subjects ") {
+		t.Fatalf("first group RuleTitle: want subject-neutralized, got %q", first.RuleTitle)
+	}
+	if rbac.RuleGroups[1].RuleID != "KUBE-RBAC-2" || rbac.RuleGroups[1].InstanceCount != 1 {
+		t.Fatalf("second group: want KUBE-RBAC-2 / count=1, got %#v", rbac.RuleGroups[1])
+	}
+}
+
+func TestRuleTitleForGroup(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		title string
+		subj  *models.SubjectRef
+		want  string
+	}{
+		{
+			title: "`ServiceAccount/default/risky` can reach cluster-admin equivalent in 1 hop(s)",
+			subj:  &models.SubjectRef{Kind: "ServiceAccount", Name: "risky", Namespace: "default"},
+			want:  "Subjects can reach cluster-admin equivalent in 1 hop(s)",
+		},
+		{
+			title: "Group/kubeadm:cluster-admins can reach cluster-admin",
+			subj:  &models.SubjectRef{Kind: "Group", Name: "kubeadm:cluster-admins"},
+			want:  "Subjects can reach cluster-admin",
+		},
+		{
+			title: "Wildcard verb on wildcard resource",
+			subj:  nil,
+			want:  "Wildcard verb on wildcard resource",
+		},
+		{
+			title: "Privesc path", // subject set but not a leading match — leave alone
+			subj:  &models.SubjectRef{Kind: "ServiceAccount", Name: "x", Namespace: "y"},
+			want:  "Privesc path",
+		},
+	}
+	for _, tc := range cases {
+		got := ruleTitleForGroup(models.Finding{Title: tc.title, Subject: tc.subj})
+		if got != tc.want {
+			t.Errorf("ruleTitleForGroup(title=%q): got %q, want %q", tc.title, got, tc.want)
+		}
+	}
+}
+
 func TestRenderInlineCodeMarkdown(t *testing.T) {
 	t.Parallel()
 

@@ -119,6 +119,7 @@ func BuildHTMLData(snapshot models.Snapshot, findings []models.Finding) htmlRepo
 	// section structs the template already iterates.
 	for i := range modules {
 		modules[i].Entries = buildTOCEntries(modules[i].Findings, anchorByID)
+		modules[i].RuleGroups = buildRuleGroups(modules[i].Findings, anchorByID)
 	}
 	for i := range categories {
 		categories[i].Entries = buildTOCEntries(categoryMap[models.RiskCategory(categories[i].Key)], anchorByID)
@@ -417,6 +418,93 @@ func heatLevel(n int) int {
 	default:
 		return 5
 	}
+}
+
+// buildRuleGroups collapses a slice of findings (already in render order) into one RuleGroup
+// per RuleID. Each group's first finding becomes the "exemplar" — its Title is used as the
+// subject-neutralized rule title, and its MITRE / References / LearnMore become the rule-level
+// shared content. TopSeverity / MaxScore / MinScore are computed across the group.
+//
+// Order of groups preserves the first-occurrence order of the input findings (which is already
+// severity-then-score sorted upstream), so the rendered Findings tab still shows the most
+// dangerous rules first.
+func buildRuleGroups(findings []models.Finding, anchorByID map[string]string) []RuleGroup {
+	if len(findings) == 0 {
+		return nil
+	}
+	type acc struct {
+		group   RuleGroup
+		members []models.Finding
+		order   int
+	}
+	byRule := make(map[string]*acc, len(findings))
+	order := 0
+	for _, f := range findings {
+		entry, ok := byRule[f.RuleID]
+		if !ok {
+			entry = &acc{
+				group: RuleGroup{
+					RuleID:          f.RuleID,
+					RuleTitle:       ruleTitleForGroup(f),
+					TopSeverity:     f.Severity,
+					MaxScore:        f.Score,
+					MinScore:        f.Score,
+					MitreTechniques: f.MitreTechniques,
+					LearnMore:       f.LearnMore,
+					References:      f.References,
+				},
+				order: order,
+			}
+			if a, found := anchorByID[f.ID]; found {
+				entry.group.Anchor = a
+			} else {
+				entry.group.Anchor = "finding-" + f.RuleID
+			}
+			byRule[f.RuleID] = entry
+			order++
+		} else {
+			if f.Severity.Rank() > entry.group.TopSeverity.Rank() {
+				entry.group.TopSeverity = f.Severity
+			}
+			if f.Score > entry.group.MaxScore {
+				entry.group.MaxScore = f.Score
+			}
+			if f.Score < entry.group.MinScore {
+				entry.group.MinScore = f.Score
+			}
+		}
+		entry.members = append(entry.members, f)
+	}
+	groups := make([]RuleGroup, len(byRule))
+	for _, e := range byRule {
+		e.group.Findings = e.members
+		e.group.InstanceCount = len(e.members)
+		groups[e.order] = e.group
+	}
+	return groups
+}
+
+// ruleTitleForGroup returns a subject-neutral version of a finding's Title, suitable as the
+// header for a rule card. Many finding titles embed the subject ("`ServiceAccount/X` can reach
+// cluster-admin equivalent in 1 hop(s)"); we strip that leading subject and replace it with
+// "Subjects" so the title reads as a description of the rule, not a single instance. Falls
+// back to the raw title for rules whose titles don't follow that pattern.
+func ruleTitleForGroup(f models.Finding) string {
+	title := strings.TrimSpace(f.Title)
+	if f.Subject == nil || title == "" {
+		return title
+	}
+	subj := subjectDisplay(f.Subject)
+	if subj == "" || subj == "-" {
+		return title
+	}
+	for _, prefix := range []string{"`" + subj + "` ", subj + " "} {
+		if strings.HasPrefix(title, prefix) {
+			rest := strings.TrimPrefix(title, prefix)
+			return "Subjects " + rest
+		}
+	}
+	return title
 }
 
 // buildTOCEntries collapses a slice of findings into one TOCEntry per RuleID, keeping the

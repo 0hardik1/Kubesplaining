@@ -42,10 +42,19 @@
   }
 
   function applyFindingsFilter() {
-    var articles = document.querySelectorAll('article.finding');
+    // Findings are now rendered as per-subject .finding instances inside .rule-group cards.
+    // Filter at instance granularity, then roll the visibility up to rule groups and module
+    // sections so empty containers collapse cleanly.
+    var instances = document.querySelectorAll('.finding[data-rule]');
+    // When any filter narrows the result set, auto-open matching <details> instances so
+    // the user lands on relevant evidence without an extra click.
+    var anyFilter = false;
+    for (var fk = 0; fk < FILTER_KEYS.length; fk++) {
+      if (filterState[FILTER_KEYS[fk]] != null) { anyFilter = true; break; }
+    }
     var n = 0;
-    for (var i = 0; i < articles.length; i++) {
-      var a = articles[i];
+    for (var i = 0; i < instances.length; i++) {
+      var a = instances[i];
       var keep = true;
       for (var k = 0; k < FILTER_KEYS.length; k++) {
         var key = FILTER_KEYS[k];
@@ -59,13 +68,22 @@
         if (got !== want) { keep = false; break; }
       }
       a.style.display = keep ? '' : 'none';
-      if (keep) n++;
+      if (keep) {
+        n++;
+        if (anyFilter && a.tagName === 'DETAILS') a.open = true;
+      }
     }
-    // Hide module sections whose findings are all filtered out.
+    // Hide rule-group cards whose instances are all filtered out.
+    var groups = document.querySelectorAll('.rule-group');
+    for (var g = 0; g < groups.length; g++) {
+      var visibleInGroup = groups[g].querySelectorAll('.finding[data-rule]:not([style*="display: none"])').length;
+      groups[g].style.display = visibleInGroup ? '' : 'none';
+    }
+    // Hide module sections whose rule-groups are all filtered out.
     var sections = document.querySelectorAll('section.module-section');
     for (var s = 0; s < sections.length; s++) {
-      var visible = sections[s].querySelectorAll('article.finding:not([style*="display: none"])').length;
-      sections[s].style.display = visible ? '' : 'none';
+      var visibleSec = sections[s].querySelectorAll('.rule-group:not([style*="display: none"])').length;
+      sections[s].style.display = visibleSec ? '' : 'none';
     }
     renderFilterChips();
   }
