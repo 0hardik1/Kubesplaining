@@ -408,10 +408,32 @@
     .finding .impact .k { color: #ff9a3c; font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; padding-top: 2px; }
     .finding .impact .v { color: var(--text); }
     .finding .scenario { margin: 10px 0; padding: 12px 14px; background: rgba(255,154,60,0.04); border: 1px solid rgba(255,154,60,0.18); border-radius: 10px; }
-    .finding .scenario .k { color: #ff9a3c; font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 8px; display: block; }
-    .finding .scenario ol { margin: 0; padding-left: 20px; color: var(--text); font-size: 13px; line-height: 1.6; }
-    .finding .scenario ol li { margin-bottom: 4px; }
-    .finding .scenario ol li:last-child { margin-bottom: 0; }
+    .finding .scenario > .k { color: #ff9a3c; font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 8px; display: block; }
+    .finding .scenario ol.attack-narrative { margin: 0; padding-left: 20px; color: var(--text); font-size: 13px; line-height: 1.6; }
+    .finding .scenario ol.attack-narrative li { margin-bottom: 4px; }
+    .finding .scenario ol.attack-narrative li:last-child { margin-bottom: 0; }
+    .finding .scenario .attack-chain-wrap { margin-top: 12px; }
+
+    /* Background (glossary/technique educational copy) — surfaces the same definitions
+       the interactive Attack Graph carries, so a reader does not have to leave the
+       Findings tab to learn what a ServiceAccount is or what the impersonate verb does. */
+    .finding .education { margin-bottom: 12px; padding: 10px 12px; background: rgba(106,183,255,0.05); border: 1px solid rgba(106,183,255,0.18); border-radius: 8px; }
+    .finding .education .edu-k { color: var(--accent); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 8px; display: block; }
+    .finding .education .edu-cards { display: grid; gap: 8px; }
+    .finding .education .edu-card { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: rgba(255,255,255,0.02); }
+    .finding .education .edu-hd { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin-bottom: 4px; }
+    .finding .education .edu-label { font-size: 10.5px; color: var(--text-dim); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; padding: 1px 6px; border: 1px solid var(--border); border-radius: 999px; background: rgba(255,255,255,0.03); }
+    .finding .education .edu-title { color: var(--text); font-weight: 600; font-size: 13px; }
+    .finding .education .edu-body { color: var(--text-mut); font-size: 12.5px; line-height: 1.55; }
+    .finding .education .edu-body p { margin: 0 0 6px; }
+    .finding .education .edu-body p:last-child { margin-bottom: 0; }
+    .finding .education .edu-body code { background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--text); }
+    .finding .education .edu-body strong { color: var(--text); font-weight: 600; }
+    .finding .education .edu-body em { color: var(--text); font-style: italic; }
+    .finding .education .edu-body ul { margin: 4px 0 6px; padding-left: 18px; }
+    .finding .education .edu-body ul li { margin-bottom: 3px; }
+    .finding .education .edu-doc { display: inline-block; margin-top: 6px; font-size: 11.5px; color: var(--accent); text-decoration: none; }
+    .finding .education .edu-doc:hover { text-decoration: underline; }
     .finding .rem { padding: 12px 14px; background: rgba(106,183,255,0.05); border: 1px solid rgba(106,183,255,0.18); border-radius: 10px; font-size: 13.5px; line-height: 1.55; }
     .finding .rem .k { color: var(--accent); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 8px; display: block; }
     .finding .rem .summary { color: var(--text); margin-bottom: 8px; }
@@ -437,26 +459,24 @@
     .finding details[open] summary { color: var(--accent); border-color: var(--border-strong); border-style: solid; }
     .finding details pre { margin-top: 10px; }
 
-    /* Observed attack chain (privesc EscalationPath) */
-    .finding .chain { margin-top: 12px; padding: 12px 14px; background: rgba(255,90,90,0.06); border: 1px solid rgba(255,90,90,0.22); border-radius: 10px; }
-    .finding .chain .k { color: var(--critical, #ff5a5a); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 8px; display: block; }
-    .finding .chain ol.attack-chain { list-style: none; padding-left: 0; margin: 0; display: grid; gap: 10px; counter-reset: step; }
-    .finding .chain ol.attack-chain li.attack-step { padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,255,255,0.02); font-size: 13px; line-height: 1.5; color: var(--text); }
-    .finding .chain .step-hd { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; flex-wrap: wrap; }
-    .finding .chain .step-num { font-weight: 700; color: var(--accent); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
-    .finding .chain .step-title { color: var(--text); font-weight: 600; font-size: 13px; }
-    .finding .chain .step-action { background: rgba(255,255,255,0.06); padding: 2px 8px; border-radius: 6px; font-size: 11.5px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; color: var(--text-mut); }
-    .finding .chain .step-explainer { margin: 4px 0 8px; color: var(--text-mut); font-size: 12.5px; line-height: 1.55; }
-    .finding .chain .step-explainer p { margin: 0 0 6px; }
-    .finding .chain .step-explainer p:last-child { margin-bottom: 0; }
-    .finding .chain .step-explainer code { background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--text); }
-    .finding .chain .step-explainer strong { color: var(--text); font-weight: 600; }
-    .finding .chain .step-explainer em { color: var(--text); font-style: italic; }
-    .finding .chain .step-edge { color: var(--text-mut); margin-bottom: 4px; font-size: 13px; }
-    .finding .chain .step-edge code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; font-size: 11.5px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; color: var(--text); }
-    .finding .chain .step-meta { font-size: 12.5px; color: var(--text-mut); margin-top: 2px; }
-    .finding .chain .step-meta .k { display: inline; color: var(--text-dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 6px; }
-    .finding .chain .step-meta code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; }
+    /* Structured attack-chain cards (privesc EscalationPath), nested inside .scenario */
+    .finding .scenario ol.attack-chain { list-style: none; padding-left: 0; margin: 0; display: grid; gap: 10px; counter-reset: step; }
+    .finding .scenario ol.attack-chain li.attack-step { padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,255,255,0.02); font-size: 13px; line-height: 1.5; color: var(--text); }
+    .finding .scenario .step-hd { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; flex-wrap: wrap; }
+    .finding .scenario .step-num { font-weight: 700; color: var(--accent); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+    .finding .scenario .step-title { color: var(--text); font-weight: 600; font-size: 13px; }
+    .finding .scenario .step-action { background: rgba(255,255,255,0.06); padding: 2px 8px; border-radius: 6px; font-size: 11.5px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; color: var(--text-mut); }
+    .finding .scenario .step-explainer { margin: 4px 0 8px; color: var(--text-mut); font-size: 12.5px; line-height: 1.55; }
+    .finding .scenario .step-explainer p { margin: 0 0 6px; }
+    .finding .scenario .step-explainer p:last-child { margin-bottom: 0; }
+    .finding .scenario .step-explainer code { background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--text); }
+    .finding .scenario .step-explainer strong { color: var(--text); font-weight: 600; }
+    .finding .scenario .step-explainer em { color: var(--text); font-style: italic; }
+    .finding .scenario .step-edge { color: var(--text-mut); margin-bottom: 4px; font-size: 13px; }
+    .finding .scenario .step-edge code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; font-size: 11.5px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; color: var(--text); }
+    .finding .scenario .step-meta { font-size: 12.5px; color: var(--text-mut); margin-top: 2px; }
+    .finding .scenario .step-meta .k { display: inline; color: var(--text-dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 6px; }
+    .finding .scenario .step-meta code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; }
 
     /* Humanized Evidence section */
     .finding .evidence { margin-top: 12px; padding: 10px 12px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 10px; }
@@ -862,18 +882,21 @@
             <span class="v">{{ inlineHTML .Impact }}</span>
           </div>
           {{ end }}
-          {{ if .AttackScenario }}
+          {{ $edu := findingEducationHTML . }}
+          {{ if or .AttackScenario .EscalationPath $edu }}
           <div class="scenario">
             <span class="k">How an attacker abuses this</span>
-            <ol>
+            {{ if $edu }}{{ $edu }}{{ end }}
+            {{ if .AttackScenario }}
+            <ol class="attack-narrative">
               {{ range .AttackScenario }}<li>{{ inlineHTML . }}</li>{{ end }}
             </ol>
-          </div>
-          {{ end }}
-          {{ if .EscalationPath }}
-          <div class="chain">
-            <span class="k">Observed attack chain</span>
-            {{ escalationPathHTML .EscalationPath }}
+            {{ end }}
+            {{ if .EscalationPath }}
+            <div class="attack-chain-wrap">
+              {{ escalationPathHTML .EscalationPath }}
+            </div>
+            {{ end }}
           </div>
           {{ end }}
           {{ if or .Remediation .RemediationSteps }}

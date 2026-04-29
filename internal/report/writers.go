@@ -228,6 +228,12 @@ func writeHTML(path string, snapshot models.Snapshot, findings []models.Finding)
 		"escalationPathHTML": func(hops []models.EscalationHop) template.HTML {
 			return renderEscalationPath(hops)
 		},
+		// findingEducationHTML returns a "Background" block of glossary/technique
+		// definitions tailored to the finding (subject kind, resource kind, technique).
+		// Returns "" when no entries apply, gating the wrapper.
+		"findingEducationHTML": func(f models.Finding) template.HTML {
+			return renderFindingEducation(f)
+		},
 		"pluralize": func(n int, singular, plural string) string {
 			if n == 1 {
 				return singular

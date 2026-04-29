@@ -102,6 +102,20 @@ Every analyzer emits `models.Finding` with a stable `RuleID` (`KUBE-<MODULE>-<NU
 
 `Finding.ID` is the deterministic per-instance key (`RULE:ns:name`); `RuleID` is shared across instances of the same rule. Exclusions never delete findings — they set `Excluded=true` + `ExclusionReason` so the report can still display them.
 
+### Report-layer educational content (`internal/report/glossary.go`)
+
+Three maps carry presentation-only copy that deliberately does **not** live on `models.Finding`, so JSON/CSV/SARIF outputs stay clean and copy can iterate without re-running scans:
+
+- `Glossary[Kind]` — definitions of subject/resource Kinds (`ServiceAccount`, `Pod`, `Secret`, `Deployment`, ...) with `Title` / `Short` / `Long` / `DocURL`.
+- `Techniques[ActionSlug]` — attacker-technique explainers keyed by chain-hop `Action` (`impersonate`, `read_secrets`, `pod_host_escape`, ...) with `Title` / `Plain` / `Mitre` / `AttackerSteps`.
+- `Categories[CategoryName]` — impact-lane copy for the Attack Graph (`privilege_escalation`, `lateral_movement`, ...).
+
+`GlossaryKeyForSubject` / `GlossaryKeyForResource` / `TechniqueKeyForFinding` (all in `glossary.go`) resolve a `Finding` to keys. Both the interactive Attack Graph (`attack_graph.go` → `GraphPayload`) and the static Findings tab (`education_render.go` → `findingEducationHTML`) consume them.
+
+The static **"How an attacker abuses this"** section is one combined `.scenario` wrapper that holds, in order: a `Background` block of glossary cards (Subject / Resource / Technique definitions), the `AttackScenario` narrative (`<ol class="attack-narrative">`), and the `EscalationPath` chain cards (`<ol class="attack-chain">`). The Background block suppresses its Technique entry when the chain renders technique copy per-hop, to avoid duplication. There is no separate "Observed attack chain" section anymore.
+
+When you add a rule that targets a new resource/subject Kind, or a new privesc Action slug, also add the corresponding `Glossary` / `Techniques` entry — otherwise the Background block silently drops that aspect.
+
 ## Conventions worth preserving
 
 - Package doc comments at the top of each `package foo` file describe the package's role; new files should follow the same pattern.
