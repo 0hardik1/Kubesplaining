@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -101,6 +102,11 @@ type AttackGraph struct {
 	Lanes  [3]GraphLane
 	Nodes  []GraphNode
 	Edges  []GraphEdge
+	// Truncated reports whether the capability set was clipped to fit MaxCaps; the template
+	// uses Shown / TotalCaps to render a notice above the diagram explaining the slate.
+	Truncated bool
+	Shown     int
+	TotalCaps int
 }
 
 // GraphLane labels one of the three columns at the top of the attack graph.
@@ -1174,7 +1180,12 @@ func buildHeadline(s Summary, narratives []NarrativeCard, ns []Hotspot) (string,
 func buildAttackGraph(findings []models.Finding, resourceMap, subjectMap map[string][]models.Finding) (AttackGraph, GraphPayload) {
 	emptyPayload := GraphPayload{Glossary: Glossary, Techniques: Techniques, Categories: Categories}
 
-	// Select capabilities: critical + high findings, deduplicated by rule_id (keep highest-scoring), top 10 by score.
+	// Select capabilities: critical + high findings, deduplicated by rule_id (keep highest-scoring),
+	// then capped at maxCaps. Selection guarantees at least one cap per RiskCategory present in
+	// the candidate pool — otherwise a fixture dominated by one category (e.g. 90+ privesc rules)
+	// fills the slate and the Impact lane collapses to a single node, hiding the lateral-movement
+	// or data-exfiltration impacts the same cluster also has.
+	const maxCaps = 10
 	byRule := map[string]models.Finding{}
 	for _, f := range findings {
 		if f.Severity != models.SeverityCritical && f.Severity != models.SeverityHigh {
@@ -1184,22 +1195,68 @@ func buildAttackGraph(findings []models.Finding, resourceMap, subjectMap map[str
 			byRule[f.RuleID] = f
 		}
 	}
-	caps := make([]models.Finding, 0, len(byRule))
+	totalCaps := len(byRule)
+
+	capLess := func(a, b models.Finding) bool {
+		if a.Severity.Rank() != b.Severity.Rank() {
+			return a.Severity.Rank() > b.Severity.Rank()
+		}
+		if a.Score != b.Score {
+			return a.Score > b.Score
+		}
+		return a.RuleID < b.RuleID
+	}
+
+	byCategory := map[models.RiskCategory][]models.Finding{}
 	for _, f := range byRule {
+		byCategory[f.Category] = append(byCategory[f.Category], f)
+	}
+	for c := range byCategory {
+		sort.Slice(byCategory[c], func(i, j int) bool { return capLess(byCategory[c][i], byCategory[c][j]) })
+	}
+
+	categoryOrder := []models.RiskCategory{
+		models.CategoryPrivilegeEscalation,
+		models.CategoryLateralMovement,
+		models.CategoryDataExfiltration,
+		models.CategoryInfrastructureModification,
+		models.CategoryDefenseEvasion,
+	}
+	caps := make([]models.Finding, 0, maxCaps)
+	chosen := map[string]bool{}
+	pickTop := func(c models.RiskCategory) {
+		cands := byCategory[c]
+		if len(cands) == 0 || len(caps) >= maxCaps {
+			return
+		}
+		caps = append(caps, cands[0])
+		chosen[cands[0].RuleID] = true
+	}
+	for _, c := range categoryOrder {
+		pickTop(c)
+	}
+	for c := range byCategory {
+		if !slices.Contains(categoryOrder, c) {
+			pickTop(c)
+		}
+	}
+
+	remaining := make([]models.Finding, 0, totalCaps)
+	for _, f := range byRule {
+		if !chosen[f.RuleID] {
+			remaining = append(remaining, f)
+		}
+	}
+	sort.Slice(remaining, func(i, j int) bool { return capLess(remaining[i], remaining[j]) })
+	for _, f := range remaining {
+		if len(caps) >= maxCaps {
+			break
+		}
 		caps = append(caps, f)
+		chosen[f.RuleID] = true
 	}
-	sort.Slice(caps, func(i, j int) bool {
-		if caps[i].Severity.Rank() != caps[j].Severity.Rank() {
-			return caps[i].Severity.Rank() > caps[j].Severity.Rank()
-		}
-		if caps[i].Score != caps[j].Score {
-			return caps[i].Score > caps[j].Score
-		}
-		return caps[i].RuleID < caps[j].RuleID
-	})
-	if len(caps) > 10 {
-		caps = caps[:10]
-	}
+
+	sort.Slice(caps, func(i, j int) bool { return capLess(caps[i], caps[j]) })
 	if len(caps) == 0 {
 		return AttackGraph{
 			Width: 980, Height: 120,
@@ -1331,6 +1388,9 @@ func buildAttackGraph(findings []models.Finding, resourceMap, subjectMap map[str
 			{X: laneCapX, Label: "Abused capability", LabelX: laneCapX + laneCapW/2, LabelW: 175},
 			{X: laneImpactX, Label: "Impact", LabelX: laneImpactX + laneImpactW/2, LabelW: 80},
 		},
+		Shown:     len(caps),
+		TotalCaps: totalCaps,
+		Truncated: totalCaps > len(caps),
 	}
 
 	// Build entry nodes with wrapped text + dynamic height.
@@ -1951,6 +2011,9 @@ const htmlTemplate = `<!doctype html>
     .graph-intro { color: var(--text-mut); font-size: 14px; max-width: 820px; margin: 0 0 4px; }
     .graph-intro strong { color: var(--text); }
     .graph-intro .kp-hint { display: inline-block; margin-left: 4px; color: var(--accent); font-size: 12.5px; }
+    .graph-truncated-notice { color: var(--text-mut); font-size: 12.5px; max-width: 820px; margin: 8px 0 6px; padding: 8px 12px; background: rgba(255,154,60,0.06); border-left: 2px solid rgba(255,154,60,0.55); border-radius: 4px; line-height: 1.5; }
+    .graph-truncated-notice strong { color: var(--text); }
+    .graph-truncated-badge { display: inline-block; font-weight: 600; color: var(--text); margin-right: 6px; padding: 1px 6px; background: rgba(255,154,60,0.18); border-radius: 3px; font-size: 11.5px; letter-spacing: 0.02em; }
     .graph-wrap { margin-top: 10px; overflow-x: auto; }
     .kp-graph-card { position: relative; }
     .attack-svg { width: 100%; min-width: 1080px; height: auto; display: block; }
@@ -2415,6 +2478,9 @@ const htmlTemplate = `<!doctype html>
           </div>
         </div>
         <p class="graph-intro">Defenders look at findings as a list. <strong>Attackers chain them</strong>. This graph walks each entry point through the capability it grants to the impact it achieves — so a finding's real danger is the <em>path</em> it joins, not its individual score. <span class="kp-hint">Hover for context · click any node for a plain-language explainer.</span></p>
+        {{ if .Graph.Truncated }}
+        <p class="graph-truncated-notice"><span class="graph-truncated-badge">Showing {{ .Graph.Shown }} of {{ .Graph.TotalCaps }}</span>To keep the diagram readable, capabilities are capped at 10. The slate first guarantees one cap per impact category present in the cluster, then fills remaining slots by severity and score. The <strong>Findings</strong> tab has the complete list.</p>
+        {{ end }}
         <div class="kp-filters" role="toolbar" aria-label="Filter the attack graph">
           <span class="kp-filters-label">Show</span>
           <button type="button" class="kp-chip" data-filter="sev" data-value="crit" aria-pressed="true"><span class="kp-chip-dot crit"></span>Critical</button>

@@ -15,6 +15,8 @@ const (
 	sinkClusterAdmin      = "sink:cluster_admin"
 	sinkKubeSystemSecrets = "sink:kube_system_secrets"
 	sinkNodeEscape        = "sink:node_escape"
+	sinkSystemMasters     = "sink:system_masters"
+	sinkTokenMint         = "sink:token_mint"
 )
 
 // nodeID returns the canonical graph-node ID for a subject.
@@ -32,6 +34,8 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 	addSink(graph, sinkClusterAdmin, models.TargetClusterAdmin)
 	addSink(graph, sinkKubeSystemSecrets, models.TargetKubeSystemSecrets)
 	addSink(graph, sinkNodeEscape, models.TargetNodeEscape)
+	addSink(graph, sinkSystemMasters, models.TargetSystemMasters)
+	addSink(graph, sinkTokenMint, models.TargetTokenMint)
 
 	subjectsByNs := serviceAccountsByNamespace(snapshot)
 	podSAsByNs := podServiceAccountsByNamespace(snapshot)
@@ -118,6 +122,15 @@ func addEdgesForRule(
 		})
 	}
 
+	if matchesResourceVerb(rule, []string{"groups"}, []string{"impersonate"}) {
+		addEdge(graph, from, sinkSystemMasters, &models.EscalationEdge{
+			Technique:   "KUBE-PRIVESC-008",
+			Action:      "impersonate_system_masters",
+			Permission:  verbResource(rule, "groups"),
+			Description: "can impersonate the system:masters group, bypassing all RBAC",
+		})
+	}
+
 	if matchesResourceVerb(rule, []string{"secrets"}, []string{"get", "list", "watch"}) {
 		if clusterScope || rule.Namespace == "kube-system" {
 			addEdge(graph, from, sinkKubeSystemSecrets, &models.EscalationEdge{
@@ -184,6 +197,15 @@ func addEdgesForRule(
 				Description: fmt.Sprintf("can mint tokens for ServiceAccount %s/%s", target.Namespace, target.Name),
 			})
 		}
+	}
+
+	if clusterScope && matchesResourceVerb(rule, []string{"serviceaccounts/token"}, []string{"create"}) {
+		addEdge(graph, from, sinkTokenMint, &models.EscalationEdge{
+			Technique:   "KUBE-PRIVESC-014",
+			Action:      "mint_arbitrary_token",
+			Permission:  "create serviceaccounts/token (cluster-wide)",
+			Description: "can mint a service-account token for any ServiceAccount in any namespace",
+		})
 	}
 }
 

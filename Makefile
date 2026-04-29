@@ -12,7 +12,7 @@ export PATH := $(CURDIR)/bin:$(PATH)
 
 GOFILES := $(shell $(CURDIR)/bin/rg --files -g '*.go')
 
-.PHONY: setup build test lint e2e scan clean
+.PHONY: setup build test lint e2e scan delete clean
 
 setup:
 	$(GOENV) go mod download
@@ -36,6 +36,9 @@ e2e: build
 # via ARGS, e.g. `make scan ARGS="--threshold high --only-modules privesc"`.
 scan: build
 	$(BINARY) scan $(ARGS)
+
+delete:
+	kind delete cluster --name $(KIND_CLUSTER_NAME)
 
 clean:
 	rm -rf ./bin ./kubesplaining-report ./.tmp

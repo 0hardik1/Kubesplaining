@@ -163,3 +163,517 @@ webhooks:
         apiVersions: ["v1"]
         operations: ["CREATE"]
         resources: ["pods"]
+---
+# === MODULE: rbac (one single-rule ClusterRole per SA) ===
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rbac-fixtures
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-wildcard
+  namespace: rbac-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-wildcard
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-wildcard
+subjects:
+  - kind: ServiceAccount
+    name: sa-wildcard
+    namespace: rbac-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-wildcard
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-pod-create
+  namespace: rbac-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-pod-create
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-pod-create
+subjects:
+  - kind: ServiceAccount
+    name: sa-pod-create
+    namespace: rbac-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-pod-create
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-workload-mutate
+  namespace: rbac-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-workload-mutate
+rules:
+  - apiGroups: ["apps", "batch"]
+    resources: ["deployments", "daemonsets", "statefulsets", "jobs", "cronjobs"]
+    verbs: ["create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-workload-mutate
+subjects:
+  - kind: ServiceAccount
+    name: sa-workload-mutate
+    namespace: rbac-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-workload-mutate
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-impersonate
+  namespace: rbac-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-impersonate
+rules:
+  - apiGroups: [""]
+    resources: ["groups"]
+    verbs: ["impersonate"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-impersonate
+subjects:
+  - kind: ServiceAccount
+    name: sa-impersonate
+    namespace: rbac-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-impersonate
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-bind-escalate
+  namespace: rbac-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-bind-escalate
+rules:
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "clusterroles"]
+    verbs: ["bind", "escalate"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-bind-escalate
+subjects:
+  - kind: ServiceAccount
+    name: sa-bind-escalate
+    namespace: rbac-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-bind-escalate
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-rolebinding-mutate
+  namespace: rbac-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-rolebinding-mutate
+rules:
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings", "clusterrolebindings"]
+    verbs: ["create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-rolebinding-mutate
+subjects:
+  - kind: ServiceAccount
+    name: sa-rolebinding-mutate
+    namespace: rbac-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-rolebinding-mutate
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-nodes-proxy
+  namespace: rbac-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-nodes-proxy
+rules:
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-nodes-proxy
+subjects:
+  - kind: ServiceAccount
+    name: sa-nodes-proxy
+    namespace: rbac-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-nodes-proxy
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-token-create
+  namespace: rbac-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-token-create
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-token-create
+subjects:
+  - kind: ServiceAccount
+    name: sa-token-create
+    namespace: rbac-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-token-create
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-cluster-admin
+  namespace: rbac-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: sa-cluster-admin
+    namespace: rbac-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+---
+# === MODULE: podsec / escape (extra fixtures in `vulnerable` namespace) ===
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: host-ns-app
+  namespace: vulnerable
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: host-ns-app
+  template:
+    metadata:
+      labels:
+        app: host-ns-app
+    spec:
+      hostPID: true
+      hostIPC: true
+      containers:
+        - name: app
+          image: nginx:1.27
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: socket-mounts-app
+  namespace: vulnerable
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: socket-mounts-app
+  template:
+    metadata:
+      labels:
+        app: socket-mounts-app
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          command: ["sleep", "infinity"]
+          # mountPaths use /hostmounts/* so the host bind-mounts never collide with
+          # the container image's own /var/* tree. The analyzer keys on hostPath.path
+          # (the source), not mountPath, so KUBE-ESCAPE-005 / -008 / CONTAINERD-SOCKET-001
+          # still fire from the source paths below.
+          volumeMounts:
+            - name: docker-sock
+              mountPath: /hostmounts/docker.sock
+            - name: containerd-sock
+              mountPath: /hostmounts/containerd.sock
+            - name: var-log
+              mountPath: /hostmounts/var-log
+      volumes:
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+        - name: containerd-sock
+          hostPath:
+            path: /var/run/containerd/containerd.sock
+        - name: var-log
+          hostPath:
+            path: /var/log
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: generic-hostpath-app
+  namespace: vulnerable
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: generic-hostpath-app
+  template:
+    metadata:
+      labels:
+        app: generic-hostpath-app
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.27
+          volumeMounts:
+            - name: tmp-data
+              mountPath: /tmp/data
+      volumes:
+        - name: tmp-data
+          hostPath:
+            path: /tmp/data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: root-runner
+  namespace: vulnerable
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: root-runner
+  template:
+    metadata:
+      labels:
+        app: root-runner
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.27
+          securityContext:
+            runAsUser: 0
+---
+# === MODULE: serviceaccount (workloads mounting the privileged SAs) ===
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wildcard-app
+  namespace: rbac-fixtures
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: wildcard-app
+  template:
+    metadata:
+      labels:
+        app: wildcard-app
+    spec:
+      serviceAccountName: sa-wildcard
+      containers:
+        - name: app
+          image: nginx:1.27
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: imp-app
+  namespace: rbac-fixtures
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: imp-app
+  template:
+    metadata:
+      labels:
+        app: imp-app
+    spec:
+      serviceAccountName: sa-impersonate
+      containers:
+        - name: app
+          image: nginx:1.27
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: daemon-app
+  namespace: rbac-fixtures
+spec:
+  selector:
+    matchLabels:
+      app: daemon-app
+  template:
+    metadata:
+      labels:
+        app: daemon-app
+    spec:
+      serviceAccountName: sa-pod-create
+      containers:
+        - name: app
+          image: nginx:1.27
+---
+# === MODULE: serviceaccount default with permissions (vulnerable namespace) ===
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cm-reader
+  namespace: vulnerable
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: default-sa-rb
+  namespace: vulnerable
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: vulnerable
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cm-reader
+---
+# === MODULE: network (orphan workload + ingress-only namespace) ===
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unmatched
+  namespace: flat-network
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orphan
+  template:
+    metadata:
+      labels:
+        app: orphan
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.27
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingress-only
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingress-app
+  namespace: ingress-only
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ingress-app
+  template:
+    metadata:
+      labels:
+        app: ingress-app
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.27
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingress-only-policy
+  namespace: ingress-only
+spec:
+  policyTypes: ["Ingress"]
+  podSelector:
+    matchLabels:
+      app: ingress-app
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ingress-app
+---
+# === MODULE: secrets (kube-system opaque secret) ===
+apiVersion: v1
+kind: Secret
+metadata:
+  name: e2e-fake-opaque
+  namespace: kube-system
+type: Opaque
+data:
+  dummy: ZmFrZQ==
