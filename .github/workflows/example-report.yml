@@ -1,0 +1,43 @@
+name: Publish example report
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run e2e (kind cluster + report generation)
+        env:
+          KEEP_CLUSTER: "0"
+        run: make e2e
+
+      - name: Stage Pages artifact
+        run: |
+          mkdir -p _site
+          cp .tmp/e2e-report/report.html   _site/index.html
+          cp .tmp/e2e-report/findings.json _site/findings.json
+          cp .tmp/e2e-report/triage.csv    _site/triage.csv
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -13,6 +13,8 @@ It focuses on the things that matter most for *offensive-realistic* Kubernetes h
 
 Every finding names the technique, shows the evidence, and includes remediation — explanation, not just detection.
 
+**See an example report:** the e2e suite scans a deliberately misconfigured cluster and publishes the result at <https://0hardik1.github.io/Kubesplaining/> — open it to see how findings, the attack graph, and remediation copy actually render before installing anything.
+
 ## Quickstart
 
 The repo pins its developer tools (Go, kubectl, kind, ripgrep) with [Hermit](https://cashapp.github.io/hermit/), so you do **not** need a system Go install. The `./bin/` directory ships shim symlinks; the first invocation of any of them auto-downloads the pinned version into `~/Library/Caches/hermit` (macOS) or `~/.cache/hermit` (Linux). No global install required, no `sudo`.
