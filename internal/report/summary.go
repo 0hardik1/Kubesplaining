@@ -114,6 +114,16 @@ func BuildHTMLData(snapshot models.Snapshot, findings []models.Finding) htmlRepo
 		}
 	}
 
+	// Build the per-group TOC rows after AnchorByID is populated so each TOC row can
+	// link to the rule's representative anchor. We attach Entries directly onto the
+	// section structs the template already iterates.
+	for i := range modules {
+		modules[i].Entries = buildTOCEntries(modules[i].Findings, anchorByID)
+	}
+	for i := range categories {
+		categories[i].Entries = buildTOCEntries(categoryMap[models.RiskCategory(categories[i].Key)], anchorByID)
+	}
+
 	data := htmlReportData{
 		Snapshot:      snapshot,
 		Summary:       summary,
@@ -407,4 +417,67 @@ func heatLevel(n int) int {
 	default:
 		return 5
 	}
+}
+
+// buildTOCEntries collapses a slice of findings into one TOCEntry per RuleID, keeping the
+// highest severity seen and counting instances. Sort order: severity rank desc → count desc
+// → title asc — matches how the rest of the report orders findings, so the TOC reads top-down
+// by importance. Anchor comes from anchorByID, which is keyed on Finding.ID and only set on
+// the first occurrence of each rule across all modules; we look up via the first finding we
+// see for each RuleID in this group, falling back to "finding-<RuleID>" so the link still
+// works even if the lookup misses (defensive — should not happen in practice).
+func buildTOCEntries(findings []models.Finding, anchorByID map[string]string) []TOCEntry {
+	if len(findings) == 0 {
+		return nil
+	}
+	type acc struct {
+		title    string
+		severity models.Severity
+		anchor   string
+		count    int
+		order    int // first-seen order, used as a stable tiebreaker
+	}
+	byRule := make(map[string]*acc, len(findings))
+	order := 0
+	for _, f := range findings {
+		entry, ok := byRule[f.RuleID]
+		if !ok {
+			entry = &acc{title: f.Title, severity: f.Severity, order: order}
+			if a, found := anchorByID[f.ID]; found {
+				entry.anchor = a
+			} else {
+				entry.anchor = "finding-" + f.RuleID
+			}
+			byRule[f.RuleID] = entry
+			order++
+		} else if f.Severity.Rank() > entry.severity.Rank() {
+			entry.severity = f.Severity
+		}
+		entry.count++
+	}
+	entries := make([]TOCEntry, 0, len(byRule))
+	for ruleID, e := range byRule {
+		entries = append(entries, TOCEntry{
+			RuleID:   ruleID,
+			Title:    e.title,
+			Severity: e.severity,
+			Anchor:   e.anchor,
+			Count:    e.count,
+		})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		ri := entries[i].Severity.Rank()
+		rj := entries[j].Severity.Rank()
+		if ri != rj {
+			return ri > rj
+		}
+		if entries[i].Count != entries[j].Count {
+			return entries[i].Count > entries[j].Count
+		}
+		if entries[i].Title != entries[j].Title {
+			return entries[i].Title < entries[j].Title
+		}
+		return entries[i].RuleID < entries[j].RuleID
+	})
+	return entries
 }

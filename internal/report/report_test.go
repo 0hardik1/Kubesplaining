@@ -130,6 +130,106 @@ func TestBuildHTMLDataGroupsFindings(t *testing.T) {
 	}
 }
 
+func TestBuildHTMLDataTOCEntries(t *testing.T) {
+	t.Parallel()
+
+	snapshot := models.NewSnapshot()
+	findings := []models.Finding{
+		// Two findings sharing one RuleID — the TOC must collapse them into one
+		// entry with Count=2 and pick the higher severity (Critical here).
+		{
+			ID:       "f1",
+			RuleID:   "KUBE-RBAC-1",
+			Severity: models.SeverityCritical,
+			Category: models.CategoryPrivilegeEscalation,
+			Title:    "Wildcard verb on wildcard resource",
+			Tags:     []string{"module:rbac"},
+		},
+		{
+			ID:       "f2",
+			RuleID:   "KUBE-RBAC-1",
+			Severity: models.SeverityHigh,
+			Category: models.CategoryPrivilegeEscalation,
+			Title:    "Wildcard verb on wildcard resource",
+			Tags:     []string{"module:rbac"},
+		},
+		// A second rule in the same module — lower severity so it sorts after the
+		// collapsed entry above.
+		{
+			ID:       "f3",
+			RuleID:   "KUBE-RBAC-2",
+			Severity: models.SeverityHigh,
+			Category: models.CategoryPrivilegeEscalation,
+			Title:    "Bind/escalate verb granted",
+			Tags:     []string{"module:rbac"},
+		},
+		// Different module + category — exercises the by-category bucketing.
+		{
+			ID:       "f4",
+			RuleID:   "KUBE-NETPOL-1",
+			Severity: models.SeverityMedium,
+			Category: models.CategoryLateralMovement,
+			Title:    "Open network",
+			Tags:     []string{"module:network_policy"},
+		},
+	}
+
+	data := BuildHTMLData(snapshot, findings)
+
+	// Locate the RBAC module section deterministically (order varies with severity sort).
+	var rbac *ModuleSection
+	for i := range data.Modules {
+		if data.Modules[i].ID == "rbac" {
+			rbac = &data.Modules[i]
+			break
+		}
+	}
+	if rbac == nil {
+		t.Fatalf("expected an RBAC module section, got modules: %#v", data.Modules)
+	}
+
+	if got := len(rbac.Entries); got != 2 {
+		t.Fatalf("RBAC TOC: expected 2 entries (one per RuleID), got %d: %#v", got, rbac.Entries)
+	}
+	first := rbac.Entries[0]
+	if first.RuleID != "KUBE-RBAC-1" {
+		t.Fatalf("RBAC TOC[0]: expected RuleID KUBE-RBAC-1 (highest severity), got %s", first.RuleID)
+	}
+	if first.Severity != models.SeverityCritical {
+		t.Fatalf("RBAC TOC[0]: expected severity to be raised to Critical, got %s", first.Severity)
+	}
+	if first.Count != 2 {
+		t.Fatalf("RBAC TOC[0]: expected Count=2 (collapsed instances), got %d", first.Count)
+	}
+	if first.Anchor != "finding-KUBE-RBAC-1" {
+		t.Fatalf("RBAC TOC[0]: expected Anchor=finding-KUBE-RBAC-1, got %q", first.Anchor)
+	}
+	if rbac.Entries[1].RuleID != "KUBE-RBAC-2" {
+		t.Fatalf("RBAC TOC[1]: expected RuleID KUBE-RBAC-2, got %s", rbac.Entries[1].RuleID)
+	}
+	if rbac.Entries[1].Count != 1 {
+		t.Fatalf("RBAC TOC[1]: expected Count=1, got %d", rbac.Entries[1].Count)
+	}
+
+	// By-category view — Privilege Escalation should hold both KUBE-RBAC-* rules.
+	var privesc *CategorySection
+	for i := range data.Categories {
+		if data.Categories[i].CSSKey == "privesc" {
+			privesc = &data.Categories[i]
+			break
+		}
+	}
+	if privesc == nil {
+		t.Fatalf("expected a Privilege Escalation category section, got: %#v", data.Categories)
+	}
+	if got := len(privesc.Entries); got != 2 {
+		t.Fatalf("Privesc category TOC: expected 2 entries, got %d: %#v", got, privesc.Entries)
+	}
+	if privesc.Entries[0].RuleID != "KUBE-RBAC-1" || privesc.Entries[0].Anchor != "finding-KUBE-RBAC-1" {
+		t.Fatalf("Privesc category TOC[0]: unexpected entry %#v", privesc.Entries[0])
+	}
+}
+
 func TestRenderInlineCodeMarkdown(t *testing.T) {
 	t.Parallel()
 

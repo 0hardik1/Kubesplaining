@@ -30,6 +30,7 @@ type ModuleSection struct {
 	Label    string
 	Summary  Summary
 	Findings []models.Finding
+	Entries  []TOCEntry // collapsed one-row-per-RuleID list for the Findings-tab TOC
 }
 
 // CategorySection groups findings by RiskCategory for the "By Attack Theme" panel; it does not carry the findings themselves.
@@ -39,6 +40,19 @@ type CategorySection struct {
 	CSSKey  string
 	Label   string
 	Summary Summary
+	Entries []TOCEntry // collapsed one-row-per-RuleID list for the Findings-tab TOC
+}
+
+// TOCEntry is one row in the Findings-tab table-of-contents — a single rule, the highest
+// severity it fired at within its group, and the number of finding instances it produced.
+// Anchor points at the deterministic per-rule anchor (id="finding-<RuleID>") that the
+// first occurrence of each rule already carries on its <article> card.
+type TOCEntry struct {
+	RuleID   string
+	Title    string
+	Severity models.Severity
+	Anchor   string
+	Count    int
 }
 
 // NarrativeCard is an auto-detected attack chain — a short plain-English walkthrough of how specific

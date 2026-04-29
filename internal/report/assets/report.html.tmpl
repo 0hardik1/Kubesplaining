@@ -373,6 +373,31 @@
     .module-link:hover { background: var(--surface-hover); border-color: var(--border-strong); }
     .module-link .mn-count { font-size: 11px; color: var(--text-mut); background: rgba(255,255,255,0.03); padding: 1px 7px; border-radius: 999px; font-variant-numeric: tabular-nums; }
 
+    .findings-toc { margin-top: 14px; padding: 14px 16px 4px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+    .findings-toc .toc-hd { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .findings-toc .toc-title { color: var(--text-mut); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.14em; }
+    .toc-tabs { display: inline-flex; gap: 4px; padding: 3px; border: 1px solid var(--border); border-radius: 999px; background: rgba(255,255,255,0.02); }
+    .toc-tabs button { font: inherit; font-size: 12px; font-weight: 600; color: var(--text-mut); background: transparent; border: 0; padding: 6px 14px; border-radius: 999px; cursor: pointer; transition: color 0.15s ease, background 0.15s ease; }
+    .toc-tabs button:hover { color: var(--text); }
+    .toc-tabs button[aria-selected="true"] { color: var(--accent); background: rgba(106,183,255,0.14); }
+    .toc-pane[hidden] { display: none; }
+    .toc-group { border-top: 1px solid var(--border-soft); padding: 10px 0; }
+    .toc-group:first-child { border-top: 0; padding-top: 4px; }
+    .toc-group > summary { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; cursor: pointer; padding: 6px 4px; list-style: none; user-select: none; }
+    .toc-group > summary::-webkit-details-marker { display: none; }
+    .toc-group > summary::before { content: ""; width: 8px; height: 8px; border-right: 2px solid var(--text-mut); border-bottom: 2px solid var(--text-mut); transform: rotate(-45deg); transition: transform 0.15s ease; flex: 0 0 auto; align-self: center; }
+    .toc-group[open] > summary::before { transform: rotate(45deg); }
+    .toc-group > summary:hover .toc-group-label { color: var(--text); }
+    .toc-group-label { font-size: 14px; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
+    .toc-group-meta { color: var(--text-mut); font-size: 12px; font-variant-numeric: tabular-nums; }
+    .toc-rows { list-style: none; margin: 6px 0 4px; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 4px 12px; }
+    .toc-row a { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--text); padding: 6px 10px; border-radius: 8px; font-size: 13px; line-height: 1.35; transition: background 0.12s ease; }
+    .toc-row a:hover { background: rgba(255,255,255,0.04); }
+    .toc-row .badge-sev { flex: 0 0 auto; }
+    .toc-row-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .toc-row-count { flex: 0 0 auto; font-size: 11px; color: var(--text-mut); background: rgba(255,255,255,0.04); padding: 1px 7px; border-radius: 999px; font-variant-numeric: tabular-nums; }
+    @media (max-width: 720px) { .toc-rows { grid-template-columns: 1fr; } }
+
     .module-section { margin-top: 28px; }
     .module-section .module-hd { display: flex; align-items: baseline; gap: 14px; margin-bottom: 12px; flex-wrap: wrap; padding-bottom: 12px; border-bottom: 1px solid var(--border-soft); }
     .module-hd h2 { font-size: 22px; letter-spacing: -0.02em; }
@@ -847,6 +872,46 @@
       {{ range .Modules }}<a class="module-link" href="#{{ .ID }}">{{ .Label }} <span class="mn-count">{{ .Summary.Total }}</span></a>{{ end }}
     </nav>
 
+    <section class="findings-toc" data-tab="findings" aria-label="Findings index">
+      <div class="toc-hd">
+        <span class="toc-title">Findings index</span>
+        <div class="toc-tabs" role="tablist" aria-label="Group findings by">
+          <button type="button" role="tab" aria-selected="true"  aria-controls="toc-by-module"   data-toc-tab="module">By module</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="toc-by-category" data-toc-tab="category">By category</button>
+        </div>
+      </div>
+      <div id="toc-by-module" class="toc-pane" role="tabpanel">
+        {{ range .Modules }}
+        <details class="toc-group">
+          <summary>
+            <span class="toc-group-label">{{ .Label }}</span>
+            <span class="toc-group-meta">{{ .Summary.Total }} {{ pluralize .Summary.Total "finding" "findings" }} · {{ len .Entries }} {{ pluralize (len .Entries) "rule" "rules" }}</span>
+          </summary>
+          <ul class="toc-rows">
+            {{ range .Entries }}
+            <li class="toc-row {{ sevClass .Severity }}"><a href="#{{ .Anchor }}"><span class="badge-sev {{ sevClass .Severity }}">{{ sevShort .Severity }}</span><span class="toc-row-title">{{ inlineHTML .Title }}</span>{{ if gt .Count 1 }}<span class="toc-row-count">×{{ .Count }}</span>{{ end }}</a></li>
+            {{ end }}
+          </ul>
+        </details>
+        {{ end }}
+      </div>
+      <div id="toc-by-category" class="toc-pane" role="tabpanel" hidden>
+        {{ range .Categories }}
+        <details class="toc-group">
+          <summary>
+            <span class="toc-group-label">{{ .Label }}</span>
+            <span class="toc-group-meta">{{ .Summary.Total }} {{ pluralize .Summary.Total "finding" "findings" }} · {{ len .Entries }} {{ pluralize (len .Entries) "rule" "rules" }}</span>
+          </summary>
+          <ul class="toc-rows">
+            {{ range .Entries }}
+            <li class="toc-row {{ sevClass .Severity }}"><a href="#{{ .Anchor }}"><span class="badge-sev {{ sevClass .Severity }}">{{ sevShort .Severity }}</span><span class="toc-row-title">{{ inlineHTML .Title }}</span>{{ if gt .Count 1 }}<span class="toc-row-count">×{{ .Count }}</span>{{ end }}</a></li>
+            {{ end }}
+          </ul>
+        </details>
+        {{ end }}
+      </div>
+    </section>
+
     {{ range .Modules }}
     <section class="module-section" data-tab="findings" data-module="{{ .ID }}" id="{{ .ID }}">
       <div class="module-hd">
@@ -951,6 +1016,22 @@
 
     <p class="footer">Kubesplaining · {{ if .Snapshot.Metadata.KubesplainingVersion }}{{ .Snapshot.Metadata.KubesplainingVersion }} · {{ end }}{{ .Summary.Total }} findings · {{ len .Modules }} modules</p>
   </main>
+  <script>
+    (function () {
+      var tabs = document.querySelectorAll('.findings-toc .toc-tabs [role="tab"]');
+      if (!tabs.length) return;
+      tabs.forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          tabs.forEach(function (t) {
+            var on = t === btn;
+            t.setAttribute('aria-selected', on ? 'true' : 'false');
+            var panel = document.getElementById(t.getAttribute('aria-controls'));
+            if (panel) panel.hidden = !on;
+          });
+        });
+      });
+    })();
+  </script>
   <script>{{ .GraphScript }}</script>
 </body>
 </html>
