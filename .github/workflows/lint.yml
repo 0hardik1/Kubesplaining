@@ -1,0 +1,129 @@
+name: Lint and test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gofmt-vet:
+    name: gofmt + go vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/hermit
+          key: hermit-${{ runner.os }}-${{ hashFiles('bin/.*.pkg') }}
+
+      - uses: actions/cache@v4
+        with:
+          path: .tmp/go-mod-cache
+          key: gomod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+
+      - name: Activate Hermit
+        run: |
+          . ./bin/activate-hermit
+          env >> "$GITHUB_ENV"
+
+      - name: make lint
+        run: make lint
+
+  golangci-lint:
+    name: golangci-lint (repo-wide)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/hermit
+          key: hermit-${{ runner.os }}-${{ hashFiles('bin/.*.pkg') }}
+
+      - uses: actions/cache@v4
+        with:
+          path: .tmp/go-mod-cache
+          key: gomod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/golangci-lint
+          key: golangci-${{ runner.os }}-${{ hashFiles('.golangci.yml', 'go.sum') }}
+
+      - name: Activate Hermit
+        run: |
+          . ./bin/activate-hermit
+          env >> "$GITHUB_ENV"
+
+      - name: golangci-lint run ./...
+        run: ./bin/golangci-lint run ./...
+
+  test:
+    name: go test ./...
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/hermit
+          key: hermit-${{ runner.os }}-${{ hashFiles('bin/.*.pkg') }}
+
+      - uses: actions/cache@v4
+        with:
+          path: .tmp/go-mod-cache
+          key: gomod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+
+      - name: Activate Hermit
+        run: |
+          . ./bin/activate-hermit
+          env >> "$GITHUB_ENV"
+
+      - name: make test
+        run: make test
+
+  commit-msg-check:
+    name: Conventional Commits PR title
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -eu
+          PATTERN_FILE=".githooks/_conventional_commits_pattern.txt"
+          if [ ! -f "$PATTERN_FILE" ]; then
+            echo "Pattern file missing: $PATTERN_FILE" >&2
+            exit 1
+          fi
+          PATTERN="$(head -n1 "$PATTERN_FILE")"
+
+          # Skip git-generated subjects (matches the commit-msg hook).
+          case "$PR_TITLE" in
+            "Merge "*|"Revert \""*|"fixup! "*|"squash! "*|"amend! "*) exit 0 ;;
+          esac
+
+          if ! [[ "$PR_TITLE" =~ $PATTERN ]]; then
+            echo "PR title does not follow Conventional Commits: $PR_TITLE" >&2
+            echo "Format: <type>(<optional-scope>)?: <subject>" >&2
+            echo "Allowed types: feat, fix, docs, refactor, test, chore, ci, build, perf, style, revert" >&2
+            exit 1
+          fi
+
+          if [ "${#PR_TITLE}" -gt 72 ]; then
+            echo "PR title is ${#PR_TITLE} chars (max 72): $PR_TITLE" >&2
+            exit 1
+          fi
+
+          case "$PR_TITLE" in
+            *.) echo "PR title ends with a period: $PR_TITLE" >&2; exit 1 ;;
+          esac
