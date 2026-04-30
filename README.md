@@ -1,9 +1,9 @@
 # Kubesplaining
 
-[![Latest release](https://img.shields.io/github/v/release/0hardik1/Kubesplaining?include_prereleases&sort=semver)](https://github.com/0hardik1/Kubesplaining/releases)
-[![License](https://img.shields.io/github/license/0hardik1/Kubesplaining)](LICENSE)
-[![CI](https://github.com/0hardik1/Kubesplaining/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/0hardik1/Kubesplaining/actions/workflows/lint.yml)
-[![Go version](https://img.shields.io/github/go-mod/go-version/0hardik1/Kubesplaining)](go.mod)
+[![Latest release](https://img.shields.io/github/v/release/0hardik1/kubesplaining?include_prereleases&sort=semver)](https://github.com/0hardik1/kubesplaining/releases)
+[![License](https://img.shields.io/github/license/0hardik1/kubesplaining)](LICENSE)
+[![CI](https://github.com/0hardik1/kubesplaining/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/0hardik1/kubesplaining/actions/workflows/lint.yml)
+[![Go version](https://img.shields.io/github/go-mod/go-version/0hardik1/kubesplaining)](go.mod)
 [![Go Report Card](https://goreportcard.com/badge/github.com/0hardik1/kubesplaining)](https://goreportcard.com/report/github.com/0hardik1/kubesplaining)
 
 Kubesplaining is a Kubernetes security assessment CLI inspired by Salesforce's [Cloudsplaining](https://github.com/salesforce/cloudsplaining) (which does the same job for AWS IAM). It reads a live cluster or a previously captured snapshot, analyzes it against a library of techniques, and produces a prioritized list of findings as HTML, JSON, CSV, or SARIF.
@@ -19,7 +19,7 @@ It focuses on the things that matter most for *offensive-realistic* Kubernetes h
 
 Every finding names the technique, shows the evidence, and includes remediation — explanation, not just detection.
 
-**See an example report:** the e2e suite scans a deliberately misconfigured cluster and publishes the result at <https://0hardik1.github.io/Kubesplaining/> — open it to see how findings, the attack graph, and remediation copy actually render before installing anything.
+**See an example report:** the e2e suite scans a deliberately misconfigured cluster and publishes the result at <https://0hardik1.github.io/kubesplaining/> — open it to see how findings, the attack graph, and remediation copy actually render before installing anything.
 
 ## How it compares
 
@@ -51,7 +51,7 @@ The image is multi-arch (linux/amd64 + linux/arm64), distroless, runs as non-roo
 
 ### Pre-built binary
 
-Grab the archive matching your OS / arch from the [Releases page](https://github.com/0hardik1/Kubesplaining/releases/latest), extract, and put `kubesplaining` on your `PATH`. Each release ships:
+Grab the archive matching your OS / arch from the [Releases page](https://github.com/0hardik1/kubesplaining/releases/latest), extract, and put `kubesplaining` on your `PATH`. Each release ships:
 
 - `kubesplaining_<version>_Linux_x86_64.tar.gz`
 - `kubesplaining_<version>_Linux_arm64.tar.gz`
@@ -318,7 +318,7 @@ Docker is intentionally not Hermit-managed — install the Docker daemon on the 
 
 - Full rule catalog (implemented + planned): [docs/findings.md](docs/findings.md).
 - Status of each module / roadmap item: [PLAN.md](PLAN.md).
-- Releases & changelog: [CHANGELOG.md](CHANGELOG.md) / [GitHub Releases](https://github.com/0hardik1/Kubesplaining/releases).
+- Releases & changelog: [CHANGELOG.md](CHANGELOG.md) / [GitHub Releases](https://github.com/0hardik1/kubesplaining/releases).
 - Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
 - Security: [SECURITY.md](SECURITY.md) (GitHub Private Vulnerability Reporting only).
 - License: [Apache-2.0](LICENSE).
