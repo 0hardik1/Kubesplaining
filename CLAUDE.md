@@ -45,7 +45,7 @@ Four-stage pipeline: **connection → collection → analysis → report**. The 
 cmd/kubesplaining/main.go            # entrypoint, ldflags-injected version
 └── internal/cli/                     # cobra commands: download, scan, scan-resource, report, create-exclusions, version
     └── internal/connection/          # client-go credentials resolution
-    └── internal/collector/           # parallel API listing → models.Snapshot (single ~646-line collector.go)
+    └── internal/collector/           # parallel API listing → models.Snapshot (single ~657-line collector.go)
     └── internal/manifest/            # offline alternative to collector: reads a YAML/JSON manifest into a Snapshot for `scan-resource`
     └── internal/analyzer/            # the engine + 7 modules; see below
     └── internal/exclusions/          # YAML-driven post-analysis muting (annotates Excluded=true, never drops)
