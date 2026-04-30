@@ -12,6 +12,14 @@ updates:
     labels:
       - dependencies
       - go
+    groups:
+      k8s:
+        patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/*"
+      golang-x:
+        patterns:
+          - "golang.org/x/*"
 
   - package-ecosystem: github-actions
     directory: /
