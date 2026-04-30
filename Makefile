@@ -12,6 +12,16 @@ export PATH := $(CURDIR)/bin:$(PATH)
 
 GOFILES := $(shell $(CURDIR)/bin/rg --files -g '*.go')
 
+# Stamp build metadata into main.{version,commit,date} via -ldflags so
+# `kubesplaining version` reports something meaningful for local clones.
+# Released binaries get the same vars stamped by GoReleaser at tag time.
+# The fallbacks keep the build working when `git` is unavailable (e.g. when
+# someone extracts a source tarball on a CI runner that has no .git/).
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
+
 .PHONY: setup build test lint e2e scan delete clean install-hooks uninstall-hooks
 
 setup:
@@ -19,7 +29,7 @@ setup:
 	@mkdir -p bin .tmp
 
 build:
-	$(GOENV) go build -o $(BINARY) ./cmd/kubesplaining
+	$(GOENV) go build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/kubesplaining
 
 test:
 	$(GOENV) go test ./...
