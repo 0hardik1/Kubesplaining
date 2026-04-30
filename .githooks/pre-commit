@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Repo-local pre-commit hook: gofmt + golangci-lint, scoped to staged .go files.
+# Activate with: make install-hooks
+# Bypass with:   SKIP_HOOKS=1 git commit ... | git commit --no-verify
+
+set -eu
+
+if [ "${SKIP_HOOKS:-0}" = "1" ]; then
+    exit 0
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# Match Makefile cache locations so golangci-lint reuses the existing module cache.
+export GOCACHE="${GOCACHE:-$REPO_ROOT/.tmp/go-build-cache}"
+export GOMODCACHE="${GOMODCACHE:-$REPO_ROOT/.tmp/go-mod-cache}"
+
+# Staged Go files: Added, Copied, Modified, Renamed (drop Deletions).
+# Use a while-read loop instead of `mapfile` for bash 3.2 compatibility (macOS).
+STAGED_GO=()
+while IFS= read -r f; do
+    [ -n "$f" ] && STAGED_GO+=("$f")
+done < <(git diff --cached --name-only --diff-filter=ACMR -- '*.go')
+
+if [ "${#STAGED_GO[@]}" -eq 0 ]; then
+    exit 0
+fi
+
+GOFMT="$REPO_ROOT/bin/gofmt"
+if [ ! -x "$GOFMT" ]; then
+    echo "pre-commit: $GOFMT not found." >&2
+    echo "Run 'make setup' (or activate Hermit with '. ./bin/activate-hermit') so Go tools are pinned." >&2
+    exit 1
+fi
+
+UNFORMATTED="$("$GOFMT" -l "${STAGED_GO[@]}" || true)"
+if [ -n "$UNFORMATTED" ]; then
+    echo "pre-commit: gofmt found unformatted files:" >&2
+    printf '  %s\n' $UNFORMATTED >&2
+    echo >&2
+    echo "Fix with: ./bin/gofmt -w $UNFORMATTED" >&2
+    exit 1
+fi
+
+LINTER="$REPO_ROOT/bin/golangci-lint"
+if [ ! -x "$LINTER" ]; then
+    echo "pre-commit: $LINTER not found." >&2
+    echo "Install with: ./bin/hermit install golangci-lint" >&2
+    exit 1
+fi
+
+# Lint the unique parent directories of staged files. Scoping to packages keeps
+# the hook fast on a one-file edit but still catches cross-file issues within
+# the same package. Sort/uniq via the shell to avoid associative arrays
+# (bash 3.2 compat).
+PKG_ARGS=()
+while IFS= read -r dir; do
+    PKG_ARGS+=("./$dir/...")
+done < <(printf '%s\n' "${STAGED_GO[@]}" | xargs -n1 dirname | LC_ALL=C sort -u)
+
+if ! "$LINTER" run "${PKG_ARGS[@]}"; then
+    echo >&2
+    echo "pre-commit: golangci-lint reported issues. Fix them or bypass with --no-verify." >&2
+    exit 1
+fi

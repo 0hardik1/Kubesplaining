@@ -1,0 +1,21 @@
+version: "2"
+
+run:
+  go: "1.26"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+    paths:
+      - .tmp
+      - testdata

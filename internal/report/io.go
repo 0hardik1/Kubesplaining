@@ -15,7 +15,7 @@ func ReadFindings(path string) ([]models.Finding, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open findings file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	var findings []models.Finding
 	if err := json.NewDecoder(file).Decode(&findings); err != nil {
@@ -36,7 +36,7 @@ func WriteMetadata(outputDir string, metadata models.SnapshotMetadata) (string, 
 	if err != nil {
 		return "", fmt.Errorf("create metadata file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
@@ -53,7 +53,7 @@ func ReadMetadata(path string) (models.SnapshotMetadata, error) {
 	if err != nil {
 		return models.SnapshotMetadata{}, fmt.Errorf("open metadata file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	var metadata models.SnapshotMetadata
 	if err := json.NewDecoder(file).Decode(&metadata); err != nil {

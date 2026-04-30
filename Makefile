@@ -12,7 +12,7 @@ export PATH := $(CURDIR)/bin:$(PATH)
 
 GOFILES := $(shell $(CURDIR)/bin/rg --files -g '*.go')
 
-.PHONY: setup build test lint e2e scan delete clean
+.PHONY: setup build test lint e2e scan delete clean install-hooks uninstall-hooks
 
 setup:
 	$(GOENV) go mod download
@@ -27,6 +27,15 @@ test:
 lint:
 	@test -z "$$(gofmt -l $(GOFILES))" || (echo "gofmt check failed"; gofmt -l $(GOFILES); exit 1)
 	$(GOENV) go vet ./...
+
+install-hooks:
+	git config core.hooksPath .githooks
+	chmod +x .githooks/pre-commit .githooks/commit-msg
+	@echo "Git hooks installed. Bypass per-commit with: git commit --no-verify"
+
+uninstall-hooks:
+	git config --unset core.hooksPath || true
+	@echo "Git hooks deactivated for this clone."
 
 e2e: build
 	KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) KUBECONFIG=$(KUBECONFIG) ./scripts/kind-e2e.sh

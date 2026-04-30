@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Repo-local commit-msg hook: enforce Conventional Commits subject line.
+# Spec: https://www.conventionalcommits.org/en/v1.0.0/
+# Bypass with: SKIP_HOOKS=1 git commit ... | git commit --no-verify
+
+set -eu
+
+if [ "${SKIP_HOOKS:-0}" = "1" ]; then
+    exit 0
+fi
+
+MSG_FILE="$1"
+
+# First non-blank, non-comment line is the subject.
+SUBJECT="$(grep -m1 -E -v '^(#|$)' "$MSG_FILE" || true)"
+if [ -z "$SUBJECT" ]; then
+    echo "commit-msg: empty commit message." >&2
+    exit 1
+fi
+
+# Skip git-generated or rebase-managed messages.
+case "$SUBJECT" in
+    "Merge "*|"Revert \""*|"fixup! "*|"squash! "*|"amend! "*)
+        exit 0
+        ;;
+esac
+
+ALLOWED_TYPES='feat|fix|docs|refactor|test|chore|ci|build|perf|style|revert'
+PATTERN="^(${ALLOWED_TYPES})(\([a-z0-9_/.-]+\))?!?: .+"
+
+fail() {
+    cat >&2 <<'EOF'
+commit-msg: subject line does not follow Conventional Commits.
+
+Format: <type>(<optional-scope>)?: <subject>
+Allowed types: feat, fix, docs, refactor, test, chore, ci, build, perf, style, revert
+Rules:
+  - Subject ≤ 72 chars
+  - No trailing period on subject
+  - Imperative mood ("add" not "added")
+
+Examples:
+  feat(privesc): emit finding when SA can impersonate cluster-admin
+  fix(report): escape HTML in Finding.Description
+  docs: refresh collector.go line count in CLAUDE.md
+
+Bypass (emergencies only): git commit --no-verify
+EOF
+    exit 1
+}
+
+if ! [[ "$SUBJECT" =~ $PATTERN ]]; then
+    echo "commit-msg: rejected subject: $SUBJECT" >&2
+    fail
+fi
+
+if [ "${#SUBJECT}" -gt 72 ]; then
+    echo "commit-msg: subject is ${#SUBJECT} chars (max 72): $SUBJECT" >&2
+    fail
+fi
+
+case "$SUBJECT" in
+    *.)
+        echo "commit-msg: subject ends with a period: $SUBJECT" >&2
+        fail
+        ;;
+esac

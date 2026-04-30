@@ -100,12 +100,12 @@ func buildDirectConfig(opts Options) (*rest.Config, error) {
 		cfg.BearerToken = string(tokenBytes)
 	}
 
-	cfg.TLSClientConfig.CAFile = opts.CAFile
-	cfg.TLSClientConfig.CertFile = opts.ClientCertificateFile
-	cfg.TLSClientConfig.KeyFile = opts.ClientKeyFile
-	cfg.TLSClientConfig.Insecure = opts.InsecureSkipTLSVerify
+	cfg.CAFile = opts.CAFile
+	cfg.CertFile = opts.ClientCertificateFile
+	cfg.KeyFile = opts.ClientKeyFile
+	cfg.Insecure = opts.InsecureSkipTLSVerify
 
-	if cfg.BearerToken == "" && cfg.TLSClientConfig.CertFile == "" {
+	if cfg.BearerToken == "" && cfg.CertFile == "" {
 		return nil, fmt.Errorf("direct API server mode requires a bearer token or client certificate")
 	}
 

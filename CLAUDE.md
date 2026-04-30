@@ -15,13 +15,16 @@ Developer tooling (Go, kubectl, kind, ripgrep) is pinned via [Hermit](https://ca
 All build/test commands route through the `Makefile`, which pins `GOCACHE` / `GOMODCACHE` under `.tmp/` so module downloads stay inside the repo.
 
 ```bash
-make setup      # go mod download + create bin/ and .tmp/
-make build      # builds ./bin/kubesplaining from ./cmd/kubesplaining
-make test       # go test ./...
-make lint       # gofmt -l check + go vet ./...
-make e2e        # boots a kind cluster, applies testdata/e2e/vulnerable.yaml, runs the CLI, asserts expected rule IDs
-make clean      # removes ./bin, ./kubesplaining-report, ./.tmp
+make setup           # go mod download + create bin/ and .tmp/
+make build           # builds ./bin/kubesplaining from ./cmd/kubesplaining
+make test            # go test ./...
+make lint            # gofmt -l check + go vet ./...
+make e2e             # boots a kind cluster, applies testdata/e2e/vulnerable.yaml, runs the CLI, asserts expected rule IDs
+make clean           # removes ./bin, ./kubesplaining-report, ./.tmp
+make install-hooks   # activate .githooks/ pre-commit + commit-msg hooks (one-time per clone)
 ```
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/) — the `commit-msg` hook enforces it once `make install-hooks` has run. The `pre-commit` hook runs `gofmt -l` and `golangci-lint` over the packages of staged `.go` files; install the linter once with `./bin/hermit install golangci-lint`. See `.githooks/README.md` for details and bypass.
 
 Single-package or single-test runs (use the same `GOCACHE` / `GOMODCACHE` env so you do not redownload modules):
 

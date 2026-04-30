@@ -71,9 +71,12 @@ make setup                        # download Go module deps into ./.tmp
 make test                         # go test ./...
 make lint                         # gofmt -l + go vet
 make e2e                          # spin up kind, apply risky manifests, assert findings (needs Docker)
+make install-hooks                # activate repo-local pre-commit + commit-msg hooks (one-time per clone)
 ```
 
 Docker is intentionally not Hermit-managed — install the Docker daemon on the host. To add or change a pinned tool, run `./bin/hermit install <pkg>` and commit the resulting symlinks under `bin/`.
+
+After `make install-hooks`, every commit runs `gofmt` and `golangci-lint` against staged Go files, and commit messages are validated against [Conventional Commits](https://www.conventionalcommits.org/). The linter is pinned via Hermit too — install it once with `./bin/hermit install golangci-lint`. See [`.githooks/README.md`](.githooks/README.md) for the full hook contract and how to bypass in emergencies.
 
 ## Status
 

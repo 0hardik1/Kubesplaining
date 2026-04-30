@@ -17,8 +17,13 @@ import (
 	"sort"
 	"strings"
 
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
+
 	"github.com/hardik/kubesplaining/internal/models"
 )
+
+var titleCaser = cases.Title(language.English)
 
 // renderEvidence parses Evidence (an analyzer-emitted JSON object) and renders a
 // labeled grid with semantic formatting per known key. Returns "" when the payload
@@ -119,7 +124,7 @@ func renderEvidenceRow(key string, val any, obj map[string]any) string {
 	case "source_binding":
 		return kubectlRow("Source binding", asString(val), sourceBindingCmd(asString(val), obj))
 	case "scope":
-		return plainRow("Scope", strings.Title(asString(val)), "")
+		return plainRow("Scope", titleCaser.String(asString(val)), "")
 	case "namespace":
 		return codeRow("Namespace", asString(val))
 	case "container":
@@ -217,7 +222,7 @@ func renderEscalationPath(hops []models.EscalationHop) template.HTML {
 		b.WriteString(`<div class="step-hd">`)
 		if total > 1 {
 			b.WriteString(`<span class="step-num">Step `)
-			b.WriteString(fmt.Sprintf("%d of %d", hop.Step, total))
+			fmt.Fprintf(&b, "%d of %d", hop.Step, total)
 			b.WriteString(`</span> `)
 		}
 		b.WriteString(`<span class="step-title">`)
