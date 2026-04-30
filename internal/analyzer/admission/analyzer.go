@@ -129,7 +129,7 @@ func interceptsSecurityCriticalResources(rules []admissionregistrationv1.RuleWit
 		if !containsAnyOperation(rule.Operations, admissionregistrationv1.Create, admissionregistrationv1.Update) {
 			continue
 		}
-		if containsAnyString(rule.Rule.Resources, "*", "pods", "deployments", "daemonsets", "statefulsets", "jobs", "cronjobs", "podtemplates") {
+		if containsAnyString(rule.Resources, "*", "pods", "deployments", "daemonsets", "statefulsets", "jobs", "cronjobs", "podtemplates") {
 			return true
 		}
 	}

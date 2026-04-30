@@ -19,7 +19,7 @@ func WriteSnapshot(path string, snapshot models.Snapshot) error {
 	if err != nil {
 		return fmt.Errorf("create snapshot file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
@@ -36,7 +36,7 @@ func ReadSnapshot(path string) (models.Snapshot, error) {
 	if err != nil {
 		return models.Snapshot{}, fmt.Errorf("open snapshot: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	var snapshot models.Snapshot
 	if err := json.NewDecoder(file).Decode(&snapshot); err != nil {

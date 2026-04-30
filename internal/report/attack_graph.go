@@ -344,9 +344,7 @@ func buildAttackGraph(findings []models.Finding) (AttackGraph, GraphPayload) {
 		entryNodePos[k] = entryNodeList[i]
 		g.Nodes = append(g.Nodes, entryNodeList[i])
 	}
-	for i := range capNodes {
-		g.Nodes = append(g.Nodes, capNodes[i])
-	}
+	g.Nodes = append(g.Nodes, capNodes...)
 	impactNodePos := map[models.RiskCategory]GraphNode{}
 	for i, c := range impactKeys {
 		impactNodePos[c] = impactNodeList[i]

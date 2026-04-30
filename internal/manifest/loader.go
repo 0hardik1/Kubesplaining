@@ -20,12 +20,6 @@ import (
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 )
 
-// objectMeta is a minimal header used to sniff Kind/APIVersion before full decoding.
-type objectMeta struct {
-	Kind       string `json:"kind"`
-	APIVersion string `json:"apiVersion"`
-}
-
 // LoadSnapshot reads a YAML or JSON manifest file (possibly containing multiple documents) and returns a synthetic Snapshot.
 // resourceTypeHint is used when a document lacks an explicit "kind" field (e.g. a headerless YAML fragment).
 func LoadSnapshot(path string, resourceTypeHint string) (models.Snapshot, error) {

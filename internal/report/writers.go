@@ -32,7 +32,7 @@ func writeJSON(path string, findings []models.Finding) error {
 	if err != nil {
 		return fmt.Errorf("create json report: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
@@ -49,7 +49,7 @@ func writeCSV(path string, findings []models.Finding) error {
 	if err != nil {
 		return fmt.Errorf("create csv report: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	writer := csv.NewWriter(file)
 	defer writer.Flush()
@@ -126,7 +126,7 @@ func writeHTML(path string, snapshot models.Snapshot, findings []models.Finding)
 	if err != nil {
 		return fmt.Errorf("create html report: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	tmpl, err := template.New("report").Funcs(template.FuncMap{
 		"lower": func(value any) string {

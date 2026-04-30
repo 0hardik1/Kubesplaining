@@ -69,7 +69,7 @@ func writeSARIF(path string, findings []models.Finding) error {
 	if err != nil {
 		return fmt.Errorf("create sarif report: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	report := sarifReport{
 		Schema:  "https://json.schemastore.org/sarif-2.1.0.json",

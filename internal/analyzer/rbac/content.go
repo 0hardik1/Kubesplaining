@@ -104,10 +104,6 @@ var (
 		Title: "NSA/CISA Kubernetes Hardening Guide v1.2 (PDF)",
 		URL:   "https://media.defense.gov/2022/Aug/29/2003066362/-1/-1/0/CTR_KUBERNETES_HARDENING_GUIDANCE_1.2_20220829.PDF",
 	}
-	refCISBenchmark = models.Reference{
-		Title: "CIS Kubernetes Benchmark (RBAC controls)",
-		URL:   "https://www.cisecurity.org/benchmark/kubernetes",
-	}
 	refMSThreatMatrix = models.Reference{
 		Title: "Microsoft Threat Matrix for Kubernetes",
 		URL:   "https://microsoft.github.io/Threat-Matrix-for-Kubernetes/",

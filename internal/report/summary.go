@@ -371,7 +371,7 @@ func buildHeatmap(resourceMap map[string][]models.Finding) []HeatmapRow {
 	for _, e := range entries {
 		row := HeatmapRow{Label: e.label, Total: len(e.findings)}
 		counts := map[string]int{}
-		var top models.Severity = models.SeverityInfo
+		top := models.SeverityInfo
 		for _, f := range e.findings {
 			counts[categoryCSSKey(f.Category)]++
 			if f.Severity.Rank() > top.Rank() {
