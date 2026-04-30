@@ -10,9 +10,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/hardik/kubesplaining/internal/models"
-	"github.com/hardik/kubesplaining/internal/permissions"
-	"github.com/hardik/kubesplaining/internal/scoring"
+	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/permissions"
+	"github.com/0hardik1/kubesplaining/internal/scoring"
 )
 
 // Analyzer produces service-account-focused findings from a snapshot.

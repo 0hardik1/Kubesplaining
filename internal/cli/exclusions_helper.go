@@ -1,6 +1,6 @@
 package cli
 
-import "github.com/hardik/kubesplaining/internal/exclusions"
+import "github.com/0hardik1/kubesplaining/internal/exclusions"
 
 // loadExclusions resolves the active exclusions config for a scan/report command. The chosen preset
 // (default "standard") supplies the built-in noise filter — kube-system, system:*, kubeadm:*, etc. —

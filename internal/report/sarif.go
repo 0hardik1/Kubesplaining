@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/hardik/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/models"
 )
 
 // sarifReport models the minimal subset of SARIF 2.1.0 we emit for IDE/CI tooling.
@@ -79,7 +79,7 @@ func writeSARIF(path string, findings []models.Finding) error {
 				Tool: sarifTool{
 					Driver: sarifDriver{
 						Name:           "kubesplaining",
-						InformationURI: "https://github.com/hardik/kubesplaining",
+						InformationURI: "https://github.com/0hardik1/kubesplaining",
 						Rules:          sarifRules(findings),
 					},
 				},

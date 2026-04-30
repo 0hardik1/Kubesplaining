@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/hardik/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/models"
 )
 
 // ReadFindings decodes a findings.json file written by Write into a slice of models.Finding.

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hardik/kubesplaining/internal/collector"
-	"github.com/hardik/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/collector"
+	"github.com/0hardik1/kubesplaining/internal/models"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )

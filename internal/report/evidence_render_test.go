@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hardik/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/models"
 )
 
 func TestRenderEvidenceRBACWildcard(t *testing.T) {

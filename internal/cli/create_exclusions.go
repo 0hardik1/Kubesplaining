@@ -3,7 +3,7 @@ package cli
 import (
 	"fmt"
 
-	"github.com/hardik/kubesplaining/internal/exclusions"
+	"github.com/0hardik1/kubesplaining/internal/exclusions"
 	"github.com/spf13/cobra"
 )
 

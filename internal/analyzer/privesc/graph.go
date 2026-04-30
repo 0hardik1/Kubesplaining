@@ -5,8 +5,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/hardik/kubesplaining/internal/models"
-	"github.com/hardik/kubesplaining/internal/permissions"
+	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/permissions"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 )

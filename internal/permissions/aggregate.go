@@ -6,7 +6,7 @@ package permissions
 import (
 	"fmt"
 
-	"github.com/hardik/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/models"
 	rbacv1 "k8s.io/api/rbac/v1"
 )
 

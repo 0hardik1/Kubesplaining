@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/hardik/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/models"
 )
 
 // MatchResult wraps the (possibly annotated) Finding, whether an exclusion matched, and the matching reason.

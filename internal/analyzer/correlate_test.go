@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/hardik/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/models"
 )
 
 func TestCorrelateBumpsSubjectOnCriticalPath(t *testing.T) {

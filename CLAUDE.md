@@ -128,4 +128,4 @@ When you add a rule that targets a new resource/subject Kind, or a new privesc A
 
 ## Module/dependency notes
 
-Module path is `github.com/hardik/kubesplaining` and `go.mod` requires Go 1.26. Core deps: `spf13/cobra` for the CLI, `k8s.io/{api,apimachinery,client-go}` v0.35.x for cluster types and access. There is no separate `go-yaml` direct dep — `gopkg.in/yaml.v3` is used for the exclusions file loader.
+Module path is `github.com/0hardik1/kubesplaining` and `go.mod` requires Go 1.26. Core deps: `spf13/cobra` for the CLI, `k8s.io/{api,apimachinery,client-go}` v0.35.x for cluster types and access. There is no separate `go-yaml` direct dep — `gopkg.in/yaml.v3` is used for the exclusions file loader.

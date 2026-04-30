@@ -5,10 +5,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/hardik/kubesplaining/internal/exclusions"
-	"github.com/hardik/kubesplaining/internal/models"
-	"github.com/hardik/kubesplaining/internal/report"
-	"github.com/hardik/kubesplaining/internal/scoring"
+	"github.com/0hardik1/kubesplaining/internal/exclusions"
+	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/report"
+	"github.com/0hardik1/kubesplaining/internal/scoring"
 	"github.com/spf13/cobra"
 )
 

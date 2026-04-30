@@ -10,7 +10,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/hardik/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/models"
 )
 
 // marshalGraphPayload serializes the GraphPayload for inline embedding in a

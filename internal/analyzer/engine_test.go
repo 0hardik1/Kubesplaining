@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hardik/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/models"
 )
 
 // stubModule lets tests construct an Engine with a known finding set and predictable behavior.

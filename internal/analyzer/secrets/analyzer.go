@@ -10,8 +10,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/hardik/kubesplaining/internal/models"
-	"github.com/hardik/kubesplaining/internal/scoring"
+	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/scoring"
 	corev1 "k8s.io/api/core/v1"
 )
 

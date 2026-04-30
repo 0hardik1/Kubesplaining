@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/hardik/kubesplaining/internal/models"
-	"github.com/hardik/kubesplaining/internal/scoring"
+	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/scoring"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	networkingv1 "k8s.io/api/networking/v1"

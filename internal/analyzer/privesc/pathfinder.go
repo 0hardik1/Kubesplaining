@@ -3,7 +3,7 @@ package privesc
 import (
 	"sort"
 
-	"github.com/hardik/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/models"
 )
 
 // pathStep is one edge traversal during BFS: the node we entered and the edge we used to reach it.

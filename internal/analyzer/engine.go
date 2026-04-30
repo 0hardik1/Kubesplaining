@@ -10,15 +10,15 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/hardik/kubesplaining/internal/analyzer/admission"
-	"github.com/hardik/kubesplaining/internal/analyzer/network"
-	"github.com/hardik/kubesplaining/internal/analyzer/podsec"
-	"github.com/hardik/kubesplaining/internal/analyzer/privesc"
-	"github.com/hardik/kubesplaining/internal/analyzer/rbac"
-	"github.com/hardik/kubesplaining/internal/analyzer/secrets"
-	"github.com/hardik/kubesplaining/internal/analyzer/serviceaccount"
-	"github.com/hardik/kubesplaining/internal/models"
-	"github.com/hardik/kubesplaining/internal/scoring"
+	"github.com/0hardik1/kubesplaining/internal/analyzer/admission"
+	"github.com/0hardik1/kubesplaining/internal/analyzer/network"
+	"github.com/0hardik1/kubesplaining/internal/analyzer/podsec"
+	"github.com/0hardik1/kubesplaining/internal/analyzer/privesc"
+	"github.com/0hardik1/kubesplaining/internal/analyzer/rbac"
+	"github.com/0hardik1/kubesplaining/internal/analyzer/secrets"
+	"github.com/0hardik1/kubesplaining/internal/analyzer/serviceaccount"
+	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/scoring"
 )
 
 // Module is the contract each analysis module implements.

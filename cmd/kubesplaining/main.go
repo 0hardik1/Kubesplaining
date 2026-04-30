@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/hardik/kubesplaining/internal/cli"
+	"github.com/0hardik1/kubesplaining/internal/cli"
 )
 
 // These vars are populated at link time via -ldflags and surfaced through the version command.

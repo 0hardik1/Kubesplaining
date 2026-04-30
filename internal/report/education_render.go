@@ -15,7 +15,7 @@ import (
 	"html/template"
 	"strings"
 
-	"github.com/hardik/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/models"
 )
 
 // renderFindingEducation returns a "Background" HTML block listing the relevant

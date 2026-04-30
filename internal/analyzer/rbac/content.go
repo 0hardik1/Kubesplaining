@@ -12,7 +12,7 @@ package rbac
 import (
 	"fmt"
 
-	"github.com/hardik/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/models"
 )
 
 // ruleContent bundles every enriched field a rule emits beyond Title/Description.

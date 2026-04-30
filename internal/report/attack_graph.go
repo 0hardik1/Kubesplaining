@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/hardik/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/models"
 )
 
 // buildAttackGraph composes a 3-column flow diagram (entries → capabilities → impacts) from findings.

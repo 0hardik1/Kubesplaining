@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/hardik/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/models"
 )
 
 // buildNarratives auto-detects well-known attack chains from finding rule_ids and returns plain-English

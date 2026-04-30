@@ -5,12 +5,12 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/hardik/kubesplaining/internal/analyzer"
-	"github.com/hardik/kubesplaining/internal/collector"
-	"github.com/hardik/kubesplaining/internal/connection"
-	"github.com/hardik/kubesplaining/internal/exclusions"
-	"github.com/hardik/kubesplaining/internal/models"
-	"github.com/hardik/kubesplaining/internal/report"
+	"github.com/0hardik1/kubesplaining/internal/analyzer"
+	"github.com/0hardik1/kubesplaining/internal/collector"
+	"github.com/0hardik1/kubesplaining/internal/connection"
+	"github.com/0hardik1/kubesplaining/internal/exclusions"
+	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/report"
 	"github.com/spf13/cobra"
 )
 

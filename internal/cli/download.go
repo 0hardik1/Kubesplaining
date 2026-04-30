@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/hardik/kubesplaining/internal/collector"
-	"github.com/hardik/kubesplaining/internal/connection"
+	"github.com/0hardik1/kubesplaining/internal/collector"
+	"github.com/0hardik1/kubesplaining/internal/connection"
 	"github.com/spf13/cobra"
 )
 

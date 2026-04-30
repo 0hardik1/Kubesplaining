@@ -7,10 +7,10 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/hardik/kubesplaining/internal/analyzer"
-	"github.com/hardik/kubesplaining/internal/exclusions"
-	"github.com/hardik/kubesplaining/internal/manifest"
-	"github.com/hardik/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/analyzer"
+	"github.com/0hardik1/kubesplaining/internal/exclusions"
+	"github.com/0hardik1/kubesplaining/internal/manifest"
+	"github.com/0hardik1/kubesplaining/internal/models"
 	"github.com/spf13/cobra"
 )
 

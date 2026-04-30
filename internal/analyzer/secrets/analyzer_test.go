@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/hardik/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/models"
 	corev1 "k8s.io/api/core/v1"
 )
 

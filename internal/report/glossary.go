@@ -10,7 +10,7 @@ import (
 	"html/template"
 	"strings"
 
-	"github.com/hardik/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/models"
 )
 
 // GlossaryEntry teaches one Kubernetes concept that appears as an entry-point or capability node

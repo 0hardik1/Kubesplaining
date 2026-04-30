@@ -10,7 +10,7 @@
 // calls Compose so ordering across modules is meaningful.
 package scoring
 
-import "github.com/hardik/kubesplaining/internal/models"
+import "github.com/0hardik1/kubesplaining/internal/models"
 
 // Factors are the components of the composite risk score. Exploitability and BlastRadius
 // default to 1.0 when unset; ChainModifier defaults to 0.0 and is filled in by the engine.

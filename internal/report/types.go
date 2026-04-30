@@ -5,7 +5,7 @@ package report
 import (
 	"html/template"
 
-	"github.com/hardik/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/models"
 )
 
 // Summary tallies findings by severity bucket, reused at the global, module, category, and hotspot levels.

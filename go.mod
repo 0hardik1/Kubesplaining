@@ -1,4 +1,4 @@
-module github.com/hardik/kubesplaining
+module github.com/0hardik1/kubesplaining
 
 go 1.26
 

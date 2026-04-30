@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/hardik/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/models"
 )
 
 // Write emits the requested formats (html, json, csv, sarif) to outputDir along with the snapshot metadata side-file.
