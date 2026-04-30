@@ -17,14 +17,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cache/hermit
             ~/Library/Caches/hermit
           key: hermit-${{ runner.os }}-${{ hashFiles('bin/.*.pkg') }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: .tmp/go-mod-cache
           key: gomod-${{ runner.os }}-${{ hashFiles('go.sum') }}
@@ -43,19 +43,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cache/hermit
             ~/Library/Caches/hermit
           key: hermit-${{ runner.os }}-${{ hashFiles('bin/.*.pkg') }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: .tmp/go-mod-cache
           key: gomod-${{ runner.os }}-${{ hashFiles('go.sum') }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: ~/.cache/golangci-lint
           key: golangci-${{ runner.os }}-${{ hashFiles('.golangci.yml', 'go.sum') }}
@@ -78,14 +78,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cache/hermit
             ~/Library/Caches/hermit
           key: hermit-${{ runner.os }}-${{ hashFiles('bin/.*.pkg') }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: .tmp/go-mod-cache
           key: gomod-${{ runner.os }}-${{ hashFiles('go.sum') }}
@@ -110,14 +110,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cache/hermit
             ~/Library/Caches/hermit
           key: hermit-${{ runner.os }}-${{ hashFiles('bin/.*.pkg') }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: .tmp/go-mod-cache
           key: gomod-${{ runner.os }}-${{ hashFiles('go.sum') }}
