@@ -63,17 +63,12 @@ kubesplaining scan-resource --input-file deployment.yaml
 
 ## Installation
 
-Pick the path that fits. All four produce the same `kubesplaining` binary.
+Pick the path that fits. All three produce the same `kubesplaining` binary.
 
-### Container image (zero install)
-
-The image is multi-arch (linux/amd64 + linux/arm64), distroless, runs as non-root:
+### Go install
 
 ```bash
-docker run --rm \
-  -v "$HOME/.kube:/.kube:ro" \
-  -v "$(pwd)/kubesplaining-report:/kubesplaining-report" \
-  ghcr.io/0hardik1/kubesplaining:latest scan
+go install github.com/0hardik1/kubesplaining/cmd/kubesplaining@latest
 ```
 
 ### Pre-built binary
@@ -90,12 +85,6 @@ Verify the checksum, then move the binary into place:
 ```bash
 shasum -a 256 -c kubesplaining_<version>_checksums.txt
 sudo install kubesplaining /usr/local/bin/
-```
-
-### Go install
-
-```bash
-go install github.com/0hardik1/kubesplaining/cmd/kubesplaining@latest
 ```
 
 ### Homebrew
@@ -125,33 +114,16 @@ Rule IDs are a **public surface**: they are stable across releases and reference
 Four-stage pipeline:
 
 ```
-┌────────────┐    ┌──────────────┐    ┌──────────────┐    ┌─────────────┐
-│ Connection │ →  │  Collection  │ →  │   Analysis   │ →  │   Report    │
-│ kubeconfig │    │ snapshot.json│    │ 7 modules ∥  │    │ html/json/  │
-│ / in-cluster    │ RBAC+workload│    │ findings[]   │    │ csv/sarif   │
-└────────────┘    └──────────────┘    └──────────────┘    └─────────────┘
+┌───────────────┐    ┌───────────────┐    ┌───────────────┐    ┌───────────────┐
+│  Connection   │ →  │  Collection   │ →  │   Analysis    │ →  │    Report     │
+│  kubeconfig   │    │ snapshot.json │    │  7 modules ∥  │    │  html/json/   │
+│ / in-cluster  │    │ RBAC+workload │    │  findings[]   │    │   csv/sarif   │
+└───────────────┘    └───────────────┘    └───────────────┘    └───────────────┘
 ```
 
 The boundary that matters most: the **collector is the only thing that talks to the Kubernetes API**; analyzers consume a `Snapshot` and never make network calls. That's what makes `download` → `scan --input-file` work for offline analysis. Read-only access is sufficient: no admission webhooks, no agents, no CRDs installed.
 
 For the per-stage walkthrough, the privesc graph mechanics, the data model, and the scoring formula: [docs/architecture.md](docs/architecture.md).
-
-## Comparison with similar tools
-
-The Kubernetes security-tooling space clusters into a few distinct lanes: CIS-benchmark checkers, manifest linters, broad-spectrum scanners, RBAC visualisers, offensive pentest kits. Kubesplaining sits at the intersection of "RBAC privilege-escalation graph" and "educational HTML report from an offline snapshot", a combination that, as of writing, no single tool below covers.
-
-| Tool | Stars | Primary focus | RBAC privesc paths | HTML report | Offline / snapshot |
-|---|---|---|---|---|---|
-| **Kubesplaining** | — | Cluster-wide RBAC privesc graph + educational HTML report | ✅ multi-hop BFS to 4 sinks | ✅ self-contained | ✅ `download` + `scan --input-file` |
-| [rbac-tool](https://github.com/alcideio/rbac-tool) | ~1.1k | RBAC visualisation, who-can queries, risky-perm rules | partial: flags risky permissions per-subject, no chain composition | ✅ (graph as HTML / dot) | partial: needs live cluster for discovery |
-| [krane](https://github.com/appvia/krane) | ~739 | RBAC static analysis + dashboard (RedisGraph) | partial: supports Cypher queries, but the user has to author the traversal | ✅ (dashboard UI) | ✅ (local YAML / JSON) |
-| [KubiScan](https://github.com/cyberark/KubiScan) | ~1.4k | Risky-RBAC permission scanner | partial: flags risky verbs per-subject, no graph | ❌ (terminal tables) | ❌ |
-| [kubescape](https://github.com/kubescape/kubescape) | ~11.3k | Broad scanner (NSA, MITRE, CIS controls) | ❌ | ✅ | ✅ |
-| [kube-bench](https://github.com/aquasecurity/kube-bench) | ~8.0k | CIS Kubernetes Benchmark compliance | ❌ | ❌ | ❌ (in-cluster job) |
-
-> The three tools that share the most surface area with kubesplaining are **rbac-tool**, **krane**, and **KubiScan**: all scoped to RBAC risk. None walks the RBAC graph as an attack chain: they identify risky *permissions* on a single subject (wildcard verbs, bind-on-clusterrole, secrets/get) but they don't compose those permissions into a multi-hop path from `default/default` ➝ `cluster-admin` the way kubesplaining's privesc analyser does. Krane comes closest in spirit (it indexes RBAC into RedisGraph and exposes ad-hoc Cypher queries) but the user has to *write* the traversal. Kubesplaining ships the graph, the BFS, and the per-finding educational copy out of the box, plus the offline `download` ➝ `scan --input-file` workflow for environments where you can't keep credentials around.
-
-For the full comparison covering kubeaudit, kube-score, kube-linter, polaris, trivy, checkov, peirates, and the archived-but-still-cited kube-hunter / datree / kubeval: [docs/comparison.md](docs/comparison.md).
 
 ## Sample finding
 
@@ -370,9 +342,6 @@ Out of scope. The intent is *assessment*, not enforcement. If you want enforceme
 
 **Why are findings excluded by default?**
 The `standard` preset suppresses control-plane noise (kube-system, system:*, kubeadm:*) that an operator can't change without breaking their cluster. Re-run with `--exclusions-preset=none` to see everything.
-
-**Why is the comparison table so short?**
-The README keeps it to the closest competitors plus a couple of broad scanners. The full 15-tool comparison (kubeaudit, polaris, trivy, checkov, peirates, archived projects) lives in [docs/comparison.md](docs/comparison.md).
 
 ## Where to go next
 

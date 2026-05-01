@@ -5,11 +5,11 @@ How Kubesplaining is wired internally. For *what* it does (rule library, install
 ## The four-stage pipeline
 
 ```
-┌────────────┐    ┌──────────────┐    ┌──────────────┐    ┌─────────────┐
-│ Connection │ →  │  Collection  │ →  │   Analysis   │ →  │   Report    │
-│ kubeconfig │    │ snapshot.json│    │ 7 modules ∥  │    │ html/json/  │
-│ / in-cluster    │ RBAC+workload│    │ findings[]   │    │ csv/sarif   │
-└────────────┘    └──────────────┘    └──────────────┘    └─────────────┘
+┌───────────────┐    ┌───────────────┐    ┌───────────────┐    ┌───────────────┐
+│  Connection   │ →  │  Collection   │ →  │   Analysis    │ →  │    Report     │
+│  kubeconfig   │    │ snapshot.json │    │  7 modules ∥  │    │  html/json/   │
+│ / in-cluster  │    │ RBAC+workload │    │  findings[]   │    │   csv/sarif   │
+└───────────────┘    └───────────────┘    └───────────────┘    └───────────────┘
 ```
 
 The boundary that matters most: the **collector is the only thing that talks to the Kubernetes API**; analyzers consume `models.Snapshot` and never make network calls. That separation is what makes `download` → `scan --input-file` work for offline analysis.
