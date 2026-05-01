@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Kubesplaining Report{{ if .Snapshot.Metadata.ClusterName }} — {{ .Snapshot.Metadata.ClusterName }}{{ end }}</title>
+  <title>Kubesplaining Report{{ if .Snapshot.Metadata.ClusterName }}: {{ .Snapshot.Metadata.ClusterName }}{{ end }}</title>
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
   <style>
     :root {
@@ -700,7 +700,7 @@
         {{ if .Narratives }}
         <div class="tldr">
           <strong>What the attack paths mean.</strong>
-          Individual findings don't tell the whole story — attackers chain them. This report detected
+          Individual findings don't tell the whole story. Attackers chain them. This report detected
           <strong>{{ len .Narratives }}</strong> attack {{ pluralize (len .Narratives) "chain" "chains" }} by looking at how rule IDs, subjects, and resources connect.
           The attack-paths diagram below makes those connections explicit; each chain is walked through in plain English further down.
         </div>
@@ -736,7 +736,7 @@
           {{ if .Narratives }}<li><strong>{{ len .Narratives }}</strong> attack {{ pluralize (len .Narratives) "chain" "chains" }} detected</li>{{ end }}
           {{ if .TopNamespaces }}<li><strong>{{ (index .TopNamespaces 0).Summary.Total }}</strong> findings in namespace <code>{{ (index .TopNamespaces 0).Label }}</code></li>{{ end }}
           {{ if .TopResources }}<li><strong>{{ (index .TopResources 0).Summary.Total }}</strong> findings on <code>{{ (index .TopResources 0).Label }}</code></li>{{ end }}
-          {{ if .Snapshot.Metadata.CollectionWarnings }}<li><strong>{{ len .Snapshot.Metadata.CollectionWarnings }}</strong> collection warnings — some signal may be missing</li>{{ end }}
+          {{ if .Snapshot.Metadata.CollectionWarnings }}<li><strong>{{ len .Snapshot.Metadata.CollectionWarnings }}</strong> collection warnings, so some signal may be missing</li>{{ end }}
         </ul>
       </div>
     </section>
@@ -755,7 +755,7 @@
           </div>
         </div>
         <div class="graph-header-row">
-          <p class="graph-intro">Defenders look at findings as a list. <strong>Attackers chain them</strong>. This graph walks each entry point through the capability it grants to the impact it achieves — so a finding's real danger is the <em>path</em> it joins, not its individual score. <span class="kp-hint">Hover for context · click any node for a plain-language explainer.</span></p>
+          <p class="graph-intro">Defenders look at findings as a list. <strong>Attackers chain them</strong>. This graph walks each entry point through the capability it grants to the impact it achieves, so a finding's real danger is the <em>path</em> it joins, not its individual score. <span class="kp-hint">Hover for context · click any node for a plain-language explainer.</span></p>
           {{ if .Graph.Truncated }}
           <p class="graph-truncated-notice"><span class="graph-truncated-badge">Showing {{ .Graph.Shown }} of {{ .Graph.TotalCaps }}</span>To keep the diagram readable, capabilities are capped at 10. The slate first guarantees one cap per impact category present in the cluster, then fills remaining slots by severity and score. The <strong>Findings</strong> tab has the complete list.</p>
           {{ end }}
@@ -772,7 +772,7 @@
           <button type="button" class="kp-chip kp-chip-reset" data-action="reset">Reset</button>
         </div>
         <div class="graph-wrap">
-          <svg class="attack-svg" viewBox="0 0 {{ .Graph.Width }} {{ .Graph.Height }}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Attack path graph — interactive">
+          <svg class="attack-svg" viewBox="0 0 {{ .Graph.Width }} {{ .Graph.Height }}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Attack path graph (interactive)">
             <defs>
               <linearGradient id="impact-crit" x1="0" x2="1" y1="0" y2="0">
                 <stop offset="0%" stop-color="#3a1018"/><stop offset="100%" stop-color="#1d0b10"/>
@@ -980,7 +980,7 @@
 
     {{ if .Modules }}
     <div class="findings-search" data-tab="findings">
-      <input type="search" id="findings-search-input" placeholder="Search findings — subject, resource, rule ID..." aria-label="Search findings" autocomplete="off" spellcheck="false" />
+      <input type="search" id="findings-search-input" placeholder="Search findings: subject, resource, rule ID..." aria-label="Search findings" autocomplete="off" spellcheck="false" />
       <kbd class="findings-search-hint" aria-hidden="true">/</kbd>
     </div>
     <div class="findings-filters" data-tab="findings" role="toolbar" aria-label="Filter findings" hidden>

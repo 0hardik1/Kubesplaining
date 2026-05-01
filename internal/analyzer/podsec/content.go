@@ -35,10 +35,10 @@ func scopeForWorkload(kind, namespace, name string) models.Scope {
 	level := models.ScopeWorkload
 	detail := fmt.Sprintf("Workload `%s/%s/%s`", kind, namespace, name)
 	if kind == "DaemonSet" {
-		detail += " — runs on **every** node (per-node blast radius)"
+		detail += ", runs on **every** node (per-node blast radius)"
 	}
 	if strings.HasPrefix(namespace, "kube-") {
-		detail += " — control-plane namespace"
+		detail += ", control-plane namespace"
 	}
 	return models.Scope{Level: level, Detail: detail}
 }
@@ -81,7 +81,7 @@ func contentEscape001(kind, namespace, name, container string) ruleContent {
 			"This is the single most dangerous PodSpec setting: capability drops, read-only root filesystem, and `runAsNonRoot` are all neutralised because the container can simply remount, reload kernel modules, or call `setuid(0)`. The Pod Security Standards explicitly forbid privileged containers at both Baseline and Restricted levels.\n\n"+
 			"Real-world breakout: an attacker with code execution loads a kernel module with `insmod` (CAP_SYS_MODULE), or uses `mknod` to recreate `/dev/sda1`, mounts the host root, and writes to `/root/.ssh/authorized_keys`. Public exploit tooling (`deepce`, `kdigger -ac`, `kubeletmein`) automates these in seconds.",
 			container, kind, namespace, name),
-		Impact: "Full root on the host node — read every Secret on the node, exfiltrate the kubelet client certificate, schedule pods anywhere, and pivot to other nodes.",
+		Impact: "Full root on the host node: read every Secret on the node, exfiltrate the kubelet client certificate, schedule pods anywhere, and pivot to other nodes.",
 		AttackScenario: []string{
 			"Attacker gains code execution inside the privileged pod (RCE, malicious image, SSRF→shell).",
 			"They confirm the configuration with `kdigger dig admission` or `deepce.sh`.",
@@ -91,7 +91,7 @@ func contentEscape001(kind, namespace, name, container string) ruleContent {
 		},
 		Remediation: "Remove `privileged: true` and explicitly grant only the Linux capabilities the workload actually needs.",
 		RemediationSteps: []string{
-			"Audit why the container needs privileged — most apps do not. Trace which capability is actually required (often only `NET_BIND_SERVICE`).",
+			"Audit why the container needs privileged. Most apps do not. Trace which capability is actually required (often only `NET_BIND_SERVICE`).",
 			"Replace `privileged: true` with `capabilities.drop: [ALL]` and an explicit `capabilities.add: [<NEEDED_CAP>]`. Add `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, `runAsNonRoot: true`, and `seccompProfile.type: RuntimeDefault`.",
 			"Enforce at admission time: label the namespace `pod-security.kubernetes.io/enforce: baseline` (or `restricted`) so future regressions are blocked.",
 			fmt.Sprintf("Validate with `kubectl get %s/%s -n %s -o jsonpath='{.spec.template.spec.containers[*].securityContext.privileged}'` returning empty/false.", strings.ToLower(kind), name, namespace),
@@ -106,11 +106,11 @@ func contentEscape001(kind, namespace, name, container string) ruleContent {
 func contentEscape002(kind, namespace, name string) ruleContent {
 	scope := scopeForWorkload(kind, namespace, name)
 	return ruleContent{
-		Title: fmt.Sprintf("Pod shares host PID namespace (`hostPID: true`) — `%s/%s/%s`", kind, namespace, name),
+		Title: fmt.Sprintf("Pod shares host PID namespace (`hostPID: true`) in `%s/%s/%s`", kind, namespace, name),
 		Scope: scope,
-		Description: fmt.Sprintf("Workload `%s/%s/%s` sets `spec.hostPID: true`, joining the host's PID namespace. Every process on the node — kubelet, container runtime, other tenant workloads, sshd, cloud-init agents — is visible via `/proc` and addressable by PID from inside this pod.\n\n"+
+		Description: fmt.Sprintf("Workload `%s/%s/%s` sets `spec.hostPID: true`, joining the host's PID namespace. Every process on the node (kubelet, container runtime, other tenant workloads, sshd, cloud-init agents) is visible via `/proc` and addressable by PID from inside this pod.\n\n"+
 			"The risk is twofold. First, information disclosure: `/proc/<pid>/environ`, `/proc/<pid>/cmdline`, and `/proc/<pid>/root/...` leak environment variables (which often contain database passwords, cloud credentials, and Kubernetes service-account tokens), CLI args, and arbitrary file contents from other containers' rootfs. Second, when combined with CAP_SYS_PTRACE or `privileged: true`, an attacker can `nsenter --target 1 --mount --uts --ipc --net --pid -- /bin/bash` and land directly in the host's mount namespace as root.\n\n"+
-			"Bishop Fox's `bad-pods` library and `kdigger`'s `processes` bucket grep `/proc/*/environ` for `AWS_`, `KUBE_`, `DATABASE_URL`, and service-account JWTs. Even without extra capabilities, host-PID alone is enough to harvest cleartext credentials from neighboring pods on the same node — a classic noisy-neighbor escalation primitive (TeamTNT, Hildegard).",
+			"Bishop Fox's `bad-pods` library and `kdigger`'s `processes` bucket grep `/proc/*/environ` for `AWS_`, `KUBE_`, `DATABASE_URL`, and service-account JWTs. Even without extra capabilities, host-PID alone is enough to harvest cleartext credentials from neighboring pods on the same node. This is a classic noisy-neighbor escalation primitive (TeamTNT, Hildegard).",
 			kind, namespace, name),
 		Impact: "Read process arguments, environment variables, and `/proc/<pid>/root` of every other pod on the node; harvest service-account tokens and cloud credentials from neighbors.",
 		AttackScenario: []string{
@@ -120,7 +120,7 @@ func contentEscape002(kind, namespace, name string) ruleContent {
 			"Read other pods' service-account tokens via `cat /proc/<pid>/root/var/run/secrets/kubernetes.io/serviceaccount/token`.",
 			"If CAP_SYS_PTRACE or privileged is also present, `nsenter -t 1 -a` to land in the host root namespace and persist via SSH key or systemd unit.",
 		},
-		Remediation: "Set `spec.hostPID: false` (or omit it — defaults to false).",
+		Remediation: "Set `spec.hostPID: false` (or omit it; the default is false).",
 		RemediationSteps: []string{
 			"Identify why hostPID was set; legitimate uses are limited to node-monitoring DaemonSets like node-exporter.",
 			"Remove `hostPID: true` from the pod template (or set explicitly to `false`).",
@@ -137,23 +137,23 @@ func contentEscape002(kind, namespace, name string) ruleContent {
 func contentEscape003(kind, namespace, name string) ruleContent {
 	scope := scopeForWorkload(kind, namespace, name)
 	return ruleContent{
-		Title: fmt.Sprintf("Pod shares host network (`hostNetwork: true`) — `%s/%s/%s`", kind, namespace, name),
+		Title: fmt.Sprintf("Pod shares host network (`hostNetwork: true`) in `%s/%s/%s`", kind, namespace, name),
 		Scope: scope,
-		Description: fmt.Sprintf("Workload `%s/%s/%s` sets `spec.hostNetwork: true`. The container is no longer in a sandboxed network namespace — it sees the node's interfaces, listens on the node's IPs and ports, and reaches every loopback service the kubelet talks to.\n\n"+
-			"The most dangerous consequence is that NetworkPolicies cannot apply. Cilium, Calico, and the upstream NetworkPolicy spec key off the pod's veth and labels — a hostNetwork pod has neither, so all egress filtering is silently bypassed. On managed Kubernetes (EKS/GKE/AKS) the workload can reach the cloud Instance Metadata Service at `169.254.169.254` even when the cluster has set IMDSv2 hop-count protection. The result is a one-step path from container RCE to AWS/Azure/GCP IAM credential theft.\n\n"+
+		Description: fmt.Sprintf("Workload `%s/%s/%s` sets `spec.hostNetwork: true`. The container is no longer in a sandboxed network namespace. It sees the node's interfaces, listens on the node's IPs and ports, and reaches every loopback service the kubelet talks to.\n\n"+
+			"The most dangerous consequence is that NetworkPolicies cannot apply. Cilium, Calico, and the upstream NetworkPolicy spec key off the pod's veth and labels, and a hostNetwork pod has neither, so all egress filtering is silently bypassed. On managed Kubernetes (EKS/GKE/AKS) the workload can reach the cloud Instance Metadata Service at `169.254.169.254` even when the cluster has set IMDSv2 hop-count protection. The result is a one-step path from container RCE to AWS/Azure/GCP IAM credential theft.\n\n"+
 			"The pod can also bind privileged ports the host already uses, redirect kube-proxy, sniff service traffic, or scan internal-only addresses such as `127.0.0.1:10250` (kubelet) which is otherwise unreachable from a normal pod.",
 			kind, namespace, name),
-		Impact: "Bypasses NetworkPolicy and IMDSv2 hop protection; container reaches cloud metadata, kubelet localhost, and any node-loopback service — pivots cluster compromise into cloud-account compromise.",
+		Impact: "Bypasses NetworkPolicy and IMDSv2 hop protection; container reaches cloud metadata, kubelet localhost, and any node-loopback service. This pivots cluster compromise into cloud-account compromise.",
 		AttackScenario: []string{
 			"Gain code execution in the pod (web RCE, malicious image).",
 			"Confirm hostNetwork: `ip addr` shows the node's primary interface, not a pod CIDR.",
 			"Hit the IMDS: `curl -s http://169.254.169.254/latest/api/token -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600'` then fetch `iam/security-credentials/<role>`.",
 			"Use stolen IAM creds with `aws sts get-caller-identity` and pivot to S3/EKS API.",
-			"Optional: probe `127.0.0.1:10250` (kubelet) — if anonymous auth, run `curl -k https://127.0.0.1:10250/pods` to enumerate every pod on the node and exec into any of them.",
+			"Optional: probe `127.0.0.1:10250` (kubelet). If anonymous auth is enabled, run `curl -k https://127.0.0.1:10250/pods` to enumerate every pod on the node and exec into any of them.",
 		},
 		Remediation: "Set `hostNetwork: false` (default) and route any node-level networking through a CNI-managed Service or NetworkPolicy-aware DaemonSet.",
 		RemediationSteps: []string{
-			"Audit if hostNetwork is required — typically only kube-proxy, CNI agents, or node-local DNS legitimately need it.",
+			"Audit if hostNetwork is required. Typically only kube-proxy, CNI agents, or node-local DNS legitimately need it.",
 			"Remove `hostNetwork: true`. If a host port is genuinely required, prefer a Service of type NodePort or an Ingress controller behind a NetworkPolicy.",
 			"Enforce IMDSv2 with hop-limit = 1 on every node; apply an egress NetworkPolicy denying `169.254.169.254/32` for application namespaces.",
 			fmt.Sprintf("Validate: `kubectl get %s/%s -n %s -o jsonpath='{.spec.template.spec.hostNetwork}'` is empty/false; `kubectl exec ... -- curl -m 2 http://169.254.169.254/` should fail.", strings.ToLower(kind), name, namespace),
@@ -170,10 +170,10 @@ func contentEscape003(kind, namespace, name string) ruleContent {
 func contentEscape004(kind, namespace, name string) ruleContent {
 	scope := scopeForWorkload(kind, namespace, name)
 	return ruleContent{
-		Title: fmt.Sprintf("Pod shares host IPC (`hostIPC: true`) — `%s/%s/%s`", kind, namespace, name),
+		Title: fmt.Sprintf("Pod shares host IPC (`hostIPC: true`) in `%s/%s/%s`", kind, namespace, name),
 		Scope: scope,
 		Description: fmt.Sprintf("Workload `%s/%s/%s` sets `spec.hostIPC: true`, joining the host's IPC (Inter-Process Communication) namespace. The container can read and write the host's POSIX shared-memory segments (`/dev/shm`), SysV shared memory, message queues, and semaphore arrays.\n\n"+
-			"The attack surface is data, not code execution. Many host-resident processes — caching layers, GPU compute (CUDA's `cuMemAlloc`), Redis with `unixsocket`, Postgres' shared buffers, even kernel-side IMA logs — store in-memory state in IPC segments under the assumption no untrusted process can address them. With `hostIPC: true` an attacker dumps every visible segment, harvests cached secrets, replays message queues, or corrupts semaphores to cause denial-of-service.\n\n"+
+			"The attack surface is data, not code execution. Many host-resident processes (caching layers, GPU compute via CUDA's `cuMemAlloc`, Redis with `unixsocket`, Postgres' shared buffers, even kernel-side IMA logs) store in-memory state in IPC segments under the assumption no untrusted process can address them. With `hostIPC: true` an attacker dumps every visible segment, harvests cached secrets, replays message queues, or corrupts semaphores to cause denial-of-service.\n\n"+
 			"Bishop Fox's `bad-pods/hostipc` example uses `ipcs -m` to list shared-memory segments and `ipcs -p` to identify owning PIDs, then `cat /dev/shm/*` (or attaches via `shmat`) to extract their contents. hostIPC is forbidden by the Pod Security Standards Baseline level.",
 			kind, namespace, name),
 		Impact: "Read or modify shared memory and SysV IPC of every process on the node; leak in-memory secrets, GPU buffers, database caches; denial-of-service via semaphore corruption.",
@@ -186,7 +186,7 @@ func contentEscape004(kind, namespace, name string) ruleContent {
 		},
 		Remediation: "Set `hostIPC: false` (default).",
 		RemediationSteps: []string{
-			"Confirm no legitimate IPC sharing requirement; very few application workloads need this — typically only NVIDIA GPU sharing or some HPC workloads.",
+			"Confirm no legitimate IPC sharing requirement; very few application workloads need this. Typically only NVIDIA GPU sharing or some HPC workloads.",
 			"Remove `hostIPC: true` from the pod template.",
 			"Where shared memory is a feature need (containers cooperating), use a single Pod with multiple containers and an `emptyDir { medium: Memory }` volume instead of host IPC.",
 			fmt.Sprintf("Validate: `kubectl get %s/%s -n %s -o jsonpath='{.spec.template.spec.hostIPC}'` is empty/false.", strings.ToLower(kind), name, namespace),
@@ -204,11 +204,11 @@ func contentEscape005(kind, namespace, name, volumeName string) ruleContent {
 	return ruleContent{
 		Title: fmt.Sprintf("Docker socket mounted into `%s/%s/%s` (volume `%s` → `/var/run/docker.sock`)", kind, namespace, name, volumeName),
 		Scope: scope,
-		Description: fmt.Sprintf("Workload `%s/%s/%s` mounts the Docker UNIX socket `/var/run/docker.sock` from the node into the container (volume `%s`). The Docker daemon listens on this socket as root and exposes the entire Docker Engine API — including `POST /containers/create`, which lets any client launch a new container with arbitrary mounts, devices, capabilities, and host-namespace settings.\n\n"+
-			"Mounting docker.sock is equivalent to giving the workload an unrestricted root shell on the node. There is no permission boundary inside the Docker API; \"read-only\" mount of the socket file does not help because the socket is a request channel, not a stored object — once you can `connect()` to it, you can issue any command. The OWASP Docker Security Cheat Sheet calls this the top-priority anti-pattern, and HackTricks documents the breakout as a one-liner.\n\n"+
+		Description: fmt.Sprintf("Workload `%s/%s/%s` mounts the Docker UNIX socket `/var/run/docker.sock` from the node into the container (volume `%s`). The Docker daemon listens on this socket as root and exposes the entire Docker Engine API, including `POST /containers/create`, which lets any client launch a new container with arbitrary mounts, devices, capabilities, and host-namespace settings.\n\n"+
+			"Mounting docker.sock is equivalent to giving the workload an unrestricted root shell on the node. There is no permission boundary inside the Docker API; a \"read-only\" mount of the socket file does not help because the socket is a request channel, not a stored object. Once you can `connect()` to it, you can issue any command. The OWASP Docker Security Cheat Sheet calls this the top-priority anti-pattern, and HackTricks documents the breakout as a one-liner.\n\n"+
 			"From inside the container, install the Docker CLI (or use `curl --unix-socket`) and run `docker run -v /:/host --privileged --pid=host -it alpine chroot /host`. The new container mounts the host root, runs as host root, and can drop a backdoor into `/etc/cron.d/`, steal `/var/lib/kubelet/pki/`, or `nsenter -t 1 -a` to land on the host directly.",
 			kind, namespace, name, volumeName),
-		Impact: "Equivalent to root on the node — launch any container with any mount, mount the host filesystem, steal kubelet certs, and pivot to the entire cluster.",
+		Impact: "Equivalent to root on the node: launch any container with any mount, mount the host filesystem, steal kubelet certs, and pivot to the entire cluster.",
 		AttackScenario: []string{
 			"Gain code execution in the pod with docker.sock mounted.",
 			"Verify: `ls -la /var/run/docker.sock; curl --unix-socket /var/run/docker.sock http://localhost/version`.",
@@ -218,7 +218,7 @@ func contentEscape005(kind, namespace, name, volumeName string) ruleContent {
 		},
 		Remediation: "Remove the docker.sock hostPath mount; do not run sibling-container patterns on Kubernetes.",
 		RemediationSteps: []string{
-			"Identify why the workload talks to Docker — usually a CI runner, log shipper, or build system. Replace with a Kubernetes-native alternative: Buildah/Kaniko/Buildkit-rootless for builds, the Kubernetes API for pod orchestration, fluent-bit's tail input for logs.",
+			"Identify why the workload talks to Docker. The usual suspects are a CI runner, log shipper, or build system. Replace with a Kubernetes-native alternative: Buildah/Kaniko/Buildkit-rootless for builds, the Kubernetes API for pod orchestration, fluent-bit's tail input for logs.",
 			"Remove the `hostPath: /var/run/docker.sock` volume and corresponding `volumeMount`.",
 			"Apply Pod Security Admission `baseline` to the namespace (forbids hostPath volumes) and/or use a Kyverno/OPA policy that explicitly denies this path.",
 			fmt.Sprintf("Validate: `kubectl get %s/%s -n %s -o jsonpath='{.spec.template.spec.volumes}' | jq` should not contain `/var/run/docker.sock`.", strings.ToLower(kind), name, namespace),
@@ -238,21 +238,21 @@ func contentContainerdSocket001(kind, namespace, name, volumeName string) ruleCo
 	return ruleContent{
 		Title: fmt.Sprintf("Containerd socket mounted into `%s/%s/%s` (volume `%s`)", kind, namespace, name, volumeName),
 		Scope: scope,
-		Description: fmt.Sprintf("Workload `%s/%s/%s` mounts containerd's UNIX socket (`/run/containerd/containerd.sock` or `/var/run/containerd/containerd.sock`) into the container via volume `%s`. Containerd runs as root and is the runtime the kubelet uses to start every pod on the node — if you can talk to its API, you can create, modify, or exec into any container on the host, including kube-system control-plane pods.\n\n"+
-			"This is the modern equivalent of the docker.sock anti-pattern. Since Kubernetes 1.24 removed dockershim, most clusters use containerd or CRI-O directly; the same breakout primitives apply but the tooling differs (`ctr`, `crictl`). Kubernetes places its containers under containerd namespace `k8s.io` — `ctr -n k8s.io containers list` enumerates every pod on the node.\n\n"+
+		Description: fmt.Sprintf("Workload `%s/%s/%s` mounts containerd's UNIX socket (`/run/containerd/containerd.sock` or `/var/run/containerd/containerd.sock`) into the container via volume `%s`. Containerd runs as root and is the runtime the kubelet uses to start every pod on the node. In practice, this means that if you can talk to its API, you can create, modify, or exec into any container on the host, including kube-system control-plane pods.\n\n"+
+			"This is the modern equivalent of the docker.sock anti-pattern. Since Kubernetes 1.24 removed dockershim, most clusters use containerd or CRI-O directly; the same breakout primitives apply but the tooling differs (`ctr`, `crictl`). Kubernetes places its containers under containerd namespace `k8s.io`, so `ctr -n k8s.io containers list` enumerates every pod on the node.\n\n"+
 			"The Grey Corner's containerd-socket-exploitation series documents the one-liner: install or copy the `ctr` binary, then run `ctr --address /run/containerd/containerd.sock -n k8s.io run --rm --mount type=bind,src=/,dst=/host,options=rbind:rw --privileged docker.io/library/alpine:latest pwn /bin/sh`. The result is a privileged container with `/` mounted at `/host`. From there an attacker reads the kubelet client cert, dumps every pod's secrets, or `task exec`s a reverse shell into the apiserver static pod on a control-plane node.",
 			kind, namespace, name, volumeName),
 		Impact: "Root on the node and arbitrary code execution inside any container on the node, including kube-system static pods. Equivalent to compromising the kubelet itself.",
 		AttackScenario: []string{
 			"Code execution in the pod with containerd.sock mounted.",
 			"`ls -la /run/containerd/containerd.sock; ctr --address /run/containerd/containerd.sock version`.",
-			"List target containers: `ctr -n k8s.io containers list` — note kube-apiserver, etcd, or any victim app.",
+			"List target containers: `ctr -n k8s.io containers list`. Note kube-apiserver, etcd, or any victim app.",
 			"Spawn a privileged escape container: `ctr -n k8s.io run --rm --privileged --mount type=bind,src=/,dst=/host,options=rbind:rw docker.io/library/alpine:latest x /bin/sh -c 'chroot /host'`.",
 			"From host, harvest `/var/lib/kubelet/pki/kubelet-client-current.pem` and pivot to the API server.",
 		},
 		Remediation: "Remove the containerd-socket hostPath mount; use the Kubernetes API or CRI-aware tools instead.",
 		RemediationSteps: []string{
-			"Determine why the workload needs CRI access. Legitimate use is rare — typically only specific node-agent observability tools. Replace with a Kubernetes-API-driven alternative.",
+			"Determine why the workload needs CRI access. Legitimate use is rare and typically limited to specific node-agent observability tools. Replace with a Kubernetes-API-driven alternative.",
 			"Remove the hostPath volume and volumeMount targeting `/run/containerd/containerd.sock` (and aliases).",
 			"For monitoring use cases, use the kubelet's `/metrics/cadvisor` endpoint behind an RBAC-scoped ServiceAccount, not raw socket access.",
 			fmt.Sprintf("Validate: `kubectl get %s/%s -n %s -o yaml | grep -i containerd` returns no socket mount.", strings.ToLower(kind), name, namespace),
@@ -272,9 +272,9 @@ func contentEscape006(kind, namespace, name, volumeName string) ruleContent {
 	return ruleContent{
 		Title: fmt.Sprintf("Root filesystem (`/`) mounted from host into `%s/%s/%s`", kind, namespace, name),
 		Scope: scope,
-		Description: fmt.Sprintf("Workload `%s/%s/%s` mounts the host's root filesystem (`hostPath: /`) inside the container via volume `%s`. Combined with the container's UID (typically root), this exposes the entire node filesystem — kubelet credentials, every other pod's mounted secrets, the container runtime state, and on control-plane nodes the static-pod manifests under `/etc/kubernetes/manifests`.\n\n"+
-			"Mounting `/` is one of the few configurations that, by itself, guarantees host compromise without requiring a CVE, kernel exploit, or even the `privileged` flag. The kubelet stores per-pod secrets at `/var/lib/kubelet/pods/<uid>/volumes/kubernetes.io~secret/<name>/...` in cleartext (tmpfs); a read-only host-root mount is enough to copy them all out. A read-write mount turns this into trivial persistence: write to `/etc/cron.d/`, modify `/etc/sudoers`, drop a shared-object into `/etc/ld.so.preload`, or — on a control-plane node — drop a malicious manifest into `/etc/kubernetes/manifests/` which the kubelet then runs as a static pod with full privileges.\n\n"+
-			"A single command sequence — `chroot /host`, `cat /host/var/lib/kubelet/pki/kubelet-client-current.pem`, then `kubectl --kubeconfig=<crafted> get secrets -A` — yields full secret enumeration on every pod on the node. Public exploit aids (`kubeletmein`, `peirates`) automate the chain.",
+		Description: fmt.Sprintf("Workload `%s/%s/%s` mounts the host's root filesystem (`hostPath: /`) inside the container via volume `%s`. Combined with the container's UID (typically root), this exposes the entire node filesystem: kubelet credentials, every other pod's mounted secrets, the container runtime state, and on control-plane nodes the static-pod manifests under `/etc/kubernetes/manifests`.\n\n"+
+			"Mounting `/` is one of the few configurations that, by itself, guarantees host compromise without requiring a CVE, kernel exploit, or even the `privileged` flag. The kubelet stores per-pod secrets at `/var/lib/kubelet/pods/<uid>/volumes/kubernetes.io~secret/<name>/...` in cleartext (tmpfs); a read-only host-root mount is enough to copy them all out. A read-write mount turns this into trivial persistence: write to `/etc/cron.d/`, modify `/etc/sudoers`, drop a shared-object into `/etc/ld.so.preload`, or, on a control-plane node, drop a malicious manifest into `/etc/kubernetes/manifests/` which the kubelet then runs as a static pod with full privileges.\n\n"+
+			"A single command sequence (`chroot /host`, `cat /host/var/lib/kubelet/pki/kubelet-client-current.pem`, then `kubectl --kubeconfig=<crafted> get secrets -A`) yields full secret enumeration on every pod on the node. Public exploit aids (`kubeletmein`, `peirates`) automate the chain.",
 			kind, namespace, name, volumeName),
 		Impact: "Read every secret on the node; write to host cron, SSH, kubelet PKI, or static-pod manifests; persistence and pivot to cluster-admin.",
 		AttackScenario: []string{
@@ -304,7 +304,7 @@ func contentEscape006(kind, namespace, name, volumeName string) ruleContent {
 func contentEscape008(kind, namespace, name, volumeName string) ruleContent {
 	scope := scopeForWorkload(kind, namespace, name)
 	return ruleContent{
-		Title: fmt.Sprintf("`/var/log` mounted from host into `%s/%s/%s` — log-symlink escape primitive", kind, namespace, name),
+		Title: fmt.Sprintf("`/var/log` mounted from host into `%s/%s/%s` enables log-symlink escape primitive", kind, namespace, name),
 		Scope: scope,
 		Description: fmt.Sprintf("Workload `%s/%s/%s` mounts `/var/log` from the host via volume `%s`. This directory is the canonical container-log staging area: the kubelet writes per-pod logs into `/var/log/pods/<ns>_<pod>_<uid>/<container>/0.log` as symlinks pointing to the runtime's actual log files.\n\n"+
 			"The exploit is that `kubectl logs` causes the kubelet (running as root) to read those symlinks. If a pod can write into the host's `/var/log` (because it has the directory mounted), it can replace its own `0.log` symlink with one pointing to ANY file on the node, e.g. `/etc/shadow` or `/var/lib/kubelet/pki/kubelet-client-current.pem`. The next `kubectl logs <pod>` returns the contents of that file as if it were the container's stdout. This is the well-known `/var/log` symlink escape (Aqua Security, KubeHound `CE_VAR_LOG_SYMLINK`, CVE-2017-1002101, CVE-2021-25741).\n\n"+
@@ -322,7 +322,7 @@ func contentEscape008(kind, namespace, name, volumeName string) ruleContent {
 		RemediationSteps: []string{
 			"For log-shipper DaemonSets that genuinely need host logs, switch to read-only mount AND restrict to `/var/log/containers` and `/var/log/pods` only (not the parent `/var/log`).",
 			"Configure the log shipper to refuse following symlinks (e.g. Fluent Bit `Path_Key`) and run as a non-root UID.",
-			"For application pods, route logs to stdout/stderr only — Kubernetes captures these without any hostPath. Drop the hostPath mount.",
+			"For application pods, route logs to stdout/stderr only. Kubernetes captures these without any hostPath. Drop the hostPath mount.",
 			fmt.Sprintf("Validate: `kubectl get %s/%s -n %s -o yaml | grep -A2 hostPath` does not contain `/var/log` (or only narrow read-only sub-path).", strings.ToLower(kind), name, namespace),
 		},
 		LearnMore: []models.Reference{
@@ -346,14 +346,14 @@ func contentHostPath001(kind, namespace, name, volumeName, path string) ruleCont
 		Impact: "Variable but always elevated risk: at minimum exposes node-specific files; commonly leaks credentials or enables privilege escalation depending on the path.",
 		AttackScenario: []string{
 			"Identify the mounted path via `mount` or `cat /proc/mounts` from inside the pod.",
-			"Enumerate sensitive contents — for `/etc`: `cat /etc/shadow`, `/etc/kubernetes/admin.conf`; for `/proc`: `echo '|/tmp/x' > /proc/sys/kernel/core_pattern` then trigger a crash.",
+			"Enumerate sensitive contents. For `/etc`: `cat /etc/shadow`, `/etc/kubernetes/admin.conf`. For `/proc`: `echo '|/tmp/x' > /proc/sys/kernel/core_pattern` then trigger a crash.",
 			"If writable, drop a payload, modify a config, or symlink-swap.",
 			"Confirm impact with `kdigger dig mount` or `deepce.sh -e`.",
 			"Persist via the path's owning daemon (cron under `/etc`, systemd unit under `/lib/systemd`, etc.).",
 		},
 		Remediation: "Replace hostPath with a managed alternative (CSI volume, ConfigMap, Secret, projected volume, or local PV).",
 		RemediationSteps: []string{
-			"Determine why hostPath is used — config injection, log scraping, GPU device access. Each has a Kubernetes-native replacement.",
+			"Determine why hostPath is used: config injection, log scraping, GPU device access. Each has a Kubernetes-native replacement.",
 			"If hostPath is unavoidable, narrow `path:` to the smallest possible directory, set `type:` to the strictest matching value, and add `readOnly: true` on the volumeMount.",
 			"Pair with `runAsNonRoot: true`, drop `ALL` capabilities, and `allowPrivilegeEscalation: false`.",
 			fmt.Sprintf("Enforce via PSA `baseline` (denies hostPath) or a Kyverno/Gatekeeper allowlist. Validate: `kubectl get %s/%s -o yaml | grep -A3 hostPath`.", strings.ToLower(kind), name),
@@ -374,14 +374,14 @@ func contentPodSecAPE001(kind, namespace, name, container string) ruleContent {
 		Title: fmt.Sprintf("Container `%s` allows privilege escalation in `%s/%s/%s`", container, kind, namespace, name),
 		Scope: scope,
 		Description: fmt.Sprintf("Container `%s` in `%s/%s/%s` either omits `securityContext.allowPrivilegeEscalation` or sets it to `true`. This directly controls the `no_new_privs` Linux process flag: when `allowPrivilegeEscalation: false`, the kernel sets `NoNewPrivs: 1` on PID 1 in the container, and any subsequent `execve()` call cannot acquire additional privileges via setuid/setgid binaries, file capabilities, or LSM transitions.\n\n"+
-			"Leaving the field unset is dangerous because the runtime default is `true` for backward compatibility. If the container image happens to contain a setuid binary — even an inadvertent one from the base image (`mount`, `ping`, `su`, vendor agent helpers) — an attacker who lands as a non-root user inside the container can re-acquire root just by exec'ing it.\n\n"+
+			"Leaving the field unset is dangerous because the runtime default is `true` for backward compatibility. If the container image happens to contain a setuid binary (even an inadvertent one from the base image, like `mount`, `ping`, `su`, or vendor agent helpers), an attacker who lands as a non-root user inside the container can re-acquire root just by exec'ing it.\n\n"+
 			"The Pod Security Standards Restricted profile mandates `allowPrivilegeEscalation: false` precisely because it is the gate that makes capability drops and runAsNonRoot meaningful.",
 			container, kind, namespace, name),
 		Impact: "If an attacker lands as a non-root user, they can re-acquire root via setuid binaries; defeats capability drops and runAsNonRoot defenses.",
 		AttackScenario: []string{
 			"Gain code execution as a non-root user (web RCE in a Node/Python/Java app).",
 			"Enumerate setuid binaries: `find / -perm -4000 -type f 2>/dev/null` (often returns `/usr/bin/passwd`, `/bin/su`, `/bin/mount`, `/usr/bin/newuidmap`).",
-			"Exploit one — `su -` if password-less, or a known setuid CVE.",
+			"Exploit one: `su -` if password-less, or a known setuid CVE.",
 			"Once root in-container, restore previously-dropped capabilities via setcap-style techniques or chain with another finding.",
 		},
 		Remediation: "Set `allowPrivilegeEscalation: false` on every container.",
@@ -404,7 +404,7 @@ func contentPodSecRoot001(kind, namespace, name, container string) ruleContent {
 	return ruleContent{
 		Title: fmt.Sprintf("Container `%s` runs as root (UID 0) in `%s/%s/%s`", container, kind, namespace, name),
 		Scope: scope,
-		Description: fmt.Sprintf("Container `%s` in `%s/%s/%s` runs as UID 0 — either via an explicit `runAsUser: 0`, an explicit `runAsNonRoot: false`, or by relying on the image's default user (which for most public images is root). Container UID 0 is mapped to host UID 0 by default (Linux user namespaces are still off-by-default in Kubernetes), so any kernel exploit, capability misuse, or volume-write vulnerability lands with full root privileges.\n\n"+
+		Description: fmt.Sprintf("Container `%s` in `%s/%s/%s` runs as UID 0, either via an explicit `runAsUser: 0`, an explicit `runAsNonRoot: false`, or by relying on the image's default user (which for most public images is root). Container UID 0 is mapped to host UID 0 by default (Linux user namespaces are still off-by-default in Kubernetes), so any kernel exploit, capability misuse, or volume-write vulnerability lands with full root privileges.\n\n"+
 			"Running as root erodes every layer of in-container defense. A read-only root filesystem can be remounted (`mount -o remount,rw`) if CAP_SYS_ADMIN is held; a kernel CVE that requires root credentials in user-space (the runC \"Leaky Vessels\" CVE-2024-21626 class, the cgroup-release-agent CVE-2022-0492 class) becomes trivially exploitable; and bind-mounted directories owned by host root become writable.\n\n"+
 			"The Pod Security Standards Restricted profile requires `runAsNonRoot: true` AND a `runAsUser` ≥ 1.",
 			container, kind, namespace, name),
@@ -412,7 +412,7 @@ func contentPodSecRoot001(kind, namespace, name, container string) ruleContent {
 		AttackScenario: []string{
 			"Gain code execution as root inside the container.",
 			"Read all bind-mounted host files writable to root, including ConfigMaps and Secrets.",
-			"Attempt a capability-bearing kernel exploit — e.g., trigger CVE-2024-21626 (Leaky Vessels) by spawning a child with `WORKDIR=/proc/self/fd/8` semantics.",
+			"Attempt a capability-bearing kernel exploit. For example, trigger CVE-2024-21626 (Leaky Vessels) by spawning a child with `WORKDIR=/proc/self/fd/8` semantics.",
 			"With CAP_SYS_ADMIN remount the root filesystem read-write and modify init scripts.",
 			"Persist via dropped binaries in `/usr/local/bin` whose mounts may survive container restart.",
 		},
@@ -436,15 +436,15 @@ func contentSADefault001(kind, namespace, name, serviceAccount string) ruleConte
 		Title: fmt.Sprintf("Workload `%s/%s/%s` runs as the namespace `default` ServiceAccount", kind, namespace, name),
 		Scope: scope,
 		Description: fmt.Sprintf("Workload `%s/%s/%s` does not specify `serviceAccountName` and therefore runs as the namespace's `default` ServiceAccount, which by default has its token auto-mounted at `/var/run/secrets/kubernetes.io/serviceaccount/token`.\n\n"+
-			"The `default` SA is harmless in a fresh namespace, but it is a magnet for permission accumulation: operators, Helm charts, and ClusterRoleBindings frequently bind permissions to it (often by mistake — `subjects: [{kind: ServiceAccount, name: default, namespace: foo}]`), and the only way to know if the SA is dangerous is to enumerate every binding referencing it.\n\n"+
-			"The Kubernetes RBAC Good Practices guide explicitly recommends per-workload ServiceAccounts so that the blast radius of an exposed token is bounded by a single workload's needs. An attacker with RCE in this pod reads the token, then runs `kubectl auth can-i --list` to find every accreted permission — often elevated by drift over the namespace's lifetime.",
+			"The `default` SA is harmless in a fresh namespace, but it is a magnet for permission accumulation: operators, Helm charts, and ClusterRoleBindings frequently bind permissions to it (often by mistake, via `subjects: [{kind: ServiceAccount, name: default, namespace: foo}]`), and the only way to know if the SA is dangerous is to enumerate every binding referencing it.\n\n"+
+			"The Kubernetes RBAC Good Practices guide explicitly recommends per-workload ServiceAccounts so that the blast radius of an exposed token is bounded by a single workload's needs. An attacker with RCE in this pod reads the token, then runs `kubectl auth can-i --list` to find every accreted permission, often elevated by drift over the namespace's lifetime.",
 			kind, namespace, name),
 		Impact: "Token theft yields whatever permissions the namespace `default` SA has been granted (often elevated by drift); enables lateral movement to other workloads in the namespace.",
 		AttackScenario: []string{
 			"RCE in the pod.",
 			"Read the SA token: `cat /var/run/secrets/kubernetes.io/serviceaccount/token`.",
 			"Enumerate permissions: `kubectl --token=$TOKEN auth can-i --list`.",
-			"Exploit any usable verb — common findings: `secrets/get` (loot all secrets), `pods/exec` (shell into other pods), `pods/create` with privileged template (escalate to node).",
+			"Exploit any usable verb. Common findings: `secrets/get` (loot all secrets), `pods/exec` (shell into other pods), `pods/create` with privileged template (escalate to node).",
 			"Persist by creating a hidden Deployment with the same compromised SA.",
 		},
 		Remediation: "Create a dedicated ServiceAccount per workload with least-privilege RBAC; disable automount on the namespace `default` SA.",
@@ -469,7 +469,7 @@ func contentImageLatest001(kind, namespace, name, container, image string) ruleC
 		Title: fmt.Sprintf("Container `%s` uses mutable image tag `%s` in `%s/%s/%s`", container, image, kind, namespace, name),
 		Scope: scope,
 		Description: fmt.Sprintf("Container `%s` in `%s/%s/%s` references the image `%s` using a mutable tag (either `:latest` or no tag, which Kubernetes resolves to `:latest`). Mutable tags break two safety properties: (1) the same manifest produces non-deterministic deployments, since the tag may resolve to different content on different days; (2) there is no cryptographic binding between the manifest and the image content actually run, so registry-side or in-flight tampering cannot be detected.\n\n"+
-			"This is a defense-evasion / supply-chain hygiene finding rather than an active exploit. Image digests (`@sha256:<hex>`) are immutable — the digest is computed over the manifest content, so any change yields a different digest. SLSA, Sigstore Cosign, and admission controllers like Kyverno or Connaisseur are the modern controls; pinning to a digest is the prerequisite for verifying signatures.\n\n"+
+			"This is a defense-evasion / supply-chain hygiene finding rather than an active exploit. Image digests (`@sha256:<hex>`) are immutable: the digest is computed over the manifest content, so any change yields a different digest. SLSA, Sigstore Cosign, and admission controllers like Kyverno or Connaisseur are the modern controls; pinning to a digest is the prerequisite for verifying signatures.\n\n"+
 			"A public package compromise (Codecov-style or PyPI-typosquat scenarios, or the 2024 ultralytics PyPI compromise) can republish `image:latest` with malicious code; clusters with `imagePullPolicy: Always` and `:latest` silently pick it up. Pinning to a digest turns a silent supply-chain attack into a noisy CI failure.",
 			container, kind, namespace, name, image),
 		Impact: "Non-deterministic deployments and silent ingestion of upstream supply-chain compromises; disables digest-based verification and signature checking.",

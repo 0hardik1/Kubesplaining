@@ -24,7 +24,7 @@ var dangerousVerbs = map[string]string{
 	"deletecollection": "Bulk-delete every object of this resource",
 	"patch":            "Mutate existing objects in place",
 	"update":           "Replace existing objects",
-	"*":                "Wildcard — every verb (get, list, create, update, delete, …)",
+	"*":                "Wildcard: every verb (get, list, create, update, delete, …)",
 }
 
 // sensitiveResources flags Kubernetes resources whose access is itself a high-impact
@@ -34,8 +34,8 @@ var sensitiveResources = map[string]string{
 	"pods/exec":                       "Remote shell into any pod",
 	"pods/attach":                     "Attach to a running container's stdio",
 	"pods/portforward":                "Tunnel arbitrary TCP into the cluster network",
-	"pods":                            "Workload primitive — create = run code on the cluster",
-	"nodes/proxy":                     "Direct kubelet access — bypasses API server authz",
+	"pods":                            "Workload primitive: create = run code on the cluster",
+	"nodes/proxy":                     "Direct kubelet access (bypasses API server authz)",
 	"clusterroles":                    "Cluster-scoped RBAC rules",
 	"clusterrolebindings":             "Cluster-scoped RBAC grants",
 	"roles":                           "Namespace-scoped RBAC rules",
@@ -43,20 +43,20 @@ var sensitiveResources = map[string]string{
 	"serviceaccounts":                 "Pod identities (and their tokens)",
 	"serviceaccounts/token":           "Mint short-lived ServiceAccount tokens",
 	"certificatesigningrequests":      "Issue X.509 certs honored by the API server",
-	"validatingwebhookconfigurations": "Admission policy — bypassing it disables enforcement",
-	"mutatingwebhookconfigurations":   "Admission policy — controls what enters the cluster",
+	"validatingwebhookconfigurations": "Admission policy: bypassing it disables enforcement",
+	"mutatingwebhookconfigurations":   "Admission policy: controls what enters the cluster",
 	"persistentvolumes":               "Cluster-scoped storage that can mount host paths",
-	"*":                               "Wildcard — every resource",
+	"*":                               "Wildcard: every resource",
 }
 
 // sensitiveAPIGroups annotates well-known API groups that carry RBAC-relevant power.
 // Empty group ("") is the core API; we render that as "core/v1" and skip the hint.
 var sensitiveAPIGroups = map[string]string{
-	"rbac.authorization.k8s.io":    "RBAC objects — write access ≈ cluster takeover",
-	"admissionregistration.k8s.io": "Admission webhooks — controls policy enforcement",
+	"rbac.authorization.k8s.io":    "RBAC objects (write access is roughly cluster takeover)",
+	"admissionregistration.k8s.io": "Admission webhooks (controls policy enforcement)",
 	"certificates.k8s.io":          "Issues cluster-trusted certificates",
 	"policy":                       "PodSecurityPolicy / PodDisruptionBudget",
-	"*":                            "Wildcard — every API group",
+	"*":                            "Wildcard: every API group",
 }
 
 // sensitiveHostPathHints annotates host paths whose mount into a container is a
@@ -64,25 +64,25 @@ var sensitiveAPIGroups = map[string]string{
 // up the path segments so e.g. "/var/run/docker.sock" matches even if scanned
 // against "/var/run/docker.sock/". Keys are lowercased and trimmed of trailing slashes.
 var sensitiveHostPathHints = map[string]string{
-	"/":                                   "Node root filesystem — full host takeover",
-	"/etc":                                "Node config — kubelet/CNI/auth files",
+	"/":                                   "Node root filesystem (full host takeover)",
+	"/etc":                                "Node config: kubelet/CNI/auth files",
 	"/etc/kubernetes":                     "Kubelet kubeconfig & PKI material",
-	"/etc/kubernetes/pki":                 "Cluster PKI — root CA private keys",
+	"/etc/kubernetes/pki":                 "Cluster PKI: root CA private keys",
 	"/var":                                "Node persistent state",
 	"/var/lib":                            "Persistent state for system daemons",
 	"/var/lib/kubelet":                    "Kubelet credentials & pod tokens for every pod on the node",
-	"/var/lib/docker":                     "Container engine state — image & layer access",
-	"/var/lib/containerd":                 "Container engine state — image & layer access",
-	"/var/log":                            "Node logs — symlinks let you read other pods' logs",
+	"/var/lib/docker":                     "Container engine state (image & layer access)",
+	"/var/lib/containerd":                 "Container engine state (image & layer access)",
+	"/var/log":                            "Node logs (symlinks let you read other pods' logs)",
 	"/var/run":                            "Container runtime sockets live here",
-	"/var/run/docker.sock":                "Docker socket — container engine takeover",
-	"/var/run/containerd/containerd.sock": "containerd socket — container engine takeover",
-	"/var/run/crio/crio.sock":             "CRI-O socket — container engine takeover",
+	"/var/run/docker.sock":                "Docker socket (container engine takeover)",
+	"/var/run/containerd/containerd.sock": "containerd socket (container engine takeover)",
+	"/var/run/crio/crio.sock":             "CRI-O socket (container engine takeover)",
 	"/run":                                "Runtime sockets & state",
-	"/run/containerd/containerd.sock":     "containerd socket — container engine takeover",
-	"/proc":                               "Host process tree — read /proc/1/root for full FS access",
-	"/sys":                                "Kernel interfaces — cgroup/namespace abuse",
-	"/dev":                                "Host devices — direct disk / kmem access",
+	"/run/containerd/containerd.sock":     "containerd socket (container engine takeover)",
+	"/proc":                               "Host process tree (read /proc/1/root for full FS access)",
+	"/sys":                                "Kernel interfaces (cgroup/namespace abuse)",
+	"/dev":                                "Host devices (direct disk / kmem access)",
 	"/root":                               "Root user home directory",
 	"/home":                               "User home directories",
 }
@@ -94,10 +94,10 @@ var sensitiveCIDRs = []struct {
 	CIDR string
 	Note string
 }{
-	{"0.0.0.0/0", "Entire IPv4 internet — egress here can exfiltrate to any host"},
-	{"::/0", "Entire IPv6 internet — egress here can exfiltrate to any host"},
-	{"169.254.169.254/32", "Cloud instance metadata service — can mint cloud credentials"},
-	{"169.254.0.0/16", "Link-local range (incl. cloud metadata service)"},
+	{"0.0.0.0/0", "Entire IPv4 internet: egress here can exfiltrate to any host"},
+	{"::/0", "Entire IPv6 internet: egress here can exfiltrate to any host"},
+	{"169.254.169.254/32", "Cloud instance metadata service (can mint cloud credentials)"},
+	{"169.254.0.0/16", "Link-local range (includes cloud metadata service)"},
 	{"10.0.0.0/8", "RFC1918 private range"},
 	{"172.16.0.0/12", "RFC1918 private range"},
 	{"192.168.0.0/16", "RFC1918 private range"},
@@ -109,21 +109,21 @@ var sensitiveCIDRs = []struct {
 // raw type string, we don't import corev1 just for this.
 var secretTypeLabels = map[string]string{
 	"Opaque":                              "Generic key/value secret",
-	"kubernetes.io/service-account-token": "Long-lived ServiceAccount token — holding it = acting as the SA",
+	"kubernetes.io/service-account-token": "Long-lived ServiceAccount token (holding it is acting as the SA)",
 	"kubernetes.io/dockercfg":             "Docker registry credentials (legacy format)",
 	"kubernetes.io/dockerconfigjson":      "Docker registry credentials",
 	"kubernetes.io/basic-auth":            "Basic-auth username + password",
 	"kubernetes.io/ssh-auth":              "SSH private key",
 	"kubernetes.io/tls":                   "TLS certificate + private key",
-	"bootstrap.kubernetes.io/token":       "Bootstrap token — joins new nodes to the cluster",
+	"bootstrap.kubernetes.io/token":       "Bootstrap token (joins new nodes to the cluster)",
 }
 
 // hostNamespaceHints explains what each pod-level "host*" boolean grants when set.
 var hostNamespaceHints = map[string]string{
-	"hostNetwork":              "Shares the node's network namespace — sees every pod's traffic, binds to node IPs",
-	"hostPID":                  "Shares the node's process namespace — can ptrace/kill node processes",
-	"hostIPC":                  "Shares the node's IPC namespace — reads other processes' shared memory",
-	"privileged":               "Disables nearly all container isolation — effective root on the node",
+	"hostNetwork":              "Shares the node's network namespace (sees every pod's traffic, binds to node IPs)",
+	"hostPID":                  "Shares the node's process namespace (can ptrace/kill node processes)",
+	"hostIPC":                  "Shares the node's IPC namespace (reads other processes' shared memory)",
+	"privileged":               "Disables nearly all container isolation (effective root on the node)",
 	"allowPrivilegeEscalation": "Lets a child process gain more privileges than its parent",
 	"runAsNonRoot":             "When false, the container can run as UID 0",
 }
@@ -136,10 +136,10 @@ func mutableImageHint(image string) string {
 	}
 	// No tag at all → defaults to :latest
 	if !strings.Contains(image[strings.LastIndex(image, "/")+1:], ":") {
-		return "No tag — pulls :latest, which is mutable"
+		return "No tag, so pulls :latest, which is mutable"
 	}
 	if strings.HasSuffix(image, ":latest") {
-		return ":latest is mutable — same tag can resolve to different images over time"
+		return ":latest is mutable: the same tag can resolve to different images over time"
 	}
 	return ""
 }
