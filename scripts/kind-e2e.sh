@@ -8,6 +8,22 @@ KUBECONFIG_PATH="${KUBECONFIG:-${ROOT_DIR}/.tmp/kubeconfig}"
 KEEP_CLUSTER="${KEEP_CLUSTER:-1}"
 USER_KUBECONFIG="${USER_KUBECONFIG:-${HOME}/.kube/config}"
 
+# ANSI colors when stdout is a terminal and NO_COLOR is not set; plain text under CI / pipes.
+if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
+  C_RESET=$'\e[0m'
+  C_BOLD=$'\e[1m'
+  C_DIM=$'\e[2m'
+  C_GREEN=$'\e[32m'
+  C_BLUE=$'\e[34m'
+  C_CYAN=$'\e[36m'
+else
+  C_RESET=""; C_BOLD=""; C_DIM=""; C_GREEN=""; C_BLUE=""; C_CYAN=""
+fi
+
+step()      { printf "\n%s▶ %s%s\n" "${C_BOLD}${C_CYAN}" "$*" "${C_RESET}"; }
+ok()        { printf "  %s✓%s %s\n" "${C_GREEN}" "${C_RESET}" "$*"; }
+prefix_ok() { sed "s/^/  ${C_GREEN}✓${C_RESET} /"; }
+
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "missing required command: $1" >&2
@@ -38,37 +54,66 @@ cleanup() {
 
 trap cleanup EXIT
 
+step "Creating kind cluster: ${KIND_CLUSTER_NAME}"
 # Always start fresh: tear down any prior cluster of the same name, including
 # the stale entry in the user's default kubeconfig from a previous run.
 kind delete cluster --name "${KIND_CLUSTER_NAME}" >/dev/null 2>&1 || true
 if [[ -f "${USER_KUBECONFIG}" ]]; then
   KUBECONFIG="${USER_KUBECONFIG}" kind delete cluster --name "${KIND_CLUSTER_NAME}" >/dev/null 2>&1 || true
 fi
-kind create cluster --name "${KIND_CLUSTER_NAME}" --kubeconfig "${KUBECONFIG_PATH}" --wait 90s
+# Stream kind's progress (it already prints `✓ Ensuring node image`, `✓ Preparing
+# nodes`, etc.), indented under our section header. We strip kind's trailing
+# marketing block — we set the kubectl context ourselves further down, and the
+# "Have a question / Thanks" lines are noise in this script.
+kind create cluster --name "${KIND_CLUSTER_NAME}" --kubeconfig "${KUBECONFIG_PATH}" --wait 90s 2>&1 \
+  | sed -E -e '/^Set kubectl context/d' \
+            -e '/^You can now use/d' \
+            -e '/^kubectl cluster-info/d' \
+            -e '/^Have a question/d' \
+            -e '/^Thanks/d' \
+            -e '/^[[:space:]]*$/d' \
+            -e 's/^/    /'
+ok "cluster ready"
 
-kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f "${ROOT_DIR}/testdata/e2e/vulnerable.yaml"
-kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status deploy/risky-app -n vulnerable --timeout=120s
-kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status deploy/host-ns-app -n vulnerable --timeout=120s
-kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status deploy/socket-mounts-app -n vulnerable --timeout=120s
-kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status deploy/generic-hostpath-app -n vulnerable --timeout=120s
-kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status deploy/root-runner -n vulnerable --timeout=120s
-kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status deploy/wildcard-app -n rbac-fixtures --timeout=120s
-kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status deploy/imp-app -n rbac-fixtures --timeout=120s
-kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status ds/daemon-app -n rbac-fixtures --timeout=120s
-kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status deploy/unmatched -n flat-network --timeout=120s
-kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status deploy/ingress-app -n ingress-only --timeout=120s
+step "Applying vulnerable manifests"
+kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f "${ROOT_DIR}/testdata/e2e/vulnerable.yaml" | prefix_ok
 
+step "Waiting for workloads to roll out"
+ROLLOUTS=(
+  "deploy/risky-app:vulnerable"
+  "deploy/host-ns-app:vulnerable"
+  "deploy/socket-mounts-app:vulnerable"
+  "deploy/generic-hostpath-app:vulnerable"
+  "deploy/root-runner:vulnerable"
+  "deploy/wildcard-app:rbac-fixtures"
+  "deploy/imp-app:rbac-fixtures"
+  "ds/daemon-app:rbac-fixtures"
+  "deploy/unmatched:flat-network"
+  "deploy/ingress-app:ingress-only"
+)
+for entry in "${ROLLOUTS[@]}"; do
+  obj="${entry%%:*}"
+  ns="${entry##*:}"
+  kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status "${obj}" -n "${ns}" --timeout=120s >/dev/null
+  ok "${obj} (${ns})"
+done
+
+step "Capturing snapshot"
 "${ROOT_DIR}/bin/kubesplaining" download \
   --kubeconfig "${KUBECONFIG_PATH}" \
-  --output-file "${ROOT_DIR}/.tmp/e2e-snapshot.json"
+  --output-file "${ROOT_DIR}/.tmp/e2e-snapshot.json" | prefix_ok
 
+step "Running kubesplaining scan"
 # Use the default "standard" exclusions preset so the e2e mirrors how users run
 # the tool: built-in kube-system / system:* / kubeadm:* noise is suppressed.
+SCAN_LOG="${ROOT_DIR}/.tmp/e2e-scan.log"
 "${ROOT_DIR}/bin/kubesplaining" scan \
   --input-file "${ROOT_DIR}/.tmp/e2e-snapshot.json" \
   --output-dir "${ROOT_DIR}/.tmp/e2e-report" \
-  --output-format html,json,csv
+  --output-format html,json,csv | tee "${SCAN_LOG}" | prefix_ok
+SUMMARY_LINE=$(grep -m1 "^findings:" "${SCAN_LOG}" 2>/dev/null || echo "")
 
+step "Verifying expected rule IDs"
 EXPECTED_RULES=(
   KUBE-PRIVESC-001 KUBE-PRIVESC-003 KUBE-PRIVESC-005 KUBE-PRIVESC-008 KUBE-PRIVESC-009
   KUBE-PRIVESC-010 KUBE-PRIVESC-012 KUBE-PRIVESC-014 KUBE-PRIVESC-017
@@ -98,15 +143,36 @@ if (( ${#missing[@]} > 0 )); then
   printf '  - %s\n' "${missing[@]}" >&2
   exit 1
 fi
-echo "all ${#EXPECTED_RULES[@]} expected rule IDs present"
+ok "all ${#EXPECTED_RULES[@]} expected rule IDs present"
 
 if [[ "${KEEP_CLUSTER}" == "1" ]]; then
+  step "Wiring kubectl context"
   mkdir -p "$(dirname "${USER_KUBECONFIG}")"
   touch "${USER_KUBECONFIG}"
   KUBECONFIG="${USER_KUBECONFIG}" kind export kubeconfig --name "${KIND_CLUSTER_NAME}" >/dev/null
-  echo "kubectl context set to kind-${KIND_CLUSTER_NAME} in ${USER_KUBECONFIG}"
-  echo "  try: kubectl get pods -A"
-  echo "  to remove: make delete"
+  ok "kubectl context: kind-${KIND_CLUSTER_NAME}"
+  ok "kubeconfig: ${USER_KUBECONFIG}"
 fi
 
-echo "kind e2e completed successfully"
+REPORT_HTML="${ROOT_DIR}/.tmp/e2e-report/report.html"
+REPORT_REL="${REPORT_HTML#"${ROOT_DIR}/"}"
+REPORT_URL="file://${REPORT_HTML}"
+RULE="═══════════════════════════════════════════════════════════════════════"
+
+printf "\n%s%s%s\n" "${C_BOLD}${C_GREEN}" "${RULE}" "${C_RESET}"
+printf "  %s✓ kubesplaining e2e complete%s\n" "${C_BOLD}${C_GREEN}" "${C_RESET}"
+if [[ -n "${SUMMARY_LINE}" ]]; then
+  printf "  %s%s%s\n" "${C_DIM}" "${SUMMARY_LINE}" "${C_RESET}"
+fi
+printf "%s%s%s\n\n" "${C_BOLD}${C_GREEN}" "${RULE}" "${C_RESET}"
+
+printf "  %sOpen the HTML report%s\n" "${C_BOLD}" "${C_RESET}"
+printf "    %s%s%s\n" "${C_BLUE}" "${REPORT_URL}" "${C_RESET}"
+printf "    %sopen %s%s\n\n" "${C_DIM}" "${REPORT_REL}" "${C_RESET}"
+
+printf "  %sPoke at the cluster%s\n" "${C_BOLD}" "${C_RESET}"
+printf "    %skubectl get pods -A%s\n" "${C_DIM}" "${C_RESET}"
+printf "    %skubectl --context kind-%s get clusterrolebindings%s\n\n" "${C_DIM}" "${KIND_CLUSTER_NAME}" "${C_RESET}"
+
+printf "  %sTear it down%s\n" "${C_BOLD}" "${C_RESET}"
+printf "    %smake delete%s\n" "${C_DIM}" "${C_RESET}"
