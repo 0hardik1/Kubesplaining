@@ -90,6 +90,7 @@ ROLLOUTS=(
   "ds/daemon-app:rbac-fixtures"
   "deploy/unmatched:flat-network"
   "deploy/ingress-app:ingress-only"
+  "deploy/psa-priv-app:psa-suppressed"
 )
 for entry in "${ROLLOUTS[@]}"; do
   obj="${entry%%:*}"
@@ -97,6 +98,13 @@ for entry in "${ROLLOUTS[@]}"; do
   kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status "${obj}" -n "${ns}" --timeout=120s >/dev/null
   ok "${obj} (${ns})"
 done
+
+step "Tightening psa-suppressed namespace to PSA enforce=restricted"
+# Apply the label after the deployment rolled out so the privileged pod is already
+# running. PSA checks creates and updates only, so the existing pod stays — this
+# mirrors the production case where a namespace was labeled retroactively.
+kubectl --kubeconfig "${KUBECONFIG_PATH}" label namespace psa-suppressed \
+  pod-security.kubernetes.io/enforce=restricted --overwrite | prefix_ok
 
 step "Capturing snapshot"
 "${ROOT_DIR}/bin/kubesplaining" download \
@@ -167,6 +175,44 @@ if ! rg -q "\"id\":\s*\"${NS_OK_ID}\"" "${ROOT_DIR}/.tmp/e2e-report/findings.jso
   exit 1
 fi
 ok "namespace-admin path emitted for namespace-scoped RoleBinding"
+
+# Default --admission-mode=suppress must drop the privileged-pod finding for the
+# psa-suppressed namespace because its enforce=restricted label would block the spec.
+PSA_FINDING_ID="KUBE-ESCAPE-001:Deployment:psa-suppressed:psa-priv-app"
+if rg -q "\"id\":\s*\"${PSA_FINDING_ID}" "${ROOT_DIR}/.tmp/e2e-report/findings.json"; then
+  echo "regression: --admission-mode=suppress did not drop ${PSA_FINDING_ID}" >&2
+  exit 1
+fi
+ok "default suppress mode dropped privileged finding in psa-suppressed namespace"
+
+# admission-summary.json must record the suppression count and the per-namespace breakdown.
+if ! rg -q "\"suppressed\":\s*[1-9]" "${ROOT_DIR}/.tmp/e2e-report/admission-summary.json"; then
+  echo "missing: admission-summary.json should record suppressed >= 1" >&2
+  exit 1
+fi
+if ! rg -q "psa-suppressed" "${ROOT_DIR}/.tmp/e2e-report/admission-summary.json"; then
+  echo "missing: admission-summary.json should mention psa-suppressed namespace" >&2
+  exit 1
+fi
+ok "admission-summary.json records the suppressed psa-suppressed finding"
+
+step "Re-running scan with --admission-mode=attenuate"
+"${ROOT_DIR}/bin/kubesplaining" scan \
+  --input-file "${ROOT_DIR}/.tmp/e2e-snapshot.json" \
+  --output-dir "${ROOT_DIR}/.tmp/e2e-report-attenuate" \
+  --admission-mode attenuate \
+  --output-format json >/dev/null
+
+# Attenuate keeps the finding visible but with the admission tag applied.
+if ! rg -q "\"id\":\s*\"${PSA_FINDING_ID}" "${ROOT_DIR}/.tmp/e2e-report-attenuate/findings.json"; then
+  echo "missing: attenuate mode should keep ${PSA_FINDING_ID} visible" >&2
+  exit 1
+fi
+if ! rg -q "admission:mitigated-psa-restricted" "${ROOT_DIR}/.tmp/e2e-report-attenuate/findings.json"; then
+  echo "missing: attenuate mode should tag findings with admission:mitigated-psa-restricted" >&2
+  exit 1
+fi
+ok "attenuate mode tagged the privileged finding with admission:mitigated-psa-restricted"
 
 if [[ "${KEEP_CLUSTER}" == "1" ]]; then
   step "Wiring kubectl context"

@@ -151,6 +151,23 @@ func (s Severity) Rank() int {
 	}
 }
 
+// Down returns the next-lower severity bucket. INFO is the floor and stays INFO. Used by
+// the engine's admission-aware reweight stage to drop a finding by exactly one bucket.
+func (s Severity) Down() Severity {
+	switch s {
+	case SeverityCritical:
+		return SeverityHigh
+	case SeverityHigh:
+		return SeverityMedium
+	case SeverityMedium:
+		return SeverityLow
+	case SeverityLow:
+		return SeverityInfo
+	default:
+		return SeverityInfo
+	}
+}
+
 // RiskCategory classifies what kind of security impact a Finding represents for use in summaries and dashboards.
 type RiskCategory string
 

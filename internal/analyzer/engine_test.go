@@ -26,10 +26,17 @@ func engineWith(mods ...Module) *Engine {
 	return &Engine{modules: mods}
 }
 
+// analyze is a thin test helper that returns just the findings slice from Engine.Analyze.
+// The AnalyzeResult.Admission summary is exercised in TestEngineAdmission* tests.
+func analyze(t *testing.T, e *Engine, opts Options) ([]models.Finding, error) {
+	t.Helper()
+	r, err := e.Analyze(context.Background(), models.Snapshot{}, opts)
+	return r.Findings, err
+}
+
 func TestEngineAnalyzeRunsAllModulesAndSortsBySeverity(t *testing.T) {
 	t.Parallel()
 
-	// Module A returns a Medium finding, module B a Critical one — Critical must come first.
 	a := &stubModule{
 		name: "a",
 		findings: []models.Finding{
@@ -43,7 +50,7 @@ func TestEngineAnalyzeRunsAllModulesAndSortsBySeverity(t *testing.T) {
 		},
 	}
 
-	got, err := engineWith(a, b).Analyze(context.Background(), models.Snapshot{}, Options{})
+	got, err := analyze(t, engineWith(a, b), Options{})
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
 	}
@@ -67,12 +74,11 @@ func TestEngineSortBreaksTiesByScoreThenRuleIDThenTitle(t *testing.T) {
 		},
 	}
 
-	got, err := engineWith(mod).Analyze(context.Background(), models.Snapshot{}, Options{})
+	got, err := analyze(t, engineWith(mod), Options{})
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
 	}
 
-	// Highest score first, then RuleID asc, then Title asc.
 	if got[0].ID != "3" || got[1].ID != "2" || got[2].ID != "1" {
 		t.Errorf("sort order wrong: got %v", []string{got[0].ID, got[1].ID, got[2].ID})
 	}
@@ -90,7 +96,7 @@ func TestEngineThresholdFiltersBelowSeverity(t *testing.T) {
 		},
 	}
 
-	got, err := engineWith(mod).Analyze(context.Background(), models.Snapshot{}, Options{Threshold: models.SeverityMedium})
+	got, err := analyze(t, engineWith(mod), Options{Threshold: models.SeverityMedium})
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
 	}
@@ -110,7 +116,7 @@ func TestEngineOnlyModulesSelectsSubset(t *testing.T) {
 	a := &stubModule{name: "a", findings: []models.Finding{{ID: "a1", RuleID: "A", Severity: models.SeverityHigh}}}
 	b := &stubModule{name: "b", findings: []models.Finding{{ID: "b1", RuleID: "B", Severity: models.SeverityHigh}}}
 
-	got, err := engineWith(a, b).Analyze(context.Background(), models.Snapshot{}, Options{OnlyModules: []string{"a"}})
+	got, err := analyze(t, engineWith(a, b), Options{OnlyModules: []string{"a"}})
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
 	}
@@ -125,7 +131,7 @@ func TestEngineSkipModulesExcludesSubset(t *testing.T) {
 	a := &stubModule{name: "a", findings: []models.Finding{{ID: "a1", RuleID: "A", Severity: models.SeverityHigh}}}
 	b := &stubModule{name: "b", findings: []models.Finding{{ID: "b1", RuleID: "B", Severity: models.SeverityHigh}}}
 
-	got, err := engineWith(a, b).Analyze(context.Background(), models.Snapshot{}, Options{SkipModules: []string{"b"}})
+	got, err := analyze(t, engineWith(a, b), Options{SkipModules: []string{"b"}})
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
 	}
@@ -150,11 +156,10 @@ func TestEngineNoSelectedModulesReturnsError(t *testing.T) {
 func TestEngineSurfacesFirstModuleError(t *testing.T) {
 	t.Parallel()
 
-	// Engine still returns findings from the healthy modules but reports the first error.
 	a := &stubModule{name: "a", err: errors.New("a-broke")}
 	b := &stubModule{name: "b", findings: []models.Finding{{ID: "b1", RuleID: "B", Severity: models.SeverityHigh}}}
 
-	got, err := engineWith(a, b).Analyze(context.Background(), models.Snapshot{}, Options{})
+	got, err := analyze(t, engineWith(a, b), Options{})
 	if err == nil {
 		t.Fatal("expected first-module error to surface")
 	}
@@ -172,7 +177,6 @@ func TestEngineDedupesAcrossModulesAndKeepsHigherScore(t *testing.T) {
 	subject := &models.SubjectRef{Kind: "ServiceAccount", Namespace: "ns", Name: "sa"}
 	resource := &models.ResourceRef{Kind: "RBACRule", Name: "danger"}
 
-	// Both modules emit the same logical finding; dedupe should keep the higher score and union tags.
 	a := &stubModule{name: "a", findings: []models.Finding{
 		{ID: "a", RuleID: "DUP", Severity: models.SeverityHigh, Score: 7.0, Subject: subject, Resource: resource, Tags: []string{"module:a"}},
 	}}
@@ -180,7 +184,7 @@ func TestEngineDedupesAcrossModulesAndKeepsHigherScore(t *testing.T) {
 		{ID: "b", RuleID: "DUP", Severity: models.SeverityHigh, Score: 8.5, Subject: subject, Resource: resource, Tags: []string{"module:b"}},
 	}}
 
-	got, err := engineWith(a, b).Analyze(context.Background(), models.Snapshot{}, Options{})
+	got, err := analyze(t, engineWith(a, b), Options{})
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
 	}
@@ -210,8 +214,6 @@ func TestEngineCorrelatesPrivescChainsIntoOtherFindings(t *testing.T) {
 
 	subject := &models.SubjectRef{Kind: "ServiceAccount", Namespace: "ns", Name: "bad"}
 
-	// privesc module emits a CRITICAL chain finding; rbac module emits a HIGH-score finding for the same subject.
-	// After correlate(), the rbac finding should pick up a +2.0 chain bump and the chain:amplified tag.
 	privesc := &stubModule{name: "privesc", findings: []models.Finding{
 		{
 			ID: "p", RuleID: "KUBE-PRIVESC-PATH-CLUSTER-ADMIN",
@@ -225,7 +227,7 @@ func TestEngineCorrelatesPrivescChainsIntoOtherFindings(t *testing.T) {
 		{ID: "r", RuleID: "KUBE-RBAC-OVERBROAD-001", Severity: models.SeverityHigh, Score: 7.0, Subject: subject},
 	}}
 
-	got, err := engineWith(privesc, rbac).Analyze(context.Background(), models.Snapshot{}, Options{})
+	got, err := analyze(t, engineWith(privesc, rbac), Options{})
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
 	}
@@ -258,7 +260,6 @@ func TestNewWithConfigOverridesPrivescDepth(t *testing.T) {
 
 	eng := NewWithConfig(Config{MaxPrivescDepth: 9})
 
-	// Confirm the default registration includes a privesc module and that its MaxDepth has been applied.
 	found := false
 	for _, mod := range eng.modules {
 		if mod.Name() == "privesc" {

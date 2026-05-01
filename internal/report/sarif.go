@@ -17,8 +17,9 @@ type sarifReport struct {
 
 // sarifRun is one scanner execution inside a SARIF report; kubesplaining always emits exactly one.
 type sarifRun struct {
-	Tool    sarifTool     `json:"tool"`
-	Results []sarifResult `json:"results"`
+	Tool       sarifTool      `json:"tool"`
+	Results    []sarifResult  `json:"results"`
+	Properties map[string]any `json:"properties,omitempty"`
 }
 
 type sarifTool struct {
@@ -64,28 +65,31 @@ type sarifLogicalLocation struct {
 }
 
 // writeSARIF serializes findings as a SARIF 2.1.0 document with one rule per unique RuleID and one result per finding.
-func writeSARIF(path string, findings []models.Finding) error {
+func writeSARIF(path string, findings []models.Finding, admission models.AdmissionSummary) error {
 	file, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("create sarif report: %w", err)
 	}
 	defer func() { _ = file.Close() }()
 
+	run := sarifRun{
+		Tool: sarifTool{
+			Driver: sarifDriver{
+				Name:           "kubesplaining",
+				InformationURI: "https://github.com/0hardik1/kubesplaining",
+				Rules:          sarifRules(findings),
+			},
+		},
+		Results: sarifResults(findings),
+	}
+	if admission.Mode != "" {
+		run.Properties = map[string]any{"admission": admission}
+	}
+
 	report := sarifReport{
 		Schema:  "https://json.schemastore.org/sarif-2.1.0.json",
 		Version: "2.1.0",
-		Runs: []sarifRun{
-			{
-				Tool: sarifTool{
-					Driver: sarifDriver{
-						Name:           "kubesplaining",
-						InformationURI: "https://github.com/0hardik1/kubesplaining",
-						Rules:          sarifRules(findings),
-					},
-				},
-				Results: sarifResults(findings),
-			},
-		},
+		Runs:    []sarifRun{run},
 	}
 
 	encoder := json.NewEncoder(file)

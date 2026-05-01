@@ -35,6 +35,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 		ciMaxCritical        int
 		ciMaxHigh            int
 		maxPrivescDepth      int
+		admissionMode        string
 	)
 
 	cmd := &cobra.Command{
@@ -46,20 +47,27 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 				return err
 			}
 
+			mode, ok := analyzer.ParseAdmissionMode(admissionMode)
+			if !ok {
+				return fmt.Errorf("invalid --admission-mode %q (must be off, attenuate, or suppress)", admissionMode)
+			}
+
 			snapshot, err := loadOrCollectSnapshot(cmd, build, connFlags, inputFile, namespaces, excludeNamespaces, includeManagedFields, parallelism)
 			if err != nil {
 				return err
 			}
 
 			engine := analyzer.NewWithConfig(analyzer.Config{MaxPrivescDepth: maxPrivescDepth})
-			findings, err := engine.Analyze(cmd.Context(), snapshot, analyzer.Options{
-				OnlyModules: onlyModules,
-				SkipModules: skipModules,
-				Threshold:   threshold,
+			result, err := engine.Analyze(cmd.Context(), snapshot, analyzer.Options{
+				OnlyModules:   onlyModules,
+				SkipModules:   skipModules,
+				Threshold:     threshold,
+				AdmissionMode: mode,
 			})
 			if err != nil {
 				return err
 			}
+			findings := result.Findings
 
 			cfg, err := loadExclusions(exclusionsPreset, exclusionsFile)
 			if err != nil {
@@ -71,7 +79,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 				outputDir = filepath.Join(".", "kubesplaining-report")
 			}
 
-			written, err := report.Write(outputDir, outputFormats, snapshot, findings)
+			written, err := report.WriteWithAdmission(outputDir, outputFormats, snapshot, findings, result.Admission)
 			if err != nil {
 				return err
 			}
@@ -111,6 +119,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 	cmd.Flags().IntVar(&ciMaxCritical, "ci-max-critical", 0, "Maximum critical findings allowed in CI mode")
 	cmd.Flags().IntVar(&ciMaxHigh, "ci-max-high", 0, "Maximum high findings allowed in CI mode")
 	cmd.Flags().IntVar(&maxPrivescDepth, "max-privesc-depth", 5, "Maximum depth for privilege escalation path search")
+	cmd.Flags().StringVar(&admissionMode, "admission-mode", string(analyzer.AdmissionModeSuppress), "How to react to namespace PSA labels: off|attenuate|suppress")
 
 	return cmd
 }

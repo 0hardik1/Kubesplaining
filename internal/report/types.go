@@ -258,4 +258,8 @@ type htmlReportData struct {
 	GraphJSON   template.JS       // JSON-marshaled GraphPayload, rendered into <script type="application/json">
 	GraphScript template.JS       // Inline JS that powers the interactive graph (loaded from kpGraphScript const)
 	AnchorByID  map[string]string // Finding.ID → "finding-<RuleID>" for the first finding of each rule
+
+	// Admission carries the engine's admission-aware reweight summary. Empty Mode means
+	// no admission-aware step ran; the template gates the banner on Mode.
+	Admission models.AdmissionSummary
 }

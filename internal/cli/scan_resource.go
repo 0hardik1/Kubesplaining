@@ -39,12 +39,14 @@ func NewScanResourceCmd() *cobra.Command {
 			}
 
 			engine := analyzer.New()
-			findings, err := engine.Analyze(cmd.Context(), snapshot, analyzer.Options{
-				Threshold: models.SeverityLow,
+			result, err := engine.Analyze(cmd.Context(), snapshot, analyzer.Options{
+				Threshold:     models.SeverityLow,
+				AdmissionMode: analyzer.AdmissionModeOff,
 			})
 			if err != nil {
 				return err
 			}
+			findings := result.Findings
 
 			cfg, err := loadExclusions(exclusionsPreset, exclusionsFile)
 			if err != nil {

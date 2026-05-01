@@ -77,7 +77,17 @@ func NewReportCmd() *cobra.Command {
 				outputDir = filepath.Join(".", "kubesplaining-report")
 			}
 
-			written, err := report.Write(outputDir, outputFormats, snapshot, filtered)
+			admissionSummary := models.AdmissionSummary{}
+			if path := report.GuessAdmissionSummaryPath(inputFile); path != "" {
+				if _, err := os.Stat(path); err == nil {
+					admissionSummary, err = report.ReadAdmissionSummary(path)
+					if err != nil {
+						return err
+					}
+				}
+			}
+
+			written, err := report.WriteWithAdmission(outputDir, outputFormats, snapshot, filtered, admissionSummary)
 			if err != nil {
 				return err
 			}

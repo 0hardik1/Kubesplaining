@@ -56,10 +56,11 @@ The modules:
 
 After modules return, the engine post-processes the combined findings list:
 
-1. **Correlate** — bumps the score of any non-privesc finding whose `Subject` appears as the source of a privesc path, tagging it `chain:amplified` (see [`analyzer/correlate.go`](../internal/analyzer/correlate.go) and `scoring.ChainModifier`).
-2. **Dedupe** — collapses cross-module duplicates keyed by `(RuleID, SubjectKey, ResourceKey)`, keeping the highest score and merging tags.
-3. **Threshold filter** via `scoring.AboveThreshold` (`--severity-threshold`).
-4. **Stable sort** by severity rank → score → rule ID → title.
+1. **Admission-aware reweight** — for every pod-security finding, looks up the namespace's `pod-security.kubernetes.io/{enforce,audit,warn}` label in the snapshot via [`analyzer/admission/mitigation/`](../internal/analyzer/admission/mitigation/psa.go). When `enforce` would block the spec (e.g. `restricted` rejects `privileged: true`, `hostPath`, host namespaces; `baseline` rejects host namespaces and privileged containers), the stage either drops the finding (`--admission-mode=suppress`, default) or drops its severity by exactly one bucket via `models.Severity.Down()`, snaps the score to the new bucket's floor via `scoring.MinScoreForSeverity`, and tags it `admission:mitigated-psa-<level>` (`--admission-mode=attenuate`). Audit/warn-mode labels never suppress or attenuate — they tag findings as `admission:audit-psa-<level>` / `admission:warn-psa-<level>` so the report can flag "logged but not blocked." Counts surface on `models.AdmissionSummary` and are written to `admission-summary.json` alongside the findings file.
+2. **Correlate** — bumps the score of any non-privesc finding whose `Subject` appears as the source of a privesc path, tagging it `chain:amplified` (see [`analyzer/correlate.go`](../internal/analyzer/correlate.go) and `scoring.ChainModifier`). Runs after admission so chain amplification builds on already-attenuated scores.
+3. **Dedupe** — collapses cross-module duplicates keyed by `(RuleID, SubjectKey, ResourceKey)`, keeping the highest score and merging tags.
+4. **Threshold filter** via `scoring.AboveThreshold` (`--severity-threshold`).
+5. **Stable sort** by severity rank → score → rule ID → title.
 
 ## Stage 4 — Report ([internal/report/](../internal/report/))
 

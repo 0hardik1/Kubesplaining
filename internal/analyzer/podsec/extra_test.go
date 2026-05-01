@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/scoring"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -36,8 +37,8 @@ func TestSeverityForScoreBuckets(t *testing.T) {
 		{0, models.SeverityInfo},
 	}
 	for _, tc := range cases {
-		if got := severityForScore(tc.score); got != tc.want {
-			t.Errorf("severityForScore(%v) = %v, want %v", tc.score, got, tc.want)
+		if got := scoring.SeverityForScore(tc.score); got != tc.want {
+			t.Errorf("scoring.SeverityForScore(%v) = %v, want %v", tc.score, got, tc.want)
 		}
 	}
 }

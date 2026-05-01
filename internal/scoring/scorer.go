@@ -35,6 +35,41 @@ func Compose(f Factors) float64 {
 	return Clamp(f.Base*exp*blast + f.ChainModifier)
 }
 
+// SeverityForScore maps a numeric 0–10 score to the corresponding severity bucket.
+func SeverityForScore(score float64) models.Severity {
+	switch {
+	case score >= 9.0:
+		return models.SeverityCritical
+	case score >= 7.0:
+		return models.SeverityHigh
+	case score >= 4.0:
+		return models.SeverityMedium
+	case score >= 2.0:
+		return models.SeverityLow
+	default:
+		return models.SeverityInfo
+	}
+}
+
+// MinScoreForSeverity returns the lower bound of the score range for a severity bucket
+// (the inverse of SeverityForScore boundaries). Used by the admission-aware reweight
+// stage to snap an attenuated finding's score to the floor of its new severity bucket
+// so Score and Severity stay consistent for downstream consumers.
+func MinScoreForSeverity(s models.Severity) float64 {
+	switch s {
+	case models.SeverityCritical:
+		return 9.0
+	case models.SeverityHigh:
+		return 7.0
+	case models.SeverityMedium:
+		return 4.0
+	case models.SeverityLow:
+		return 2.0
+	default:
+		return 0
+	}
+}
+
 // ChainModifier returns the score bump to apply to a finding whose subject can reach
 // a privilege-escalation sink of the given (highest) severity. Non-chain findings get 0.
 func ChainModifier(highestReachable models.Severity) float64 {
