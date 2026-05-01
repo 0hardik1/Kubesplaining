@@ -224,9 +224,19 @@ var Techniques = map[string]TechniqueExplainer{
 			{Note: "Pin permanent cluster-admin for an attacker-controlled user", Cmd: "kubectl --as=system:masters create clusterrolebinding pwn --clusterrole=cluster-admin --user=attacker"},
 		},
 	},
+	"impersonate_serviceaccount": {
+		Title: "Namespace-scoped ServiceAccount impersonation",
+		Plain: template.HTML(`<p>The <code>impersonate</code> verb on <code>serviceaccounts</code>, granted by a namespace-scoped <strong>RoleBinding</strong>, lets the holder act as any ServiceAccount that lives <em>in the binding's namespace</em>. The reach is bounded — they can't impersonate SAs in other namespaces, and they can't impersonate users or groups — but it's still a token-free credential-borrow that inherits whatever cluster-wide permissions the impersonated SA happens to have.</p><p>Real exposure depends on what the SAs in the namespace can do: an in-namespace controller SA bound to a powerful ClusterRole becomes a stepping stone out of the namespace.</p>`),
+		Mitre: "T1078.004 — Cloud Accounts",
+		AttackerSteps: []AttackerStep{
+			{Note: "List the SAs you can impersonate (every SA in the binding's namespace)", Cmd: "kubectl get sa -n <ns>"},
+			{Note: "Borrow a target SA's identity and probe its reach", Cmd: "kubectl auth can-i --list --as=system:serviceaccount:<ns>:<target-sa>"},
+			{Note: "Read whatever the impersonated SA can read (Secrets, ConfigMaps, etc.)", Cmd: "kubectl --as=system:serviceaccount:<ns>:<target-sa> get secrets -A"},
+		},
+	},
 	"bind_or_escalate": {
 		Title: "RBAC bind/escalate bypass",
-		Plain: template.HTML(`<p>RBAC has a guardrail: you can only grant permissions you yourself hold. Two verbs override that guardrail: <code>bind</code> (on a Role/ClusterRole) and <code>escalate</code> (also on Roles). Holding either lets the attacker create a binding to a Role they don't have themselves, including <code>cluster-admin</code>.</p>`),
+		Plain: template.HTML(`<p>RBAC has a guardrail: you can only grant permissions you yourself hold. Two verbs override that guardrail: <code>bind</code> (on a Role/ClusterRole) and <code>escalate</code> (also on Roles). Holding either lets the attacker create a binding to a Role they don't have themselves, including <code>cluster-admin</code>.</p><p>Scope matters. Granted by a ClusterRoleBinding the reach is cluster-wide; granted by a RoleBinding it bounds the bypass to the binding's namespace — namespace-admin instead of cluster-admin, but still a complete takeover of every workload, Secret, and ConfigMap in that namespace.</p>`),
 		Mitre: "T1098.003 — Account Manipulation: Additional Cloud Roles",
 		AttackerSteps: []AttackerStep{
 			{Note: "Bind a chosen ServiceAccount to cluster-admin", Cmd: "kubectl create clusterrolebinding pwn --clusterrole=cluster-admin --serviceaccount=ns:me"},
@@ -277,10 +287,11 @@ var Techniques = map[string]TechniqueExplainer{
 	},
 	"modify_role_binding": {
 		Title: "RoleBinding write access",
-		Plain: template.HTML(`<p><code>create</code>/<code>update</code>/<code>patch</code> on <code>rolebindings</code> or <code>clusterrolebindings</code> lets the attacker bind themselves to any role, typically cluster-admin. They don't need the role's permissions today, only the ability to change bindings.</p>`),
+		Plain: template.HTML(`<p><code>create</code>/<code>update</code>/<code>patch</code> on <code>rolebindings</code> or <code>clusterrolebindings</code> lets the attacker bind themselves to any role, typically cluster-admin. They don't need the role's permissions today, only the ability to change bindings.</p><p>Scope matters. Granted at cluster scope (via a ClusterRoleBinding, or with cluster-wide reach on <code>rolebindings</code>) the reach is cluster-admin equivalent. Granted by a RoleBinding the reach is bounded to that one namespace — full namespace-admin, but the bound ClusterRole's verbs apply only inside the binding's namespace.</p>`),
 		Mitre: "T1098 — Account Manipulation",
 		AttackerSteps: []AttackerStep{
 			{Note: "Append yourself as a subject on an existing high-privilege binding", Cmd: "kubectl patch clusterrolebinding existing-binding --type=json -p='[{\"op\":\"add\",\"path\":\"/subjects/-\",\"value\":{\"kind\":\"ServiceAccount\",\"name\":\"me\",\"namespace\":\"ns\"}}]'"},
+			{Note: "Or, when only namespace-scoped, RoleBind yourself to cluster-admin within the namespace", Cmd: "kubectl create rolebinding pwn -n <ns> --clusterrole=cluster-admin --serviceaccount=<ns>:me"},
 		},
 	},
 	"read_secrets": {

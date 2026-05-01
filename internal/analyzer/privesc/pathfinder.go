@@ -43,7 +43,10 @@ func FindPaths(graph *models.EscalationGraph, maxDepth int) []models.EscalationP
 				continue
 			}
 			seen[key] = true
-			paths = append(paths, buildPath(graph, sourceNode.Subject, graph.Nodes[targetID].Target, chain))
+			targetNode := graph.Nodes[targetID]
+			path := buildPath(graph, sourceNode.Subject, targetNode.Target, chain)
+			path.TargetNamespace = targetNode.TargetNamespace
+			paths = append(paths, path)
 		}
 	}
 
@@ -53,6 +56,9 @@ func FindPaths(graph *models.EscalationGraph, maxDepth int) []models.EscalationP
 		}
 		if paths[i].Target != paths[j].Target {
 			return paths[i].Target < paths[j].Target
+		}
+		if paths[i].TargetNamespace != paths[j].TargetNamespace {
+			return paths[i].TargetNamespace < paths[j].TargetNamespace
 		}
 		return len(paths[i].Hops) < len(paths[j].Hops)
 	})

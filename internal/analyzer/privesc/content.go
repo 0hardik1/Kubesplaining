@@ -68,6 +68,15 @@ func scopeForPath(source models.SubjectRef, target models.EscalationTarget) mode
 	}
 }
 
+// scopeForNamespaceAdmin returns the namespace-scoped Scope for a namespace-admin path,
+// naming both the source subject and the namespace it can take over.
+func scopeForNamespaceAdmin(source models.SubjectRef, namespace string) models.Scope {
+	return models.Scope{
+		Level:  models.ScopeNamespace,
+		Detail: fmt.Sprintf("Source `%s` → namespace-admin in `%s`: every workload, Secret, and ConfigMap inside `%s` becomes attacker-controlled", source.Key(), namespace, namespace),
+	}
+}
+
 // hopNarrative renders one hop into a natural-prose sentence describing what the
 // attacker does at that step. The output goes into Finding.AttackScenario, which
 // the report template wraps in an <ol> — so we deliberately omit any "Step N:"
@@ -335,6 +344,42 @@ func contentSystemMastersPath(source models.SubjectRef, hops []models.Escalation
 			refNSAHardening,
 		},
 		MitreTechniques: []models.MitreTechnique{mitreT1078_004, mitreT1098, mitreT1556, mitreT1068},
+	}
+}
+
+func contentNamespaceAdminPath(source models.SubjectRef, namespace string, hops []models.EscalationHop) ruleContent {
+	hopCount := len(hops)
+	steps := make([]string, 0, hopCount+2)
+	steps = append(steps, fmt.Sprintf("Attacker compromises any workload or credential bound to `%s` (RCE, leaked token, malicious image).", source.Key()))
+	for _, hop := range hops {
+		steps = append(steps, hopNarrative(hop))
+	}
+	steps = append(steps, fmt.Sprintf("Final step: the attacker holds an identity that can `verbs:[*]` on `resources:[*]` inside `%s`. They read every Secret and ConfigMap in `%s`, exec into every pod, mount every PersistentVolume, and plant a backdoor RoleBinding (or a privileged DaemonSet on a namespace-scoped tenant operator) for persistence.", namespace, namespace))
+	return ruleContent{
+		Title: fmt.Sprintf("`%s` can reach **namespace-admin in `%s`** in %d hop(s)", source.Key(), namespace, hopCount),
+		Scope: scopeForNamespaceAdmin(source, namespace),
+		Description: fmt.Sprintf("Subject `%s` has a privesc path that ends at namespace-admin inside `%s`. The chain leans on a namespace-scoped RBAC primitive — typically `create rolebindings` (KUBE-PRIVESC-010) or `bind/escalate roles` (KUBE-PRIVESC-009) granted by a `RoleBinding` — which lets the subject bind itself (or any subject it controls) to a powerful ClusterRole *within this namespace*. The result is full API control inside `%s` but, importantly, it does **not** by itself reach cluster-admin: the binding cannot mutate cluster-scoped resources, and the bound ClusterRole's verbs apply only inside the binding's namespace.\n\n"+
+			"The chain (each step uses an explicit RBAC verb the engine validated against the snapshot):\n%s\n\n"+
+			"Namespace-admin is a real and frequently underweighted privesc class. In multi-tenant clusters where each tenant lives in its own namespace, namespace-admin == tenant takeover: every other tenant workload running in the same namespace, every Secret stored there, every PVC bound there. It also commonly chains *out* of the namespace — a controller's ServiceAccount inside this namespace may be cluster-scoped, and once the attacker can mint a binding for it locally they can pivot via that SA's cluster-wide reach. Treat namespace-admin findings as one investigation away from cluster-admin, not as \"safe because bounded\".",
+			source.Key(), namespace, namespace, formatHopList(hops)),
+		Impact:         fmt.Sprintf("Compromise of `%s` yields full takeover of `%s`: every Secret/ConfigMap is readable, every pod is exec-able, every workload runs as whatever ServiceAccount the attacker chooses. If any in-namespace ServiceAccount is itself bound cluster-wide (controllers, operators, sidecars with elevated SAs), this also becomes a stepping stone to cluster-admin.", source.Key(), namespace),
+		AttackScenario: steps,
+		Remediation:    fmt.Sprintf("Break the chain at the weakest hop and tighten RBAC writes inside `%s`: %s.", namespace, hopsRemediation(hops)),
+		RemediationSteps: []string{
+			fmt.Sprintf("Confirm the chain with `kubectl auth can-i create rolebindings -n %s --as=system:serviceaccount:%s:%s` (and `bind/escalate` on roles) — both should return `no` for any non-admin workload.", namespace, source.Namespace, source.Name),
+			fmt.Sprintf("Identify the lowest-cost hop to break (typically %s); removing one mid-chain hop kills the entire path.", hopsRemediation(hops)),
+			fmt.Sprintf("Audit Roles in `%s` granting RBAC writes: `kubectl get role -n %s -o json | jq '.items[] | select(.rules[]? | .resources[]? | contains(\"rolebindings\") or contains(\"roles\"))'`. Most workloads should have zero RBAC write rights.", namespace, namespace),
+			"Move RBAC management to GitOps (Argo CD/Flux) so any RoleBinding change requires a PR. The GitOps controller should be the only namespace-local identity with RBAC write access.",
+			fmt.Sprintf("Wire admission policy: a Kyverno or OPA Gatekeeper rule that fails any new RoleBinding in `%s` whose `roleRef` points at `cluster-admin`, `admin`, or any ClusterRole matching `*system:*` outside an explicit allowlist.", namespace),
+		},
+		LearnMore: []models.Reference{
+			refHackTricksRBAC,
+			refRBACGoodPrac,
+			{Title: "Kubernetes — RBAC: Restrictions on role-binding creation/update", URL: "https://kubernetes.io/docs/reference/access-authn-authz/rbac/#restrictions-on-role-binding-creation-or-update"},
+			refMSThreatMatrix,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1078_004, mitreT1098, mitreT1068},
 	}
 }
 

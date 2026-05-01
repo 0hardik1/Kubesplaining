@@ -129,7 +129,8 @@ EXPECTED_RULES=(
   KUBE-SA-DEFAULT-001 KUBE-SA-DEFAULT-002 KUBE-SA-PRIVILEGED-001 KUBE-SA-PRIVILEGED-002
   KUBE-SA-DAEMONSET-001
   KUBE-PRIVESC-PATH-CLUSTER-ADMIN KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS
-  KUBE-PRIVESC-PATH-NODE-ESCAPE KUBE-PRIVESC-PATH-SYSTEM-MASTERS KUBE-PRIVESC-PATH-GENERIC
+  KUBE-PRIVESC-PATH-NODE-ESCAPE KUBE-PRIVESC-PATH-SYSTEM-MASTERS
+  KUBE-PRIVESC-PATH-NAMESPACE-ADMIN KUBE-PRIVESC-PATH-GENERIC
 )
 
 missing=()
@@ -144,6 +145,28 @@ if (( ${#missing[@]} > 0 )); then
   exit 1
 fi
 ok "all ${#EXPECTED_RULES[@]} expected rule IDs present"
+
+# Regression guard for issue #48: a namespace-scoped RoleBinding granting
+# `create rolebindings` MUST NOT produce a cluster-admin path finding. The
+# finding ID concatenates ruleID + subject Key + target, so a single grep
+# pinpoints the exact false positive without needing jq.
+NS_SUBJECT_KEY="ServiceAccount/rbac-ns-fixtures/sa-ns-rolebinding-mutate"
+NS_FP_ID_PREFIX="KUBE-PRIVESC-PATH-CLUSTER-ADMIN:${NS_SUBJECT_KEY}:"
+if rg -q "\"id\":\s*\"${NS_FP_ID_PREFIX}" "${ROOT_DIR}/.tmp/e2e-report/findings.json"; then
+  echo "regression: namespace-scoped RoleBinding produced KUBE-PRIVESC-PATH-CLUSTER-ADMIN (issue #48)" >&2
+  exit 1
+fi
+ok "no cluster-admin false positive for namespace-scoped RoleBinding"
+
+# The same fixture must instead produce KUBE-PRIVESC-PATH-NAMESPACE-ADMIN, naming
+# the namespace it can take over. The finding ID encodes the target namespace as
+# the last segment after a fourth `:`.
+NS_OK_ID="KUBE-PRIVESC-PATH-NAMESPACE-ADMIN:${NS_SUBJECT_KEY}:namespace_admin:rbac-ns-fixtures"
+if ! rg -q "\"id\":\s*\"${NS_OK_ID}\"" "${ROOT_DIR}/.tmp/e2e-report/findings.json"; then
+  echo "missing: namespace-scoped RoleBinding did not produce expected KUBE-PRIVESC-PATH-NAMESPACE-ADMIN finding for ${NS_SUBJECT_KEY} → rbac-ns-fixtures" >&2
+  exit 1
+fi
+ok "namespace-admin path emitted for namespace-scoped RoleBinding"
 
 if [[ "${KEEP_CLUSTER}" == "1" ]]; then
   step "Wiring kubectl context"

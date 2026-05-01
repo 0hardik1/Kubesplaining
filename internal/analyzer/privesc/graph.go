@@ -12,11 +12,12 @@ import (
 )
 
 const (
-	sinkClusterAdmin      = "sink:cluster_admin"
-	sinkKubeSystemSecrets = "sink:kube_system_secrets"
-	sinkNodeEscape        = "sink:node_escape"
-	sinkSystemMasters     = "sink:system_masters"
-	sinkTokenMint         = "sink:token_mint"
+	sinkClusterAdmin         = "sink:cluster_admin"
+	sinkKubeSystemSecrets    = "sink:kube_system_secrets"
+	sinkNodeEscape           = "sink:node_escape"
+	sinkSystemMasters        = "sink:system_masters"
+	sinkTokenMint            = "sink:token_mint"
+	sinkNamespaceAdminPrefix = "sink:namespace_admin:"
 )
 
 // nodeID returns the canonical graph-node ID for a subject.
@@ -95,7 +96,12 @@ func addEdgesForRule(
 		return
 	}
 
-	if matchesResourceVerb(rule, []string{"rolebindings", "clusterrolebindings"}, []string{"create", "update", "patch"}) {
+	// modify_role_binding: cluster-scoped grants reach cluster-admin (write to any (Cluster)RoleBinding
+	// → bind to any role anywhere). Namespace-scoped grants on `rolebindings` reach namespace-admin in
+	// the binding's namespace (the subject can RoleBind itself to any ClusterRole, scoped to that ns).
+	// Namespace-scoped grants on `clusterrolebindings` are dead RBAC (clusterrolebindings is a
+	// cluster-scoped resource and the authorizer never allows the verb to succeed via a RoleBinding).
+	if clusterScope && matchesResourceVerb(rule, []string{"rolebindings", "clusterrolebindings"}, []string{"create", "update", "patch"}) {
 		addEdge(graph, from, sinkClusterAdmin, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-010",
 			Action:      "modify_role_binding",
@@ -103,8 +109,20 @@ func addEdgesForRule(
 			Description: "can create or mutate role bindings to grant itself any role",
 		})
 	}
+	if !clusterScope && matchesResourceVerb(rule, []string{"rolebindings"}, []string{"create", "update", "patch"}) {
+		sink := ensureNamespaceAdminSink(graph, rule.Namespace)
+		addEdge(graph, from, sink, &models.EscalationEdge{
+			Technique:   "KUBE-PRIVESC-010",
+			Action:      "modify_role_binding",
+			Permission:  verbResource(rule, "rolebindings"),
+			Description: fmt.Sprintf("can create or mutate RoleBindings in namespace %s to grant itself any role within %s", rule.Namespace, rule.Namespace),
+		})
+	}
 
-	if matchesResourceVerb(rule, []string{"roles", "clusterroles"}, []string{"bind", "escalate"}) {
+	// bind/escalate on (cluster)roles: same scope reasoning as modify_role_binding. Namespace-scoped
+	// grants on `roles` let the subject bind any ClusterRole inside the binding's namespace; on
+	// `clusterroles` they're dead RBAC.
+	if clusterScope && matchesResourceVerb(rule, []string{"roles", "clusterroles"}, []string{"bind", "escalate"}) {
 		addEdge(graph, from, sinkClusterAdmin, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-009",
 			Action:      "bind_or_escalate",
@@ -112,23 +130,63 @@ func addEdgesForRule(
 			Description: "can bypass RBAC escalation checks via bind/escalate",
 		})
 	}
+	if !clusterScope && matchesResourceVerb(rule, []string{"roles"}, []string{"bind", "escalate"}) {
+		sink := ensureNamespaceAdminSink(graph, rule.Namespace)
+		addEdge(graph, from, sink, &models.EscalationEdge{
+			Technique:   "KUBE-PRIVESC-009",
+			Action:      "bind_or_escalate",
+			Permission:  verbResource(rule, "roles"),
+			Description: fmt.Sprintf("can bypass RBAC escalation checks via bind/escalate within namespace %s", rule.Namespace),
+		})
+	}
 
-	if matchesResourceVerb(rule, []string{"users", "groups", "serviceaccounts"}, []string{"impersonate"}) {
+	// impersonate users/groups: users and groups are not namespaced K8s objects, so a RoleBinding
+	// granting these verbs is dead RBAC (the authorizer never lets it succeed). Only emit the
+	// cluster-admin edge for cluster-scoped grants.
+	if clusterScope && matchesResourceVerb(rule, []string{"users", "groups"}, []string{"impersonate"}) {
 		addEdge(graph, from, sinkClusterAdmin, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-008",
 			Action:      "impersonate",
-			Permission:  verbResource(rule, "users|groups|serviceaccounts"),
+			Permission:  verbResource(rule, "users|groups"),
 			Description: "can impersonate another identity",
 		})
 	}
 
-	if matchesResourceVerb(rule, []string{"groups"}, []string{"impersonate"}) {
+	if clusterScope && matchesResourceVerb(rule, []string{"groups"}, []string{"impersonate"}) {
 		addEdge(graph, from, sinkSystemMasters, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-008",
 			Action:      "impersonate_system_masters",
 			Permission:  verbResource(rule, "groups"),
 			Description: "can impersonate the system:masters group, bypassing all RBAC",
 		})
+	}
+
+	// impersonate serviceaccounts: cluster-scoped grants reach any SA cluster-wide (including
+	// kube-system controllers), so we treat that as cluster-admin. Namespace-scoped grants only
+	// reach SAs in the binding's namespace — model those as per-target edges so multi-hop chains
+	// can still surface a real path if one of those SAs reaches a sink.
+	if matchesResourceVerb(rule, []string{"serviceaccounts"}, []string{"impersonate"}) {
+		if clusterScope {
+			addEdge(graph, from, sinkClusterAdmin, &models.EscalationEdge{
+				Technique:   "KUBE-PRIVESC-008",
+				Action:      "impersonate",
+				Permission:  verbResource(rule, "serviceaccounts"),
+				Description: "can impersonate any ServiceAccount cluster-wide",
+			})
+		} else {
+			for _, target := range podCreateTargets(false, rule.Namespace, subjectsByNs) {
+				if target.Key() == subject.Key() {
+					continue
+				}
+				ensureSubjectNode(graph, target)
+				addEdge(graph, from, nodeID(target), &models.EscalationEdge{
+					Technique:   "KUBE-PRIVESC-008",
+					Action:      "impersonate_serviceaccount",
+					Permission:  verbResource(rule, "serviceaccounts"),
+					Description: fmt.Sprintf("can impersonate ServiceAccount %s/%s", target.Namespace, target.Name),
+				})
+			}
+		}
 	}
 
 	if matchesResourceVerb(rule, []string{"secrets"}, []string{"get", "list", "watch"}) {
@@ -282,6 +340,22 @@ func isSensitiveHostPath(path string) bool {
 // addSink registers a terminal target node in the graph.
 func addSink(graph *models.EscalationGraph, id string, target models.EscalationTarget) {
 	graph.Nodes[id] = &models.EscalationNode{ID: id, IsSink: true, Target: target}
+}
+
+// ensureNamespaceAdminSink lazily registers (and returns the ID of) the per-namespace
+// "namespace-admin in <ns>" sink. Each namespace gets its own sink node so a subject
+// with namespace-scoped grants in multiple namespaces produces one finding per namespace.
+func ensureNamespaceAdminSink(graph *models.EscalationGraph, namespace string) string {
+	id := sinkNamespaceAdminPrefix + namespace
+	if _, ok := graph.Nodes[id]; !ok {
+		graph.Nodes[id] = &models.EscalationNode{
+			ID:              id,
+			IsSink:          true,
+			Target:          models.TargetNamespaceAdmin,
+			TargetNamespace: namespace,
+		}
+	}
+	return id
 }
 
 // ensureSubjectNode inserts a subject node into the graph if it does not already exist.

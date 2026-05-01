@@ -61,24 +61,31 @@ func findingFromPath(path models.EscalationPath) models.Finding {
 		category = models.CategoryDataExfiltration
 	}
 
-	content := contentForTarget(path.Source, target, path.Hops)
+	content := contentForTarget(path.Source, target, path.TargetNamespace, path.Hops)
 
 	evidence, _ := json.Marshal(map[string]any{
-		"target":        string(target),
-		"hop_count":     len(path.Hops),
-		"techniques":    uniqueTechniques(path.Hops),
-		"first_action":  firstAction(path.Hops),
-		"chain_summary": chainSummary(path.Hops),
+		"target":           string(target),
+		"target_namespace": path.TargetNamespace,
+		"hop_count":        len(path.Hops),
+		"techniques":       uniqueTechniques(path.Hops),
+		"first_action":     firstAction(path.Hops),
+		"chain_summary":    chainSummary(path.Hops),
 	})
 
 	id := fmt.Sprintf("%s:%s:%s", ruleID, path.Source.Key(), target)
+	if path.TargetNamespace != "" {
+		// Namespace-admin paths to different namespaces from the same source must be distinct
+		// findings, so keep the namespace in the deterministic finding ID.
+		id = fmt.Sprintf("%s:%s", id, path.TargetNamespace)
+	}
 	references := make([]string, 0, len(content.LearnMore))
 	for _, ref := range content.LearnMore {
 		references = append(references, ref.URL)
 	}
 
 	subject := path.Source
-	return models.Finding{
+	tags := []string{"module:privesc", "target:" + string(target)}
+	finding := models.Finding{
 		ID:               id,
 		RuleID:           ruleID,
 		Severity:         severity,
@@ -97,15 +104,25 @@ func findingFromPath(path models.EscalationPath) models.Finding {
 		LearnMore:        content.LearnMore,
 		MitreTechniques:  content.MitreTechniques,
 		EscalationPath:   path.Hops,
-		Tags:             []string{"module:privesc", "target:" + string(target)},
+		Tags:             tags,
 	}
+	if target == models.TargetNamespaceAdmin && path.TargetNamespace != "" {
+		// Anchor the finding to the namespace it compromises so the report's resource column,
+		// the dedupe key (RuleID + SubjectKey + ResourceKey), and SARIF physical-location all
+		// surface which namespace is at risk.
+		finding.Resource = &models.ResourceRef{Kind: "Namespace", Name: path.TargetNamespace, Namespace: path.TargetNamespace}
+		finding.Namespace = path.TargetNamespace
+	}
+	return finding
 }
 
 // contentForTarget dispatches to the matching content builder based on the path's terminal sink.
-func contentForTarget(source models.SubjectRef, target models.EscalationTarget, hops []models.EscalationHop) ruleContent {
+func contentForTarget(source models.SubjectRef, target models.EscalationTarget, targetNamespace string, hops []models.EscalationHop) ruleContent {
 	switch target {
 	case models.TargetClusterAdmin:
 		return contentClusterAdminPath(source, hops)
+	case models.TargetNamespaceAdmin:
+		return contentNamespaceAdminPath(source, targetNamespace, hops)
 	case models.TargetNodeEscape:
 		return contentNodeEscapePath(source, hops)
 	case models.TargetKubeSystemSecrets:
@@ -131,6 +148,10 @@ func targetScoring(target models.EscalationTarget, hops int) (models.Severity, f
 		base, severity, ruleID = 8.6, models.SeverityHigh, "KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS"
 	case models.TargetSystemMasters:
 		base, severity, ruleID = 9.6, models.SeverityCritical, "KUBE-PRIVESC-PATH-SYSTEM-MASTERS"
+	case models.TargetNamespaceAdmin:
+		// Namespace-admin is a real privesc but bounded to a single namespace, so it scores
+		// below cluster-admin but above the generic fallback.
+		base, severity, ruleID = 7.6, models.SeverityHigh, "KUBE-PRIVESC-PATH-NAMESPACE-ADMIN"
 	default:
 		base, severity, ruleID = 7.0, models.SeverityHigh, "KUBE-PRIVESC-PATH-GENERIC"
 	}
@@ -173,6 +194,8 @@ func targetLabel(target models.EscalationTarget) string {
 		return "kube-system secrets"
 	case models.TargetSystemMasters:
 		return "system:masters"
+	case models.TargetNamespaceAdmin:
+		return "namespace-admin"
 	default:
 		return string(target)
 	}

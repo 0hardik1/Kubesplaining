@@ -87,6 +87,7 @@ These findings are emitted **per `(source subject, sink)` pair** found by BFS on
 | KUBE-PRIVESC-PATH-SYSTEM-MASTERS | CRITICAL (9.6) | `<subject>` can reach system:masters in N hop(s) | Impersonation chain ending in the `system:masters` group |
 | KUBE-PRIVESC-PATH-NODE-ESCAPE | CRITICAL (9.4) | `<subject>` can reach node escape in N hop(s) | Ability to create/exec a pod with privileged / hostPID / hostNetwork / hostIPC / sensitive hostPath |
 | KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS | HIGH (8.6) | `<subject>` can reach kube-system secrets in N hop(s) | Cluster-wide or kube-system `get`/`list` on secrets |
+| KUBE-PRIVESC-PATH-NAMESPACE-ADMIN | HIGH (7.6) | `<subject>` can reach namespace-admin in `<ns>` in N hop(s) | Namespace-scoped `create rolebindings` or `bind/escalate roles` (one sink per affected namespace) |
 
 Edge techniques that can appear in a hop chain: `KUBE-PRIVESC-001` (pod create), `-005` (secrets read), `-008` (impersonate), `-009` (bind/escalate), `-010` (rolebinding modify), `-012` (nodes/proxy), `-014` (serviceaccounts/token), `-017` (wildcard), plus `KUBE-ESCAPE-00{1,2,3,4,5,6,8}` / `KUBE-HOSTPATH-001` for the pod-escape terminal edge. `system:*` subjects are skipped as traversable intermediates so paths do not launder through the control plane.
 

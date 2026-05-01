@@ -413,6 +413,45 @@ roleRef:
   kind: ClusterRole
   name: cluster-admin
 ---
+# Namespace-scoped RoleBinding: regression guard for issue #48. Granting
+# `create rolebindings` via a RoleBinding only confers namespace-admin in
+# `rbac-ns-fixtures`, NOT cluster-admin. The e2e script asserts that
+# KUBE-PRIVESC-PATH-CLUSTER-ADMIN is NOT emitted for sa-ns-rolebinding-mutate.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rbac-ns-fixtures
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-ns-rolebinding-mutate
+  namespace: rbac-ns-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: r-ns-rolebinding-mutate
+  namespace: rbac-ns-fixtures
+rules:
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rb-ns-rolebinding-mutate
+  namespace: rbac-ns-fixtures
+subjects:
+  - kind: ServiceAccount
+    name: sa-ns-rolebinding-mutate
+    namespace: rbac-ns-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: r-ns-rolebinding-mutate
+---
 # === MODULE: podsec / escape (extra fixtures in `vulnerable` namespace) ===
 apiVersion: apps/v1
 kind: Deployment
