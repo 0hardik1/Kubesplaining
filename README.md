@@ -280,7 +280,7 @@ Layer custom rules on top with `--exclusions-file path.yml`. The user file is **
 kubesplaining create-exclusions-file --preset standard --output-file exclusions.yml
 ```
 
-See [internal/exclusions/](internal/exclusions/) for the YAML schema (Global / RBAC / PodSecurity / NetworkPolicy sections, all matchers support shell-style globs).
+See [docs/exclusions.md](docs/exclusions.md) for the full YAML schema (Global / RBAC / PodSecurity / NetworkPolicy sections, all matchers support shell-style globs).
 
 To audit what the defaults are hiding, re-run with `--exclusions-preset=none` and diff.
 
@@ -344,6 +344,7 @@ The `standard` preset suppresses control-plane noise (kube-system, system:*, kub
 
 - **Full rule catalog** (implemented + planned): [docs/findings.md](docs/findings.md)
 - **Architecture deep-dive** (per-stage walkthrough, scoring, data model): [docs/architecture.md](docs/architecture.md)
+- **Exclusions YAML schema** (presets, sections, glob semantics): [docs/exclusions.md](docs/exclusions.md)
 - **Roadmap & status**: [PLAN.md](PLAN.md)
 - **Releases & changelog**: [CHANGELOG.md](CHANGELOG.md) / [GitHub Releases](https://github.com/0hardik1/kubesplaining/releases)
 - **Contributing**: [CONTRIBUTING.md](CONTRIBUTING.md)

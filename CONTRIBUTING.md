@@ -46,11 +46,11 @@ Examples:
 
 ## Adding a rule
 
-Every analyzer emits `models.Finding` with a stable `RuleID` of the form `KUBE-<MODULE>-<NUMBER>` (e.g. `KUBE-PRIVESC-001`, `KUBE-ESCAPE-005`). RuleIDs are a public surface — they are referenced from [`docs/findings.md`](docs/findings.md), the e2e assertions in `scripts/kind-e2e.sh`, and likely downstream consumers — so don't rename them once shipped.
+Every analyzer emits `models.Finding` with a stable `RuleID` of the form `KUBE-<AREA>-<SUFFIX>`. The suffix is usually a zero-padded number (`KUBE-PRIVESC-001`, `KUBE-ESCAPE-005`); for privesc graph paths it's a descriptive sink name (`KUBE-PRIVESC-PATH-CLUSTER-ADMIN`). Multi-segment areas are common when a module covers several axes — e.g. `KUBE-PODSEC-APE-001`, `KUBE-NETPOL-COVERAGE-001`, `KUBE-SA-DEFAULT-001`. RuleIDs are a public surface — they are referenced from [`docs/findings.md`](docs/findings.md), the e2e assertions in `scripts/kind-e2e.sh`, and likely downstream consumers — so don't rename them once shipped.
 
 When adding a rule:
 
-1. Pick the next free number under the appropriate prefix (`KUBE-PRIVESC-`, `KUBE-ESCAPE-`, `KUBE-PODSEC-`, `KUBE-NETPOL-`, `KUBE-ADMISSION-`, `KUBE-SECRETS-`, `KUBE-CONFIGMAP-`, `KUBE-SA-*-`, `KUBE-RBAC-OVERBROAD-`, `KUBE-PRIVESC-PATH-`).
+1. Pick the next free number under the matching prefix. Existing prefixes today: `KUBE-PRIVESC-`, `KUBE-PRIVESC-PATH-`, `KUBE-ESCAPE-`, `KUBE-CONTAINERD-SOCKET-`, `KUBE-HOSTPATH-`, `KUBE-PODSEC-APE-`, `KUBE-PODSEC-ROOT-`, `KUBE-IMAGE-LATEST-`, `KUBE-NETPOL-COVERAGE-`, `KUBE-NETPOL-WEAKNESS-`, `KUBE-ADMISSION-`, `KUBE-SECRETS-`, `KUBE-CONFIGMAP-`, `KUBE-SA-DEFAULT-`, `KUBE-SA-PRIVILEGED-`, `KUBE-SA-DAEMONSET-`, `KUBE-RBAC-OVERBROAD-`. See [`docs/findings.md`](docs/findings.md) for the authoritative list.
 2. Implement the detection in the matching `internal/analyzer/<module>/analyzer.go`.
 3. Add a table-driven test in the same package (`*_test.go`).
 4. If the rule should produce findings against the e2e fixture, update `testdata/e2e/vulnerable.yaml` and the `rg -q` assertions in `scripts/kind-e2e.sh`.
@@ -63,6 +63,6 @@ The four-stage pipeline (`connection → collection → analysis → report`) an
 
 ## Where to file issues
 
-- Bugs / feature requests: [GitHub Issues](https://github.com/0hardik1/Kubesplaining/issues) — pick the matching template.
-- Open-ended questions / show-and-tell: [GitHub Discussions](https://github.com/0hardik1/Kubesplaining/discussions).
+- Bugs / feature requests: [GitHub Issues](https://github.com/0hardik1/kubesplaining/issues) — pick the matching template.
+- Open-ended questions / show-and-tell: [GitHub Discussions](https://github.com/0hardik1/kubesplaining/discussions).
 - Security: see [SECURITY.md](SECURITY.md) (GitHub Private Vulnerability Reporting only).

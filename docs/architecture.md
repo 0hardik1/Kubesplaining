@@ -105,4 +105,6 @@ No admission webhooks, CRDs, or agent pods are installed. The tool is safe to po
 
 ## Exclusions ([internal/exclusions/](../internal/exclusions/))
 
-Exclusions are applied **after** analysis — they annotate `Finding.Excluded = true` rather than dropping the finding. The report writer hides excluded findings from the summary tally but keeps them available in the raw JSON output, so audit trails are preserved. The YAML schema (Global / RBAC / PodSecurity / NetworkPolicy sections, all matchers support shell-style globs) is documented inline in `internal/exclusions/loader.go`.
+Exclusions are applied **after** analysis. `exclusions.Apply` walks each finding through the matcher; on a hit, the finding is dropped from the slice the report writer sees. The `standard` preset is auto-applied even without `--exclusions-file` so control-plane noise (kube-system, `system:*`, `kubeadm:*`) doesn't bury actionable findings; pass `--exclusions-preset=none` to opt out. User-supplied YAML loaded with `--exclusions-file` is merged on top of the preset rather than replacing it.
+
+The full schema — `global` / `rbac` / `pod_security` / `network_policy` sections, glob semantics, evaluation order — is in [docs/exclusions.md](exclusions.md).
