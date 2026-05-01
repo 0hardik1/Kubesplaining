@@ -6,35 +6,35 @@
 [![Go version](https://img.shields.io/github/go-mod/go-version/0hardik1/kubesplaining)](go.mod)
 [![Go Report Card](https://goreportcard.com/badge/github.com/0hardik1/kubesplaining)](https://goreportcard.com/report/github.com/0hardik1/kubesplaining)
 
-A Kubernetes security assessment CLI that maps every RBAC subject's privilege-escalation paths to cluster-admin, host root, and kube-system secrets — then renders the chains as a risk-prioritized HTML / JSON / CSV / SARIF report.
+A Kubernetes security assessment CLI that maps every RBAC subject's privilege-escalation paths to cluster-admin, host root, and kube-system secrets, then renders the chains as a risk-prioritized HTML / JSON / CSV / SARIF report.
 
 * [Live example report](https://0hardik1.github.io/kubesplaining/)
 
-> ![Kubesplaining demo](docs/assets/kubesplaining.gif)
+<video src="docs/assets/kubesplaining.mp4" controls muted playsinline width="100%"></video>
 
-Inspired by Salesforce's [Cloudsplaining](https://github.com/salesforce/cloudsplaining), which does the same job for AWS IAM. Kubesplaining reads a live cluster or a previously captured snapshot, analyzes it against a library of techniques, and produces a prioritized list of findings — explanation, not just detection.
+Inspired by [Kinnaird McQuade](https://www.linkedin.com/in/kmcquade3/) at BeyondTrust Phantom Labs and his [Cloudsplaining](https://github.com/salesforce/cloudsplaining), which does the same job for AWS IAM. Kubesplaining reads a live cluster or a previously captured snapshot, analyzes it against a library of techniques, and produces a prioritized list of findings: explanation, not just detection.
 
 ## Why kubesplaining
 
-Most Kubernetes scanners stop at "this resource is misconfigured." Kubesplaining answers a different question — **how would an attacker actually move through your cluster?** Given the RBAC bindings and pods you already have, it walks the escalation graph from every non-system subject and tells you which can reach `cluster-admin`, host root, or `kube-system` secrets, with the full hop chain attached.
+Most Kubernetes scanners stop at "this resource is misconfigured." Kubesplaining answers a different question: **how would an attacker actually move through your cluster?** Given the RBAC bindings and pods you already have, it walks the escalation graph from every non-system subject and tells you which can reach `cluster-admin`, host root, or `kube-system` secrets, with the full hop chain attached.
 
 It focuses on the ground attackers actually exploit:
 
-- **Privilege escalation paths** — graph-based chains of "subject A can become subject B can reach sink X" via BFS to four sinks (`cluster-admin`, `system:masters`, `node-escape`, `kube-system-secrets`).
-- **Overly permissive RBAC** — wildcards, impersonation, bind/escalate, secret reads, pod creation, token mint.
-- **Pod-escape surface area** — privileged containers, host namespaces, sensitive hostPath mounts, container socket mounts.
-- **Network isolation gaps** — namespaces with no NetworkPolicy, policies that allow broad internet egress.
-- **Admission-control bypass** — webhooks that fail open, objectSelector bypasses, exempt sensitive namespaces.
-- **Secrets and service-account hygiene** — legacy token secrets, credentials in ConfigMaps, default-SA mounting, DaemonSet token blast-radius.
+- **Privilege escalation paths**: graph-based chains of "subject A can become subject B can reach sink X" via BFS to four sinks (`cluster-admin`, `system:masters`, `node-escape`, `kube-system-secrets`).
+- **Overly permissive RBAC**: wildcards, impersonation, bind/escalate, secret reads, pod creation, token mint.
+- **Pod-escape surface area**: privileged containers, host namespaces, sensitive hostPath mounts, container socket mounts.
+- **Network isolation gaps**: namespaces with no NetworkPolicy, policies that allow broad internet egress.
+- **Admission-control bypass**: webhooks that fail open, objectSelector bypasses, exempt sensitive namespaces.
+- **Secrets and service-account hygiene**: legacy token secrets, credentials in ConfigMaps, default-SA mounting, DaemonSet token blast-radius.
 
 Every finding names the technique, shows the evidence, and includes remediation.
 
 **Use cases:**
 
-- **Pentest / red-team engagements** — the escalation paths *are* the attack plan.
-- **Security review before a new binding** — see if it closes the graph from someone untrusted to a sink.
-- **Continuous assurance in CI** — `--ci-mode` with severity budgets fails the pipeline when high-severity findings cross a threshold.
-- **Post-incident replay** — capture the snapshot, analyze offline, explain how the actor could have moved.
+- **Pentest / red-team engagements**: the escalation paths *are* the attack plan.
+- **Security review before a new binding**: see if it closes the graph from someone untrusted to a sink.
+- **Continuous assurance in CI**: `--ci-mode` with severity budgets fails the pipeline when high-severity findings cross a threshold.
+- **Post-incident replay**: capture the snapshot, analyze offline, explain how the actor could have moved.
 
 ## Quickstart
 
@@ -63,7 +63,7 @@ kubesplaining scan-resource --input-file deployment.yaml
 
 ## Installation
 
-Pick the path that fits — all four produce the same `kubesplaining` binary.
+Pick the path that fits. All four produce the same `kubesplaining` binary.
 
 ### Container image (zero install)
 
@@ -100,7 +100,7 @@ go install github.com/0hardik1/kubesplaining/cmd/kubesplaining@latest
 
 ### Homebrew
 
-Coming as a post-release fast-follow — `brew install 0hardik1/tap/kubesplaining` will be wired up shortly after v1.0.0.
+Coming as a post-release fast-follow: `brew install 0hardik1/tap/kubesplaining` will be wired up shortly after v1.0.0.
 
 ## What it checks
 
@@ -116,9 +116,9 @@ Coming as a post-release fast-follow — `brew install 0hardik1/tap/kubesplainin
 | **serviceaccount** | 4 | privileged SAs, default-SA RBAC, DaemonSet token blast-radius |
 | **privesc** | 4 sinks | graph chains to cluster-admin / system:masters / node-escape / kube-system-secrets |
 
-Every finding is tagged with a `RiskCategory` — `privilege_escalation`, `data_exfiltration`, `lateral_movement`, `infrastructure_modification`, `defense_evasion` — so the HTML report can group by impact lane.
+Every finding is tagged with a `RiskCategory` (`privilege_escalation`, `data_exfiltration`, `lateral_movement`, `infrastructure_modification`, `defense_evasion`) so the HTML report can group by impact lane.
 
-Rule IDs are a **public surface** — they are stable across releases and referenced from `findings.json`, the SARIF output, and the e2e assertions in `scripts/kind-e2e.sh`.
+Rule IDs are a **public surface**: they are stable across releases and referenced from `findings.json`, the SARIF output, and the e2e assertions in `scripts/kind-e2e.sh`.
 
 ## How it works
 
@@ -132,24 +132,24 @@ Four-stage pipeline:
 └────────────┘    └──────────────┘    └──────────────┘    └─────────────┘
 ```
 
-The boundary that matters most: the **collector is the only thing that talks to the Kubernetes API**; analyzers consume a `Snapshot` and never make network calls. That's what makes `download` → `scan --input-file` work for offline analysis. Read-only access is sufficient — no admission webhooks, no agents, no CRDs installed.
+The boundary that matters most: the **collector is the only thing that talks to the Kubernetes API**; analyzers consume a `Snapshot` and never make network calls. That's what makes `download` → `scan --input-file` work for offline analysis. Read-only access is sufficient: no admission webhooks, no agents, no CRDs installed.
 
 For the per-stage walkthrough, the privesc graph mechanics, the data model, and the scoring formula: [docs/architecture.md](docs/architecture.md).
 
 ## Comparison with similar tools
 
-The Kubernetes security-tooling space clusters into a few distinct lanes — CIS-benchmark checkers, manifest linters, broad-spectrum scanners, RBAC visualisers, offensive pentest kits. Kubesplaining sits at the intersection of "RBAC privilege-escalation graph" and "educational HTML report from an offline snapshot" — a combination that, as of writing, no single tool below covers.
+The Kubernetes security-tooling space clusters into a few distinct lanes: CIS-benchmark checkers, manifest linters, broad-spectrum scanners, RBAC visualisers, offensive pentest kits. Kubesplaining sits at the intersection of "RBAC privilege-escalation graph" and "educational HTML report from an offline snapshot", a combination that, as of writing, no single tool below covers.
 
 | Tool | Stars | Primary focus | RBAC privesc paths | HTML report | Offline / snapshot |
 |---|---|---|---|---|---|
 | **Kubesplaining** | — | Cluster-wide RBAC privesc graph + educational HTML report | ✅ multi-hop BFS to 4 sinks | ✅ self-contained | ✅ `download` + `scan --input-file` |
-| [rbac-tool](https://github.com/alcideio/rbac-tool) | ~1.1k | RBAC visualisation, who-can queries, risky-perm rules | partial — flags risky permissions per-subject, no chain composition | ✅ (graph as HTML / dot) | partial — needs live cluster for discovery |
-| [krane](https://github.com/appvia/krane) | ~739 | RBAC static analysis + dashboard (RedisGraph) | partial — supports Cypher queries, but the user has to author the traversal | ✅ (dashboard UI) | ✅ (local YAML / JSON) |
-| [KubiScan](https://github.com/cyberark/KubiScan) | ~1.4k | Risky-RBAC permission scanner | partial — flags risky verbs per-subject, no graph | ❌ (terminal tables) | ❌ |
+| [rbac-tool](https://github.com/alcideio/rbac-tool) | ~1.1k | RBAC visualisation, who-can queries, risky-perm rules | partial: flags risky permissions per-subject, no chain composition | ✅ (graph as HTML / dot) | partial: needs live cluster for discovery |
+| [krane](https://github.com/appvia/krane) | ~739 | RBAC static analysis + dashboard (RedisGraph) | partial: supports Cypher queries, but the user has to author the traversal | ✅ (dashboard UI) | ✅ (local YAML / JSON) |
+| [KubiScan](https://github.com/cyberark/KubiScan) | ~1.4k | Risky-RBAC permission scanner | partial: flags risky verbs per-subject, no graph | ❌ (terminal tables) | ❌ |
 | [kubescape](https://github.com/kubescape/kubescape) | ~11.3k | Broad scanner (NSA, MITRE, CIS controls) | ❌ | ✅ | ✅ |
 | [kube-bench](https://github.com/aquasecurity/kube-bench) | ~8.0k | CIS Kubernetes Benchmark compliance | ❌ | ❌ | ❌ (in-cluster job) |
 
-> The three tools that share the most surface area with kubesplaining are **rbac-tool**, **krane**, and **KubiScan** — all scoped to RBAC risk. None walks the RBAC graph as an attack chain: they identify risky *permissions* on a single subject (wildcard verbs, bind-on-clusterrole, secrets/get) but they don't compose those permissions into a multi-hop path from `default/default` ➝ `cluster-admin` the way kubesplaining's privesc analyser does. Krane comes closest in spirit — it indexes RBAC into RedisGraph and exposes ad-hoc Cypher queries — but the user has to *write* the traversal. Kubesplaining ships the graph, the BFS, and the per-finding educational copy out of the box, plus the offline `download` ➝ `scan --input-file` workflow for environments where you can't keep credentials around.
+> The three tools that share the most surface area with kubesplaining are **rbac-tool**, **krane**, and **KubiScan**: all scoped to RBAC risk. None walks the RBAC graph as an attack chain: they identify risky *permissions* on a single subject (wildcard verbs, bind-on-clusterrole, secrets/get) but they don't compose those permissions into a multi-hop path from `default/default` ➝ `cluster-admin` the way kubesplaining's privesc analyser does. Krane comes closest in spirit (it indexes RBAC into RedisGraph and exposes ad-hoc Cypher queries) but the user has to *write* the traversal. Kubesplaining ships the graph, the BFS, and the per-finding educational copy out of the box, plus the offline `download` ➝ `scan --input-file` workflow for environments where you can't keep credentials around.
 
 For the full comparison covering kubeaudit, kube-score, kube-linter, polaris, trivy, checkov, peirates, and the archived-but-still-cited kube-hunter / datree / kubeval: [docs/comparison.md](docs/comparison.md).
 
@@ -158,7 +158,7 @@ For the full comparison covering kubeaudit, kube-score, kube-linter, polaris, tr
 What the output actually looks like. Each rule produces a `Finding` with stable `RuleID`, severity, evidence, and remediation; the privesc rules additionally carry an `EscalationPath` array.
 
 <details>
-<summary><strong>KUBE-PRIVESC-PATH-CLUSTER-ADMIN</strong> — service account reaches cluster-admin in 2 hops</summary>
+<summary><strong>KUBE-PRIVESC-PATH-CLUSTER-ADMIN</strong>: service account reaches cluster-admin in 2 hops</summary>
 
 ```json
 {
@@ -194,7 +194,7 @@ The HTML report renders this as a hop-by-hop card with technique explainers per 
 </details>
 
 <details>
-<summary><strong>KUBE-ESCAPE-001</strong> — privileged container with hostPath mount</summary>
+<summary><strong>KUBE-ESCAPE-001</strong>: privileged container with hostPath mount</summary>
 
 ```json
 {
@@ -217,7 +217,7 @@ The HTML report renders this as a hop-by-hop card with technique explainers per 
 </details>
 
 <details>
-<summary><strong>KUBE-RBAC-OVERBROAD-001</strong> — group bound directly to cluster-admin</summary>
+<summary><strong>KUBE-RBAC-OVERBROAD-001</strong>: group bound directly to cluster-admin</summary>
 
 ```json
 {
@@ -242,7 +242,7 @@ For the full rule catalog (severity, detection, remediation per rule): [docs/fin
 
 ## Offline analysis
 
-The collector and the analyzer are decoupled — the snapshot is a plain JSON file. Capture once, analyze repeatedly, in environments where credentials shouldn't sit on the analyst's machine:
+The collector and the analyzer are decoupled: the snapshot is a plain JSON file. Capture once, analyze repeatedly, in environments where credentials shouldn't sit on the analyst's machine:
 
 ```bash
 # On a jumphost with cluster credentials:
@@ -254,9 +254,9 @@ kubesplaining scan --input-file snapshot.json
 
 Useful for:
 
-- **Audit trails** — the snapshot is the evidence; reruns produce identical findings.
-- **Air-gapped review** — analyze a production cluster without bringing kubeconfig off the jumphost.
-- **Manifest scans** — `kubesplaining scan-resource --input-file deployment.yaml` runs the same analyzers against a single YAML, no cluster needed.
+- **Audit trails**: the snapshot is the evidence; reruns produce identical findings.
+- **Air-gapped review**: analyze a production cluster without bringing kubeconfig off the jumphost.
+- **Manifest scans**: `kubesplaining scan-resource --input-file deployment.yaml` runs the same analyzers against a single YAML, no cluster needed.
 
 ## CI integration
 
@@ -295,7 +295,7 @@ kubesplaining scan --ci-mode --ci-max-critical 0 --ci-max-high 0
 
 ## Exclusions
 
-`scan`, `scan-resource`, and `report` **auto-apply the `standard` exclusions preset by default**, so findings about built-in Kubernetes plumbing — kube-system / kube-public / kube-node-lease namespaces, kube-controller-manager service accounts (`clusterrole-aggregation-controller`, `generic-garbage-collector`, …), `system:*` users / groups / roles, `kubeadm:*` groups and bootstrap roles — are suppressed up front. None of that is something an operator can change without breaking their cluster, so showing it as risk just buries the things that are actionable.
+`scan`, `scan-resource`, and `report` **auto-apply the `standard` exclusions preset by default**, so findings about built-in Kubernetes plumbing are suppressed up front. That covers kube-system / kube-public / kube-node-lease namespaces, kube-controller-manager service accounts (`clusterrole-aggregation-controller`, `generic-garbage-collector`, …), `system:*` users / groups / roles, and `kubeadm:*` groups and bootstrap roles. None of it is something an operator can change without breaking their cluster, so showing it as risk just buries the things that are actionable.
 
 Pick a different baseline with `--exclusions-preset`:
 
@@ -303,7 +303,7 @@ Pick a different baseline with `--exclusions-preset`:
 | --- | --- |
 | `standard` (default) | Auto-applied. Filters kube-system / system:* / kubeadm:* noise. |
 | `minimal` | Filters only `kube-public`, `kube-node-lease`, and `system:*`. |
-| `none` (alias `strict`) | No built-in filtering — every finding surfaces, including control-plane noise. |
+| `none` (alias `strict`) | No built-in filtering: every finding surfaces, including control-plane noise. |
 
 Layer custom rules on top with `--exclusions-file path.yml`. The user file is **merged** with the preset, so you keep the defaults and add your own suppressions (specific service accounts, expected workloads, custom rule-ID patterns). Generate a starter file:
 
@@ -360,10 +360,10 @@ To audit what the defaults are hiding, re-run with `--exclusions-preset=none` an
 The privesc analyzer skips `system:*` subjects as *traversable intermediates* (so paths don't launder through the control plane) but it *does* report `system:*` as a sink-reach target if you can impersonate or otherwise escalate into it. If the analyzer doesn't see anyone with that capability, the rule stays silent.
 
 **How accurate are the privesc paths?**
-Each hop is validated against the snapshot's RBAC and pod state — the analyzer doesn't speculate. False positives come from chains that are *structurally* possible but operationally suppressed (e.g. an SA bound to a role that's never actually used). Severity is attenuated by chain length (hops ≥ 3 drop one bucket); use `--max-privesc-depth` to limit BFS aggressiveness.
+Each hop is validated against the snapshot's RBAC and pod state. The analyzer doesn't speculate. False positives come from chains that are *structurally* possible but operationally suppressed (e.g. an SA bound to a role that's never actually used). Severity is attenuated by chain length (hops ≥ 3 drop one bucket); use `--max-privesc-depth` to limit BFS aggressiveness.
 
 **Can I run this against my prod cluster?**
-Yes — read-only access is sufficient. No webhooks, CRDs, agents, or pods are installed. Forbidden listings are downgraded to warnings, not fatal, so locked-down clusters still produce useful output.
+Yes. Read-only access is sufficient. No webhooks, CRDs, agents, or pods are installed. Forbidden listings are downgraded to warnings, not fatal, so locked-down clusters still produce useful output.
 
 **Why no admission webhook?**
 Out of scope. The intent is *assessment*, not enforcement. If you want enforcement, generate Kyverno / Gatekeeper policies from the findings and hand them off to your policy engine.
@@ -382,6 +382,6 @@ The README keeps it to the closest competitors plus a couple of broad scanners. 
 - **Roadmap & status**: [PLAN.md](PLAN.md)
 - **Releases & changelog**: [CHANGELOG.md](CHANGELOG.md) / [GitHub Releases](https://github.com/0hardik1/kubesplaining/releases)
 - **Contributing**: [CONTRIBUTING.md](CONTRIBUTING.md)
-- **Security disclosure**: [SECURITY.md](SECURITY.md) — GitHub Private Vulnerability Reporting only
+- **Security disclosure**: [SECURITY.md](SECURITY.md) (GitHub Private Vulnerability Reporting only)
 - **License**: [Apache-2.0](LICENSE)
 - **End-to-end verification**: `make e2e` provisions a local kind cluster with intentionally risky manifests in `testdata/` and asserts expected findings
