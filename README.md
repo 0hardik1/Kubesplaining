@@ -38,17 +38,14 @@ Every finding names the technique, shows the evidence, and includes remediation.
 
 ## Quickstart
 
-Three commands to a report:
+After installing (see [Installation](#installation) below), point Kubesplaining at your current `kubectl` context:
 
 ```bash
-docker run --rm \
-  -v "$HOME/.kube:/.kube:ro" \
-  -v "$(pwd)/kubesplaining-report:/kubesplaining-report" \
-  ghcr.io/0hardik1/kubesplaining:latest scan
-open kubesplaining-report/report.html      # macOS; xdg-open on Linux
+kubesplaining scan                          # writes ./kubesplaining-report/
+open kubesplaining-report/report.html       # macOS; xdg-open on Linux
 ```
 
-That uses your current `kubectl` context. For air-gapped or audit workflows, capture a snapshot first and analyze it offline:
+For air-gapped or audit workflows, capture a snapshot first and analyze it offline:
 
 ```bash
 kubesplaining download --output-file snapshot.json
