@@ -45,6 +45,8 @@ kubesplaining scan                          # writes ./kubesplaining-report/
 open kubesplaining-report/report.html       # macOS; xdg-open on Linux
 ```
 
+Already cloned the repo? `make scan` builds the binary (Hermit auto-downloads the pinned Go toolchain) and runs it against your current `kubectl` context in one step — no separate install needed. Pass extra flags via `ARGS`, e.g. `make scan ARGS="--severity-threshold high --only-modules privesc"`.
+
 For air-gapped or audit workflows, capture a snapshot first and analyze it offline:
 
 ```bash
