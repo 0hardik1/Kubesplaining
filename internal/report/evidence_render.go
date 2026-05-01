@@ -153,7 +153,7 @@ func renderEvidenceRow(key string, val any, obj map[string]any) string {
 		fp := asString(val)
 		hint := ""
 		if strings.EqualFold(fp, "Ignore") {
-			hint = "Webhook failures are silently allowed — admission policy effectively off"
+			hint = "Webhook failures are silently allowed (admission policy effectively off)"
 		}
 		return plainRow("failurePolicy", "<code>"+template.HTMLEscapeString(fp)+"</code>", hint)
 	case "objectSelector":
@@ -311,7 +311,7 @@ func chipRow(label string, values []string, hint func(string) string, dangerOnWi
 		if dangerOnWildcard && v == "*" {
 			class += " wild"
 			if h == "" {
-				h = "Wildcard — every value"
+				h = "Wildcard: every value"
 			}
 		} else if h != "" {
 			class += " danger"
@@ -326,7 +326,7 @@ func chipRow(label string, values []string, hint func(string) string, dangerOnWi
 		b.WriteString(template.HTMLEscapeString(v))
 		b.WriteString(`</span>`)
 		if h != "" {
-			hints = append(hints, fmt.Sprintf("<code>%s</code> — %s",
+			hints = append(hints, fmt.Sprintf("<code>%s</code>: %s",
 				template.HTMLEscapeString(v), template.HTMLEscapeString(h)))
 		}
 	}
@@ -394,7 +394,7 @@ func apiGroupRow(values []string) string {
 		b.WriteString(template.HTMLEscapeString(display))
 		b.WriteString(`</span>`)
 		if h != "" {
-			hints = append(hints, fmt.Sprintf("<code>%s</code> — %s",
+			hints = append(hints, fmt.Sprintf("<code>%s</code>: %s",
 				template.HTMLEscapeString(display), template.HTMLEscapeString(h)))
 		}
 	}
@@ -531,7 +531,7 @@ func selectorRow(label string, val any) string {
 		return jsonFallbackRow(label, val)
 	}
 	if len(m) == 0 {
-		return plainRow(label, "<code>{}</code>", "Empty selector — matches everything")
+		return plainRow(label, "<code>{}</code>", "Empty selector: matches everything")
 	}
 	var sentences []string
 	if ml, ok := m["matchLabels"].(map[string]any); ok && len(ml) > 0 {

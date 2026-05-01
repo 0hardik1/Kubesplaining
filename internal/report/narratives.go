@@ -44,7 +44,7 @@ func buildNarratives(findings []models.Finding) []NarrativeCard {
 		steps := []NarrativeStep{
 			subjectListStep("An attacker gains code execution in a workload co-scheduled with, or targeting, one of:",
 				"An attacker gains code execution in a workload co-scheduled with, or targeting, %s.", resList),
-			{Text: "The workload is configured to trust the host in one or more ways — privileged mode grants all capabilities; a hostPath of / mounts the node's root filesystem; hostPID/hostIPC share the host's process and IPC namespaces."},
+			{Text: "The workload is configured to trust the host in one or more ways. Privileged mode grants all capabilities; a hostPath of / mounts the node's root filesystem; hostPID/hostIPC share the host's process and IPC namespaces."},
 			{Text: "Any one of these alone is enough for a straightforward container escape: write into the host filesystem, exec through /proc/1, or interact with the kubelet's unix socket."},
 			{Text: "From there, the attacker reads projected tokens for every other pod on the node and pivots into the cluster with those identities."},
 		}
@@ -82,7 +82,7 @@ func buildNarratives(findings []models.Finding) []NarrativeCard {
 		steps := []NarrativeStep{
 			subjectListStep("The attacker lands on a workload that mounts one of the following service accounts (or phishes a kubeconfig bound to one):",
 				"The attacker lands on a workload that mounts %s, or phishes a kubeconfig bound to it.", dualSubjects),
-			{Text: "That identity holds cluster-wide get/list on secrets — including service-account tokens in every namespace. The attacker lists kube-system secrets and reads tokens belonging to powerful controllers."},
+			{Text: "That identity holds cluster-wide get/list on secrets, which includes service-account tokens in every namespace. The attacker lists kube-system secrets and reads tokens belonging to powerful controllers."},
 			{Text: "Even without the token read, the same identity can create pods cluster-wide. The attacker schedules a pod that mounts the target service account, execs in, and acts as it."},
 			{Text: "Either path converges on a cluster-admin-equivalent identity; all policies, secrets, and workloads are now under attacker control."},
 		}
@@ -103,12 +103,12 @@ func buildNarratives(findings []models.Finding) []NarrativeCard {
 			steps = append(steps, NarrativeStep{Text: "The webhook that should block dangerous pods fails open: failurePolicy: Ignore means any backend outage (or a targeted denial-of-service) silently disables enforcement for the window the attacker needs."})
 		}
 		if slices.Contains(presentAdmission, "KUBE-ADMISSION-003") {
-			steps = append(steps, NarrativeStep{Text: "Its namespace selector excludes at least one sensitive namespace — workloads placed there skip admission entirely."})
+			steps = append(steps, NarrativeStep{Text: "Its namespace selector excludes at least one sensitive namespace, so workloads placed there skip admission entirely."})
 		}
 		if slices.Contains(presentAdmission, "KUBE-ADMISSION-002") {
 			steps = append(steps, NarrativeStep{Text: "The webhook keys off a workload-controlled label. Omit the label and admission doesn't apply."})
 		}
-		steps = append(steps, NarrativeStep{Text: "Any one of the above is a full bypass of the admission gate you thought was catching misconfigurations — every other chain in this report becomes easier to execute."})
+		steps = append(steps, NarrativeStep{Text: "Any one of the above is a full bypass of the admission gate you thought was catching misconfigurations. In practice, this means every other chain in this report becomes easier to execute."})
 		narratives = append(narratives, NarrativeCard{
 			Title:    "Admission gap → silent enforcement bypass",
 			Severity: "HIGH",
@@ -123,13 +123,13 @@ func buildNarratives(findings []models.Finding) []NarrativeCard {
 	if len(presentNetwork) > 0 {
 		steps := []NarrativeStep{}
 		if slices.Contains(presentNetwork, "KUBE-NETPOL-COVERAGE-001") {
-			steps = append(steps, NarrativeStep{Text: "Namespaces with no NetworkPolicies treat every pod as reachable from every other pod — there is no default-deny, so a compromised workload can reach every service on every pod."})
+			steps = append(steps, NarrativeStep{Text: "Namespaces with no NetworkPolicies treat every pod as reachable from every other pod. There is no default-deny, so a compromised workload can reach every service on every pod."})
 		}
 		if slices.Contains(presentNetwork, "KUBE-NETPOL-WEAKNESS-001") {
 			steps = append(steps, NarrativeStep{Text: "An allow-from-all-namespaces policy is effectively no policy: traffic from any namespace matches, including attacker-controlled namespaces."})
 		}
 		if slices.Contains(presentNetwork, "KUBE-NETPOL-WEAKNESS-002") {
-			steps = append(steps, NarrativeStep{Text: "Egress 0.0.0.0/0 gives the attacker free outbound reach — stolen tokens, secrets, and staging data leave the cluster with nothing in the way."})
+			steps = append(steps, NarrativeStep{Text: "Egress 0.0.0.0/0 gives the attacker free outbound reach. Stolen tokens, secrets, and staging data leave the cluster with nothing in the way."})
 		}
 		steps = append(steps, NarrativeStep{Text: "Combined, the attacker sweeps every pod in the cluster for vulnerable services and exfiltrates data without tripping a segmentation boundary."})
 		narratives = append(narratives, NarrativeCard{
