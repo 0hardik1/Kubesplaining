@@ -11,7 +11,7 @@ Security fixes are backported to the latest minor release line on `main`.
 
 ## Reporting a vulnerability
 
-**Please use [GitHub Private Vulnerability Reporting](https://github.com/0hardik1/Kubesplaining/security/advisories/new) — it is the only supported channel.**
+**Please use [GitHub Private Vulnerability Reporting](https://github.com/0hardik1/kubesplaining/security/advisories/new) — it is the only supported channel.**
 
 Open the link above, or in the repo navigate to the **Security** tab → **Advisories** → **Report a vulnerability**. The report stays private to the maintainers, sits inside GitHub's audit log, and lets us coordinate a CVE before public disclosure if one is warranted.
 

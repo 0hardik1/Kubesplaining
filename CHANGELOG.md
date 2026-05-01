@@ -12,7 +12,7 @@ First public release.
 
 Kubesplaining is a Kubernetes security assessment CLI inspired by Salesforce's [Cloudsplaining](https://github.com/salesforce/cloudsplaining). It reads a live cluster (or a previously captured snapshot) and analyzes it against a library of techniques, emitting a prioritized list of findings as HTML, JSON, CSV, or SARIF.
 
-The differentiator is **graph-based privilege-escalation path detection**: BFS from every non-system RBAC subject to four escalation sinks (cluster-admin, system:masters, node-escape, kube-system-secrets), with the full hop chain attached to every finding. See the [hosted example report](https://0hardik1.github.io/Kubesplaining/) for what the output actually looks like.
+The differentiator is **graph-based privilege-escalation path detection**: BFS from every non-system RBAC subject to five escalation sinks (cluster-admin, system:masters, node-escape, kube-system-secrets, token-mint), with the full hop chain attached to every finding. See the [hosted example report](https://0hardik1.github.io/kubesplaining/) for what the output actually looks like.
 
 ### Added
 
@@ -23,7 +23,7 @@ The differentiator is **graph-based privilege-escalation path detection**: BFS f
   - **admission** (3) — webhooks with `failurePolicy: Ignore`, objectSelector bypass surface, sensitive-namespace exemptions.
   - **secrets** (4) — legacy SA token secrets, credential-like ConfigMap keys, CoreDNS tampering risk, kube-system Opaque secrets.
   - **serviceaccount** (4) — privileged SAs, default-SA RBAC, DaemonSet token blast-radius, workload-mounted SA risk correlation.
-  - **privesc** (4 sinks) — multi-hop BFS to cluster-admin / system:masters / node-escape / kube-system-secrets with chain-length severity attenuation.
+  - **privesc** (5 sinks) — multi-hop BFS to cluster-admin / system:masters / node-escape / kube-system-secrets / token-mint with chain-length severity attenuation.
 
 - **Cluster-wide attack-path analysis.** `internal/analyzer/privesc/` builds a directed graph of RBAC subjects + sinks + pod-escape edges, BFS's from every non-`system:*` subject up to `--max-privesc-depth` (default 5), and emits one finding per (source, sink) pair with the full hop chain as `EscalationPath`.
 
@@ -45,14 +45,14 @@ The differentiator is **graph-based privilege-escalation path detection**: BFS f
 
 - Comprehensive [README](README.md) with install paths, quickstart, comparison table vs. kube-bench / kubescape / KubiScan / rbac-tool.
 - Full rule catalog and roadmap in [`docs/findings.md`](docs/findings.md) and [`PLAN.md`](PLAN.md).
-- Live demo report at <https://0hardik1.github.io/Kubesplaining/> regenerated on every push to `main`.
+- Live demo report at <https://0hardik1.github.io/kubesplaining/> regenerated on every push to `main`.
 
 ### Security
 
 - Read-only access is sufficient for the full analysis. No admission webhook registration, no CRD install, no agent pods.
-- Secrets are collected as metadata only. ConfigMap `Data` is preserved (keys + values) so analyzers can pattern-match credential-like keys; opt in to raw secret values explicitly with `--include-secret-values`.
+- Secrets are collected as `SecretMetadata` only — raw secret values are never read. ConfigMap data is redacted by the collector (keys preserved, values blanked) so analyzers can pattern-match credential-like key names without ever storing the payloads.
 - Forbidden/Unauthorized list errors are downgraded to `CollectionWarnings` rather than aborting — locked-down clusters still produce a useful partial-snapshot report.
 - Vulnerability disclosure: GitHub Private Vulnerability Reporting only. See [SECURITY.md](SECURITY.md).
 
-[Unreleased]: https://github.com/0hardik1/Kubesplaining/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/0hardik1/Kubesplaining/releases/tag/v1.0.0
+[Unreleased]: https://github.com/0hardik1/kubesplaining/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/0hardik1/kubesplaining/releases/tag/v1.0.0

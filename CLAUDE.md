@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Kubesplaining is a Go CLI for Kubernetes security assessment, modeled on Salesforce's Cloudsplaining. It reads cluster state (live or from a snapshot file) and emits scored findings as HTML, JSON, CSV, or SARIF.
 
-The single source-of-truth for *what* the tool does and every implemented/planned rule is `README.md`. The implementation roadmap and current status of every spec item is in `PLAN.md`. The full functional spec is `KUBESPLAINING_SPEC.md`. Read the README first when picking up a new task — it lists every rule ID, severity, and the analyzer file that owns it.
+`README.md` is the operator-facing overview. The comprehensive per-rule catalog (rule IDs, severity, detection logic, remediation, owning analyzer file) lives in [`docs/findings.md`](docs/findings.md) — read that first when adding or renaming a rule. The architectural deep-dive is in [`docs/architecture.md`](docs/architecture.md), the exclusions YAML schema in [`docs/exclusions.md`](docs/exclusions.md). The implementation roadmap and current status of every spec item is in `PLAN.md`. The full functional spec is `KUBESPLAINING_SPEC.md`.
 
 ## Common commands
 
@@ -46,13 +46,13 @@ Four-stage pipeline: **connection → collection → analysis → report**. The 
 
 ```
 cmd/kubesplaining/main.go            # entrypoint, ldflags-injected version
-└── internal/cli/                     # cobra commands: download, scan, scan-resource, report, create-exclusions, version
+└── internal/cli/                     # cobra commands: download, scan, scan-resource, report, create-exclusions-file, version
     └── internal/connection/          # client-go credentials resolution
     └── internal/collector/           # parallel API listing → models.Snapshot (single ~657-line collector.go)
     └── internal/manifest/            # offline alternative to collector: reads a YAML/JSON manifest into a Snapshot for `scan-resource`
     └── internal/analyzer/            # the engine + 7 modules; see below
-    └── internal/exclusions/          # YAML-driven post-analysis muting (annotates Excluded=true, never drops)
-    └── internal/report/              # html/json/csv/sarif writers; report.go is large because HTML/CSS/JS is embedded
+    └── internal/exclusions/          # YAML-driven post-analysis muting; matched findings are dropped from output (see docs/exclusions.md for schema)
+    └── internal/report/              # html/json/csv/sarif writers; HTML rendering is split across summary.go, evidence_render.go, attack_graph.go, glossary.go (each 400-850 lines because all CSS/JS is embedded)
     └── internal/scoring/             # composite formula + clamp + threshold helper, shared by analyzers and engine
     └── internal/permissions/         # aggregate.go: collapses (Cluster)RoleBindings × (Cluster)Roles into per-subject EffectiveRules
     └── internal/models/              # Snapshot, Finding, Severity, EscalationGraph/Path/Hop — the cross-package vocabulary
@@ -80,12 +80,12 @@ The seven modules live under `internal/analyzer/{rbac,podsec,network,admission,s
 
 ### `privesc` is the differentiator
 
-`internal/analyzer/privesc/` builds a directed graph (`graph.go`) where nodes are RBAC subjects plus synthetic sinks (`cluster-admin`, `system:masters`, `node-escape`, `kube-system-secrets`). Edges are RBAC techniques (impersonate, bind/escalate, pod-create-then-token-theft, etc.). `pathfinder.go` BFS's from every non-`system:*` subject up to `MaxDepth` (default 5, flag: `--max-privesc-depth`), and `analyzer.go` emits one finding per `(source, sink)` pair with the full hop chain as `EscalationPath`. Severity is attenuated by chain length: `score = base − 0.5 × (hops − 1)`, hops ≥ 3 drop one severity bucket. `system:*` subjects are skipped as intermediate hops to prevent paths from laundering through the control plane.
+`internal/analyzer/privesc/` builds a directed graph (`graph.go`) where nodes are RBAC subjects plus five synthetic sinks (`cluster_admin`, `kube_system_secrets`, `node_escape`, `system_masters`, `token_mint`). Edges are RBAC techniques (impersonate, bind/escalate, pod-create-then-token-theft, token mint, etc.). `pathfinder.go` BFS's from every non-`system:*` subject up to `MaxDepth` (default 5, flag: `--max-privesc-depth`), and `analyzer.go` emits one finding per `(source, sink)` pair with the full hop chain as `EscalationPath`. Severity is attenuated by chain length: `score = base − 0.5 × (hops − 1)` (then clamped to `[1, 10]`), and hops ≥ 3 drop one severity bucket. Subjects flagged `IsSystem` (built-in `system:*`) are skipped as intermediate hops — they're only valid as terminal sinks via explicit edges — so paths can't launder through the control plane.
 
 ### Data flow contract
 
 - `models.Snapshot` is plain JSON-serializable. `collector.WriteSnapshot` / `collector.ReadSnapshot` round-trip it. The `download` command writes one; `scan --input-file` and the e2e script consume one.
-- Secrets are collected as `SecretMetadata` only — **raw secret values are never read**. ConfigMap `Data` is preserved (keys + values) so analyzers can pattern-match credential-like keys; do not change this without re-reading the privacy notes in `README.md`.
+- Secrets are collected as `SecretMetadata` only — **raw secret values are never read**. ConfigMaps go through `redactConfigMapValues` in the collector: **keys are preserved, values are blanked to empty strings** so analyzers can pattern-match credential-like key names without ever storing the payloads. Do not change this without re-reading the privacy notes in `README.md`.
 - Forbidden/Unauthorized list errors in the collector are **downgraded to warnings** and recorded in `Snapshot.Metadata.CollectionWarnings` / `PermissionsMissing`. Don't promote these to fatal — locked-down clusters depend on partial-snapshot behavior.
 - `permissions.Aggregate(snapshot)` is the canonical way to get effective RBAC per subject; the `rbac` and `serviceaccount` analyzers both use it. Don't re-traverse bindings/roles ad hoc.
 
@@ -101,9 +101,9 @@ score = base × exploitability × blast_radius + chain_modifier
 
 ### Findings
 
-Every analyzer emits `models.Finding` with a stable `RuleID` (`KUBE-<MODULE>-<NUMBER>`). Rule IDs are referenced from [`docs/findings.md`](docs/findings.md), the e2e assertions in `scripts/kind-e2e.sh`, and likely downstream consumers — treat them as a public surface. New rule IDs should follow the existing prefix scheme (`KUBE-PRIVESC-`, `KUBE-ESCAPE-`, `KUBE-PODSEC-`, `KUBE-NETPOL-`, `KUBE-ADMISSION-`, `KUBE-SECRETS-`, `KUBE-CONFIGMAP-`, `KUBE-SA-`, `KUBE-RBAC-OVERBROAD-`, `KUBE-PRIVESC-PATH-`).
+Every analyzer emits `models.Finding` with a stable `RuleID`. Rule IDs are referenced from [`docs/findings.md`](docs/findings.md), the e2e assertions in `scripts/kind-e2e.sh`, and likely downstream consumers — treat them as a public surface. The naming convention is `KUBE-<AREA>-<SUFFIX>`, where the suffix is either a zero-padded number (`KUBE-ESCAPE-001`) or, for privesc graph paths, a descriptive sink name (`KUBE-PRIVESC-PATH-CLUSTER-ADMIN`). Multi-segment areas are common when a module covers several axes — e.g. `KUBE-PODSEC-APE-001`, `KUBE-PODSEC-ROOT-001`, `KUBE-NETPOL-COVERAGE-001`, `KUBE-NETPOL-WEAKNESS-001`, `KUBE-SA-DEFAULT-001`, `KUBE-SA-PRIVILEGED-001`. Other prefixes in use today: `KUBE-PRIVESC-`, `KUBE-ESCAPE-`, `KUBE-CONTAINERD-SOCKET-`, `KUBE-HOSTPATH-`, `KUBE-IMAGE-LATEST-`, `KUBE-ADMISSION-`, `KUBE-SECRETS-`, `KUBE-CONFIGMAP-`, `KUBE-RBAC-OVERBROAD-`. See [`docs/findings.md`](docs/findings.md) for the authoritative list.
 
-`Finding.ID` is the deterministic per-instance key (`RULE:ns:name`); `RuleID` is shared across instances of the same rule. Exclusions never delete findings — they set `Excluded=true` + `ExclusionReason` so the report can still display them.
+`Finding.ID` is the deterministic per-instance key (`RULE:ns:name`); `RuleID` is shared across instances of the same rule. Exclusions are evaluated *after* analysis: `exclusions.Apply` drops matched findings from the output slice (the matcher sets `Excluded=true` + `ExclusionReason` on the in-memory copy first, but the field isn't surfaced to the report writer because the finding is gone). The `standard` preset is auto-applied; pass `--exclusions-preset=none` to opt out. See [`docs/exclusions.md`](docs/exclusions.md) for the YAML schema.
 
 ### Report-layer educational content (`internal/report/glossary.go`)
 
@@ -128,4 +128,4 @@ When you add a rule that targets a new resource/subject Kind, or a new privesc A
 
 ## Module/dependency notes
 
-Module path is `github.com/0hardik1/kubesplaining` and `go.mod` requires Go 1.26. Core deps: `spf13/cobra` for the CLI, `k8s.io/{api,apimachinery,client-go}` v0.35.x for cluster types and access. There is no separate `go-yaml` direct dep — `gopkg.in/yaml.v3` is used for the exclusions file loader.
+Module path is `github.com/0hardik1/kubesplaining` and `go.mod` requires Go 1.26. Core deps: `spf13/cobra` for the CLI, `k8s.io/{api,apimachinery,client-go}` v0.36.x for cluster types and access. There is no separate `go-yaml` direct dep — `gopkg.in/yaml.v3` is used for the exclusions file loader.
