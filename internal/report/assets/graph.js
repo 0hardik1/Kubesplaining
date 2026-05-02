@@ -405,6 +405,12 @@
 
   var lastFocused = null;
   var walkState = null;
+  // navStack remembers the entry node when the user drilled into a capability via
+  // the entry panel's path cards, so the cap panel can render a "← Back to {entry}"
+  // link. Cleared on direct SVG node clicks and on closePanel so a stale entry never
+  // leaks across sessions.
+  var navStack = null;
+  var backdrop = document.querySelector('.kp-backdrop');
 
   function $$(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
 
@@ -615,6 +621,104 @@
     });
   }
 
+  // impactForCap walks a capability node's outgoing edge to find the impact node it
+  // leads to. Capabilities have exactly one outgoing edge (cap → impact) per the
+  // build in attack_graph.go, so a linear scan over EdgeIDs is correct and cheap.
+  function impactForCap(capNode) {
+    var ids = (capNode && capNode.EdgeIDs) || [];
+    for (var i = 0; i < ids.length; i++) {
+      var e = edgeIndex[ids[i]];
+      if (e && e.From === capNode.ID) {
+        var dest = nodeIndex[e.To];
+        if (dest && dest.Kind === 'impact') return dest;
+      }
+    }
+    return null;
+  }
+
+  // renderEntryPaths builds the "N attack paths from here" section for an entry node.
+  // It walks the entry's outgoing edges to find each connected capability, sorts them
+  // by severity so the worst paths surface first, and renders one tappable card per
+  // capability. Tapping a card calls openPanel(cap, …, { fromEntry: entry }) which
+  // sets navStack so the cap panel can show a "← Back to {entry}" affordance.
+  // Returns null when the entry has no connected capabilities (defensive — should not
+  // happen in practice since entries only exist because they spawned at least one cap).
+  function renderEntryPaths(entry) {
+    var ids = (entry && entry.EdgeIDs) || [];
+    var caps = [];
+    for (var i = 0; i < ids.length; i++) {
+      var e = edgeIndex[ids[i]];
+      if (!e || e.From !== entry.ID) continue;
+      var cap = nodeIndex[e.To];
+      if (cap && cap.Kind === 'capability') caps.push({ cap: cap, edge: e });
+    }
+    if (!caps.length) return null;
+    var rank = { crit: 0, high: 1, med: 2, low: 3 };
+    caps.sort(function(a, b) {
+      var ra = rank[a.cap.Severity] != null ? rank[a.cap.Severity] : 9;
+      var rb = rank[b.cap.Severity] != null ? rank[b.cap.Severity] : 9;
+      return ra - rb;
+    });
+
+    var heading = caps.length === 1 ? '1 attack path from here' : caps.length + ' attack paths from here';
+    var sec = el('section', { class: 'kp-section kp-paths-section' }, [
+      el('h4', { text: heading }),
+      el('p', { class: 'kp-paths-hint', text: 'Each card is one way an attacker abuses this entry point. Tap to walk through the technique step-by-step.' })
+    ]);
+    caps.forEach(function(it) {
+      var cap = it.cap;
+      var impact = impactForCap(cap);
+      var sev = cap.Severity || 'med';
+      var card = el('button', { type: 'button', class: 'kp-path-card kp-path-card-' + sev, attrs: { 'aria-label': 'Open attack path: ' + (cap.Title || '') } });
+      var hd = el('div', { class: 'kp-path-card-hd' });
+      hd.appendChild(el('span', { class: 'kp-sev-badge kp-sev-' + sev, text: severityLabel(sev) }));
+      if (cap.RuleID) hd.appendChild(el('span', { class: 'kp-rule mono', text: cap.RuleID }));
+      card.appendChild(hd);
+      var titleEl = el('div', { class: 'kp-path-card-title' });
+      renderInline(cap.Title || '', titleEl);
+      card.appendChild(titleEl);
+      var meta = el('div', { class: 'kp-path-card-meta' });
+      if (impact && impact.Title) {
+        meta.appendChild(el('span', { class: 'kp-path-arrow', text: '→' }));
+        meta.appendChild(el('span', { class: 'kp-path-impact', text: impact.Title }));
+      }
+      if (cap.Hops && cap.Hops.length) {
+        var hopText = cap.Hops.length + '-step chain';
+        meta.appendChild(el('span', { class: 'kp-path-hops', text: hopText }));
+      }
+      if (meta.firstChild) card.appendChild(meta);
+      var cta = el('span', { class: 'kp-path-cta', text: 'Walk the path →' });
+      card.appendChild(cta);
+      card.addEventListener('click', function() {
+        openPanel(cap, card, { fromEntry: entry });
+      });
+      sec.appendChild(card);
+    });
+    return sec;
+  }
+
+  // renderBackLink prepends a "← Back to {entry}" button to the panel body when the
+  // user drilled into the current capability via an entry path-card. Idempotent —
+  // safely callable on every renderPanel pass; only emits when navStack is set and
+  // the rendered node isn't the entry itself (defensive guard).
+  function renderBackLink(node) {
+    if (!navStack) return;
+    if (node.Kind === 'entry') return;
+    if (navStack.ID === node.ID) return;
+    var entry = navStack;
+    var back = el('button', { type: 'button', class: 'kp-back-link' });
+    back.appendChild(el('span', { class: 'kp-back-arrow', text: '←' }));
+    back.appendChild(document.createTextNode(' Back to '));
+    var strong = document.createElement('strong');
+    renderInline(entry.Title || 'entry point', strong);
+    back.appendChild(strong);
+    back.addEventListener('click', function() {
+      // Returning to the entry resets the nav context — entry is the new root.
+      openPanel(entry, back);
+    });
+    panelBody.appendChild(back);
+  }
+
   // renderPanel composes the side-panel content for one node. All Finding-derived strings go
   // through textContent (via the el() helper) so untrusted content never reaches innerHTML.
   // Glossary/technique/category prose is HTML pre-vetted by Go and is allowed via 'html'.
@@ -622,6 +726,8 @@
     panelBody.innerHTML = '';
     panelTitle.textContent = '';
     renderInline(node.Title || 'Detail', panelTitle);
+
+    renderBackLink(node);
 
     var hd = el('div', { class: 'kp-panel-meta' });
     if (node.Severity) hd.appendChild(el('span', { class: 'kp-sev-badge kp-sev-' + node.Severity, text: severityLabel(node.Severity) }));
@@ -643,6 +749,15 @@
         sec.appendChild(el('div', { class: 'kp-doc-link' }, [doc]));
       }
       panelBody.appendChild(sec);
+    }
+
+    // For entry-point nodes, list every connected attack path as a tappable card.
+    // This is the "modal that maps out the attack path" UX — on phones the panel is
+    // a full-screen sheet, so the user lands on this list directly after tapping
+    // the entry. On desktop the same list appears in the side panel.
+    if (node.Kind === 'entry') {
+      var pathSec = renderEntryPaths(node);
+      if (pathSec) panelBody.appendChild(pathSec);
     }
 
     var category = node.RiskCategory && payload.Categories ? payload.Categories[node.RiskCategory] : null;
@@ -783,20 +898,41 @@
     panelBody.appendChild(toBox);
   }
 
-  function openPanel(node, originEl) {
+  // openPanel renders a node's detail into the side panel / mobile sheet and shows it.
+  // opts.fromEntry: when set, records the entry node so the rendered cap panel can
+  // show a "← Back to {entry}" link. Any other call path (direct SVG node click,
+  // navigating back to the entry) clears navStack so we never carry a stale link
+  // across an unrelated open.
+  function openPanel(node, originEl, opts) {
     walkState = null;
+    navStack = (opts && opts.fromEntry) ? opts.fromEntry : null;
     renderPanel(node);
     panel.hidden = false;
     panel.classList.add('kp-open');
+    if (backdrop) {
+      backdrop.hidden = false;
+      // Two ticks so the transition fires after the element is laid out.
+      requestAnimationFrame(function() { backdrop.classList.add('kp-backdrop-on'); });
+    }
+    document.body.classList.add('kp-modal-open');
     highlightNode(node);
     if (originEl) lastFocused = originEl;
     if (panelClose) panelClose.focus();
+    // Reset internal scroll on re-open so a long previous panel doesn't strand
+    // the user mid-content when a fresh node opens.
+    panel.scrollTop = 0;
   }
 
   function closePanel() {
     panel.hidden = true;
     panel.classList.remove('kp-open');
     walkState = null;
+    navStack = null;
+    if (backdrop) {
+      backdrop.classList.remove('kp-backdrop-on');
+      backdrop.hidden = true;
+    }
+    document.body.classList.remove('kp-modal-open');
     clearHighlights();
     if (lastFocused) { try { lastFocused.focus(); } catch (e) {} }
   }
@@ -902,6 +1038,11 @@
   });
 
   if (panelClose) panelClose.addEventListener('click', closePanel);
+  // Explicit backdrop click handler. The document-level mousedown handler further down
+  // also closes on outside-click, but it doesn't always fire reliably on iOS Safari for
+  // taps on otherwise-empty <div> overlays. A direct click handler on the backdrop is
+  // the no-surprises path.
+  if (backdrop) backdrop.addEventListener('click', closePanel);
   document.addEventListener('keydown', function(ev) {
     if (ev.key === 'Escape' && panel.classList.contains('kp-open')) closePanel();
   });
