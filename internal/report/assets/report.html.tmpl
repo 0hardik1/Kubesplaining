@@ -18,7 +18,7 @@
       --low: #52e3a4; --low-soft: rgba(82,227,164,0.11); --low-edge: rgba(82,227,164,0.38);
     }
     * { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; }
+    html, body { margin: 0; padding: 0; overflow-x: clip; }
     body {
       background:
         radial-gradient(1100px 520px at 6% -8%, rgba(106,183,255,0.08) 0%, transparent 55%),
@@ -65,7 +65,8 @@
       letter-spacing: -0.03em; box-shadow: 0 0 24px rgba(106,183,255,0.35); }
     .brand-title { font-weight: 600; letter-spacing: -0.01em; font-size: 15px; }
     .brand-title span { color: var(--text-mut); font-weight: 400; margin-left: 6px; }
-    .topbar-meta { display: flex; gap: 6px 14px; color: var(--text-mut); font-size: 13px; margin-left: auto; flex-wrap: wrap; align-items: center; }
+    .topbar-meta { display: flex; gap: 6px 14px; color: var(--text-mut); font-size: 13px; margin-left: auto; flex-wrap: wrap; align-items: center; min-width: 0; }
+    .topbar-meta > span { min-width: 0; max-width: 100%; }
     .topbar-meta strong { color: var(--text); font-weight: 500; }
     .topbar-meta .sep { width: 4px; height: 4px; border-radius: 999px; background: var(--text-dim); display: inline-block; margin: 0 4px; }
 
@@ -565,12 +566,32 @@
     .instance-title { flex: 1 1 240px; min-width: 0; font-size: 13.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
     .instance-title code { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 12.5px; background: rgba(255,255,255,0.10); padding: 1px 2px; border-radius: 4px; color: var(--text); }
     /* Mobile-overflow guard: long unbreakable identifiers like Deployment/default/risky
-       force the title row past the viewport on phones unless we let them wrap. */
+       force the title row past the viewport on phones unless we let them wrap. The
+       sweep is intentionally broad — any prose/code descendant of a finding body or
+       the Attack Paths side panel can carry resource paths or API URLs; if any one
+       of them stays unbreakable, the document gains horizontal overflow and the
+       sticky topbar visibly left-aligns when the user pinch-zooms out. min-width: 0
+       on flex/grid descendants is what actually allows them to shrink — without it
+       the intrinsic min width is the longest unbreakable child word. */
     .rule-title, .rule-title code,
     .instance-title, .instance-title code,
-    .finding .ev-row code,
-    .finding .ev-val code,
-    code.gloss { overflow-wrap: anywhere; word-break: break-word; }
+    .instance-body code,
+    .finding .desc, .finding .desc code,
+    .finding .scope-detail, .finding .scope-detail code,
+    .finding .impact .v, .finding .impact .v code,
+    .finding .scenario, .finding .scenario code,
+    .finding .scenario .step-explainer code,
+    .finding .scenario .step-edge code,
+    .finding .scenario .step-meta code,
+    .finding .scenario ol.attack-chain li.attack-step,
+    .finding .education .edu-body, .finding .education .edu-body code,
+    .finding .ev-row code, .finding .ev-val, .finding .ev-val code,
+    .finding .ev-sentence, .finding .ev-sentence code,
+    .finding .meta code, .finding .rem, .finding .rem code,
+    .kp-detail .kp-prose, .kp-detail .kp-prose code,
+    .kp-detail .kp-panel-sub, .kp-detail .kp-walk-id,
+    .topbar-meta code,
+    code.gloss { overflow-wrap: anywhere; word-break: break-word; min-width: 0; }
     .instance-scope { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-mut); padding: 2px 7px; border: 1px solid var(--border-soft); border-radius: 999px; background: rgba(255,255,255,0.02); }
     .instance-score { font-size: 12px; color: var(--text-mut); font-variant-numeric: tabular-nums; }
     .instance-body { padding: 4px 16px 14px; border-top: 1px solid var(--border-soft); }
@@ -728,6 +749,12 @@
       .finding .ev-row { grid-template-columns: 1fr; }
       .finding .ev-hints { grid-column: 1; }
     }
+    /* At iPhone widths the 90px IMPACT label column eats too much of the row;
+       stack label-above-value to mirror what .ev-row does at 720px. */
+    @media (max-width: 480px) {
+      .finding .impact { grid-template-columns: 1fr; gap: 4px; }
+      .finding .impact .k { padding-top: 0; }
+    }
 
     .notes { display: grid; gap: 8px; font-size: 13px; color: var(--text-mut); }
     .notes li { padding: 8px 10px; background: rgba(255,154,60,0.07); border: 1px solid rgba(255,154,60,0.22); border-radius: 8px; list-style: none; }
@@ -751,10 +778,31 @@
       .heat-scroll .heat-hd:not(.res),
       .heat-scroll .heat-cell { scroll-snap-align: start; }
     }
+    /* Phone-band layout: the desktop pile-up of three sticky bars (topbar / tabs /
+       modules-nav) eats half the viewport on a phone, which is what produced the
+       "header bubble dominating the page" look users reported. We keep .topbar
+       sticky so the tabs stay reachable, but un-stick .modules-nav so the filter
+       chips scroll with content and reclaim that vertical space. .tabs gets a
+       horizontal-overflow-scroll fallback in case tab labels grow. */
     @media (max-width: 640px) {
       main { padding: 16px 16px 60px; }
-      .topbar-inner { padding: 12px 16px; }
-      .modules-nav { top: 96px; }
+      .topbar-inner { padding: 12px 16px; gap: 10px; }
+      .topbar-meta { font-size: 12px; gap: 4px 10px; }
+      .tabs { padding: 0 16px; gap: 2px; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+      .tabs::-webkit-scrollbar { display: none; }
+      .tab { padding: 10px 10px 12px; font-size: 12.5px; }
+      .modules-nav { position: static; top: auto; padding: 10px 12px; }
+      .modules-nav .mn-title { display: none; }
+      .module-link { font-size: 12px; padding: 5px 10px; }
+    }
+    /* iPhone-band: at ~430px the brand title + meta still feel cramped. Stack the
+       "Security Report" subtitle below the brand and drop the meta dot separators
+       so wrapped meta items read cleanly. */
+    @media (max-width: 460px) {
+      .brand-title { font-size: 14px; }
+      .brand-title span { display: block; margin-left: 0; font-size: 12px; }
+      .topbar-meta .sep { display: none; }
+      h1 { font-size: 24px; }
     }
   </style>
 </head>
