@@ -19,7 +19,11 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -35,21 +39,25 @@ type Options struct {
 
 // Collector lists cluster resources and produces a models.Snapshot.
 type Collector struct {
-	client kubernetes.Interface
-	config *rest.Config
-	opts   Options
+	client  kubernetes.Interface
+	dynamic dynamic.Interface
+	config  *rest.Config
+	opts    Options
 }
 
 // New constructs a Collector with defaulted options (parallelism defaults to 10 when unset or non-positive).
-func New(client kubernetes.Interface, config *rest.Config, opts Options) *Collector {
+// dyn may be nil; when nil, dynamic-client list operations (Kyverno/Gatekeeper CRDs) are skipped
+// and recorded as warnings rather than failing.
+func New(client kubernetes.Interface, dyn dynamic.Interface, config *rest.Config, opts Options) *Collector {
 	if opts.Parallelism <= 0 {
 		opts.Parallelism = 10
 	}
 
 	return &Collector{
-		client: client,
-		config: config,
-		opts:   opts,
+		client:  client,
+		dynamic: dyn,
+		config:  config,
+		opts:    opts,
 	}
 }
 
@@ -94,6 +102,13 @@ func (c *Collector) Collect(ctx context.Context) (models.Snapshot, error) {
 				switch {
 				case apierrors.IsForbidden(err), apierrors.IsUnauthorized(err):
 					recordMissing(resource, err)
+				case meta.IsNoMatchError(err), apierrors.IsNotFound(err):
+					// CRD isn't installed (Kyverno/Gatekeeper not deployed, or the API
+					// server doesn't serve VAP). Not a failure, not a permissions issue —
+					// just an absent resource. Record as a warning so operators see what
+					// we tried, but don't add to PermissionsMissing (which implies "you
+					// should grant access").
+					recordWarning(fmt.Sprintf("%s: %v", resource, err))
 				default:
 					recordWarning(fmt.Sprintf("%s: %v", resource, err))
 					mu.Lock()
@@ -483,6 +498,110 @@ func (c *Collector) Collect(ctx context.Context) (models.Snapshot, error) {
 		return nil
 	})
 
+	// VAP graduated to GA in Kubernetes v1.30. On older clusters the typed list
+	// returns NotFound; the runTask switch downgrades that to a warning.
+	runTask("validatingadmissionpolicies", func() error {
+		list, err := c.client.AdmissionregistrationV1().ValidatingAdmissionPolicies().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return err
+		}
+
+		items := make([]admissionregistrationv1.ValidatingAdmissionPolicy, 0, len(list.Items))
+		for _, item := range list.Items {
+			items = append(items, sanitizeValidatingAdmissionPolicy(item, c.opts.IncludeManagedFields))
+		}
+
+		mu.Lock()
+		snapshot.Resources.ValidatingAdmissionPolicies = items
+		mu.Unlock()
+		return nil
+	})
+
+	runTask("validatingadmissionpolicybindings", func() error {
+		list, err := c.client.AdmissionregistrationV1().ValidatingAdmissionPolicyBindings().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return err
+		}
+
+		items := make([]admissionregistrationv1.ValidatingAdmissionPolicyBinding, 0, len(list.Items))
+		for _, item := range list.Items {
+			items = append(items, sanitizeValidatingAdmissionPolicyBinding(item, c.opts.IncludeManagedFields))
+		}
+
+		mu.Lock()
+		snapshot.Resources.ValidatingAdmissionPolicyBindings = items
+		mu.Unlock()
+		return nil
+	})
+
+	// Kyverno and Gatekeeper are CRDs — use the dynamic client (when available)
+	// and pre-flight on Discovery().ServerGroups() so we skip the list entirely
+	// when the API group isn't served. Avoids a per-engine NoMatchError round-trip
+	// on clusters where the engine isn't installed.
+	if c.dynamic != nil {
+		apiGroups := map[string]bool{}
+		groupsList, groupsErr := c.client.Discovery().ServerGroups()
+		if groupsErr == nil {
+			for _, g := range groupsList.Groups {
+				apiGroups[g.Name] = true
+			}
+		}
+		hasGroup := func(name string) bool {
+			if groupsErr != nil {
+				// Discovery failed — fall through to dynamic list, which will return
+				// NoMatchError if the group is absent (handled by runTask switch).
+				return true
+			}
+			return apiGroups[name]
+		}
+
+		if hasGroup("kyverno.io") {
+			runTask("kyverno.clusterpolicies", func() error {
+				gvr := schema.GroupVersionResource{Group: "kyverno.io", Version: "v1", Resource: "clusterpolicies"}
+				list, err := c.dynamic.Resource(gvr).List(ctx, metav1.ListOptions{})
+				if err != nil {
+					return err
+				}
+				mu.Lock()
+				snapshot.Resources.KyvernoClusterPolicies = list.Items
+				mu.Unlock()
+				return nil
+			})
+
+			runTask("kyverno.policies", func() error {
+				gvr := schema.GroupVersionResource{Group: "kyverno.io", Version: "v1", Resource: "policies"}
+				list, err := c.dynamic.Resource(gvr).List(ctx, metav1.ListOptions{})
+				if err != nil {
+					return err
+				}
+				items := make([]unstructured.Unstructured, 0, len(list.Items))
+				for _, item := range list.Items {
+					if c.includeNamespace(item.GetNamespace()) {
+						items = append(items, item)
+					}
+				}
+				mu.Lock()
+				snapshot.Resources.KyvernoPolicies = items
+				mu.Unlock()
+				return nil
+			})
+		}
+
+		if hasGroup("templates.gatekeeper.sh") {
+			runTask("gatekeeper.constrainttemplates", func() error {
+				gvr := schema.GroupVersionResource{Group: "templates.gatekeeper.sh", Version: "v1", Resource: "constrainttemplates"}
+				list, err := c.dynamic.Resource(gvr).List(ctx, metav1.ListOptions{})
+				if err != nil {
+					return err
+				}
+				mu.Lock()
+				snapshot.Resources.GatekeeperConstraintTemplates = list.Items
+				mu.Unlock()
+				return nil
+			})
+		}
+	}
+
 	wg.Wait()
 
 	snapshot.Metadata.CollectionWarnings = dedupeStrings(warnings)
@@ -644,6 +763,16 @@ func sanitizeValidatingWebhookConfiguration(obj admissionregistrationv1.Validati
 }
 
 func sanitizeMutatingWebhookConfiguration(obj admissionregistrationv1.MutatingWebhookConfiguration, includeManagedFields bool) admissionregistrationv1.MutatingWebhookConfiguration {
+	obj.ManagedFields = maybeManagedFields(nil, includeManagedFields, obj.ManagedFields)
+	return obj
+}
+
+func sanitizeValidatingAdmissionPolicy(obj admissionregistrationv1.ValidatingAdmissionPolicy, includeManagedFields bool) admissionregistrationv1.ValidatingAdmissionPolicy {
+	obj.ManagedFields = maybeManagedFields(nil, includeManagedFields, obj.ManagedFields)
+	return obj
+}
+
+func sanitizeValidatingAdmissionPolicyBinding(obj admissionregistrationv1.ValidatingAdmissionPolicyBinding, includeManagedFields bool) admissionregistrationv1.ValidatingAdmissionPolicyBinding {
 	obj.ManagedFields = maybeManagedFields(nil, includeManagedFields, obj.ManagedFields)
 	return obj
 }

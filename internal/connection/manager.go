@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -57,6 +58,18 @@ func NewClientset(opts Options) (*kubernetes.Clientset, *rest.Config, error) {
 	}
 
 	return clientset, cfg, nil
+}
+
+// NewDynamicClient builds a dynamic client for listing CRD-backed resources
+// (Kyverno policies, Gatekeeper constraint templates) that aren't part of the
+// typed kubernetes.Interface. Shares the rest.Config built by BuildConfig so
+// auth and timeout knobs flow through unchanged.
+func NewDynamicClient(cfg *rest.Config) (dynamic.Interface, error) {
+	dyn, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("create dynamic client: %w", err)
+	}
+	return dyn, nil
 }
 
 // buildKubeconfig loads a rest.Config from the user's kubeconfig, honoring an explicit path and context override.

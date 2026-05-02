@@ -144,7 +144,12 @@ func loadOrCollectSnapshot(
 		return models.Snapshot{}, err
 	}
 
-	c := collector.New(clientset, config, collector.Options{
+	dyn, err := connection.NewDynamicClient(config)
+	if err != nil {
+		return models.Snapshot{}, err
+	}
+
+	c := collector.New(clientset, dyn, config, collector.Options{
 		Namespaces:           namespaces,
 		ExcludeNamespaces:    excludeNamespaces,
 		IncludeManagedFields: includeManagedFields,

@@ -166,6 +166,18 @@ if rg -q "\"id\":\s*\"${NS_FP_ID_PREFIX}" "${ROOT_DIR}/.tmp/e2e-report/findings.
 fi
 ok "no cluster-admin false positive for namespace-scoped RoleBinding"
 
+# Phase 2 posture finding: KUBE-ADMISSION-NO-POLICY-ENGINE-001 must NOT fire in
+# this fixture because the psa-suppressed namespace carries
+# pod-security.kubernetes.io/enforce=restricted (set above), and PSAState.HasEnforce()
+# returns true for any baseline-or-stricter level. Asserting the absence is more
+# valuable than asserting presence: it locks in that the posture finding correctly
+# suppresses itself when *any* admission control is in place.
+if rg -q "\"rule_id\":\s*\"KUBE-ADMISSION-NO-POLICY-ENGINE-001\"" "${ROOT_DIR}/.tmp/e2e-report/findings.json"; then
+  echo "regression: KUBE-ADMISSION-NO-POLICY-ENGINE-001 fired despite psa-suppressed namespace having enforce=restricted" >&2
+  exit 1
+fi
+ok "no policy-engine posture finding (correctly suppressed by psa-suppressed enforce label)"
+
 # The same fixture must instead produce KUBE-PRIVESC-PATH-NAMESPACE-ADMIN, naming
 # the namespace it can take over. The finding ID encodes the target namespace as
 # the last segment after a fourth `:`.

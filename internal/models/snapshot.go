@@ -9,6 +9,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // Snapshot is the in-memory representation of everything the collector pulled from a cluster;
@@ -55,6 +56,20 @@ type SnapshotResources struct {
 	NetworkPolicies          []networkingv1.NetworkPolicy                             `json:"network_policies,omitempty"`
 	ValidatingWebhookConfigs []admissionregistrationv1.ValidatingWebhookConfiguration `json:"validating_webhook_configs,omitempty"`
 	MutatingWebhookConfigs   []admissionregistrationv1.MutatingWebhookConfiguration   `json:"mutating_webhook_configs,omitempty"`
+	// ValidatingAdmissionPolicies and ValidatingAdmissionPolicyBindings are the in-tree
+	// CEL-based admission policies (GA in Kubernetes v1.30). Phase 2 collects them for
+	// presence detection; Phase 3 will evaluate the CEL expressions offline.
+	ValidatingAdmissionPolicies       []admissionregistrationv1.ValidatingAdmissionPolicy        `json:"validating_admission_policies,omitempty"`
+	ValidatingAdmissionPolicyBindings []admissionregistrationv1.ValidatingAdmissionPolicyBinding `json:"validating_admission_policy_bindings,omitempty"`
+	// KyvernoClusterPolicies and KyvernoPolicies hold Kyverno (Cluster)Policies as
+	// unstructured.Unstructured so we don't take a typed dependency on Kyverno's CRDs.
+	// Split mirrors the (Cluster)Role precedent so consumers preserve scope.
+	KyvernoClusterPolicies []unstructured.Unstructured `json:"kyverno_cluster_policies,omitempty"`
+	KyvernoPolicies        []unstructured.Unstructured `json:"kyverno_policies,omitempty"`
+	// GatekeeperConstraintTemplates are the cluster's OPA Gatekeeper templates. Phase 2
+	// uses presence as a "Gatekeeper installed" signal; per-constraint instances are
+	// dynamically-typed CRDs and are deferred to Phase 3/4.
+	GatekeeperConstraintTemplates []unstructured.Unstructured `json:"gatekeeper_constraint_templates,omitempty"`
 }
 
 // SecretMetadata stores Secret identifying info and labels/annotations only; raw data is intentionally never collected.

@@ -122,6 +122,7 @@ func (e *Engine) Analyze(ctx context.Context, snapshot models.Snapshot, opts Opt
 	wg.Wait()
 
 	findings, admissionSummary := applyAdmissionMitigations(findings, snapshot, mode)
+	findings, admissionSummary = applyPolicyEnginePresenceTags(findings, snapshot, admissionSummary, mode)
 	findings = correlate(findings)
 	findings = dedupe(findings)
 

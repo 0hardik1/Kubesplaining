@@ -23,4 +23,12 @@ type AdmissionSummary struct {
 	// SuppressedByNamespace breaks down Suppressed by namespace then RuleID for
 	// per-namespace tooltips in the HTML report.
 	SuppressedByNamespace map[string]map[string]int `json:"suppressed_by_namespace,omitempty"`
+	// PolicyEnginesDetected lists policy engines whose resources were observed in
+	// the snapshot, sorted alphabetically (e.g. ["gatekeeper", "kyverno", "vap"]).
+	// Empty when none. Populated by the engine's policy-engine-presence stage.
+	PolicyEnginesDetected []string `json:"policy_engines_detected,omitempty"`
+	// PolicyEngineTagged counts findings that received an admission:policy-engine-detected:*
+	// tag. A single finding may carry tags for multiple engines, but it bumps this
+	// counter once per finding (not once per engine).
+	PolicyEngineTagged int `json:"policy_engine_tagged,omitempty"`
 }

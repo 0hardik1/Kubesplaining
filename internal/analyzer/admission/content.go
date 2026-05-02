@@ -39,6 +39,10 @@ var (
 	refK8sAdmissionFP = models.Reference{Title: "Kubernetes — failurePolicy semantics", URL: "https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/#failure-policy"}
 	refNSAHardening   = models.Reference{Title: "NSA/CISA Kubernetes Hardening Guidance v1.2 (PDF)", URL: "https://media.defense.gov/2022/Aug/29/2003066362/-1/-1/0/CTR_KUBERNETES_HARDENING_GUIDANCE_1.2_20220829.PDF"}
 	refOPABestPrac    = models.Reference{Title: "OPA Gatekeeper — Production best practices", URL: "https://open-policy-agent.github.io/gatekeeper/website/docs/operations"}
+	refK8sPSA         = models.Reference{Title: "Kubernetes — Pod Security Admission", URL: "https://kubernetes.io/docs/concepts/security/pod-security-admission/"}
+	refK8sPSS         = models.Reference{Title: "Kubernetes — Pod Security Standards", URL: "https://kubernetes.io/docs/concepts/security/pod-security-standards/"}
+	refK8sVAP         = models.Reference{Title: "Kubernetes — ValidatingAdmissionPolicy (CEL)", URL: "https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/"}
+	refKyvernoIntro   = models.Reference{Title: "Kyverno — Introduction", URL: "https://kyverno.io/docs/introduction/"}
 )
 
 // scopeForWebhook returns the scope label for an admission webhook configuration.
@@ -151,5 +155,48 @@ func contentAdmission003(configKind, configName, webhookName string) ruleContent
 			refOPABestPrac,
 		},
 		MitreTechniques: []models.MitreTechnique{mitreT1562, mitreT1611, mitreT1578},
+	}
+}
+
+// contentNoPolicyEngine is the cluster-wide posture finding emitted when a
+// snapshot has no PSA enforce labels in any namespace and no detected policy
+// engine (ValidatingAdmissionPolicy, Kyverno, or Gatekeeper). The remediation
+// names every option so operators can pick the one that fits their stack.
+func contentNoPolicyEngine() ruleContent {
+	return ruleContent{
+		Title: "Cluster has no Pod Security Admission labels and no detected policy engine",
+		Scope: models.Scope{
+			Level:  models.ScopeCluster,
+			Detail: "Applies cluster-wide. No namespace carries `pod-security.kubernetes.io/enforce=baseline|restricted` and no ValidatingAdmissionPolicy / Kyverno / Gatekeeper resources were observed in the snapshot.",
+		},
+		Description: "Kubesplaining inspected every namespace in this snapshot and found zero `pod-security.kubernetes.io/enforce` labels at the `baseline` or `restricted` level. It also found zero `ValidatingAdmissionPolicy` resources, zero Kyverno `(Cluster)Policy` resources, and zero Gatekeeper `ConstraintTemplate` resources. Together these are the four statically-detectable defenses against privileged or otherwise dangerous pod specs being admitted to the cluster.\n\n" +
+			"With none of them in place, an attacker (or a careless developer) who can `create pods` in any namespace can submit a manifest with `securityContext.privileged: true`, `hostPID: true`, `hostNetwork: true`, `hostPath: /`, or `runAsUser: 0` and the API server will admit it without challenge. There is no in-tree backstop: the legacy PodSecurityPolicy admission controller was removed in Kubernetes v1.25, and Pod Security Admission only enforces what each namespace's labels ask for. A namespace without an enforce label is a permissive namespace.\n\n" +
+			"This finding is *posture*, not workload-specific. The reason every other host-level finding in this report (KUBE-ESCAPE-*, KUBE-PODSEC-*, KUBE-HOSTPATH-*) is unmitigated by admission is that this cluster has no admission control to mitigate them. Fixing this one finding is the highest-leverage action: it does not patch any individual workload, but it prevents the next privileged pod from being admitted at all.\n\n" +
+			"There are three viable paths, in order of decreasing operational cost: (1) apply Pod Security Admission labels to every namespace (in-tree, no install required, but you have to label every namespace and decide on the right level per namespace); (2) install Kyverno or Gatekeeper for richer policy expression with audit + warn + enforce modes (an operator install plus per-rule authoring); (3) author one or more `ValidatingAdmissionPolicy` resources for K8s-native CEL-based policies (no install but requires v1.30+ and CEL fluency). Most teams pair (1) with one of (2)/(3) for defense in depth.",
+		Impact: "Any user with `create pods` in any namespace can admit a pod that mounts the host filesystem, runs as root, or shares the host's network/PID/IPC namespaces — all without admission-time intervention. From there the standard escape-to-host kill chain is available cluster-wide.",
+		AttackScenario: []string{
+			"Attacker compromises a workload, ServiceAccount token, or developer kubeconfig that has `create pods` permission in any namespace (most internal namespaces grant this by default).",
+			"They craft a pod manifest with `hostPID: true`, `hostNetwork: true`, `securityContext.privileged: true`, and `volumes: [{hostPath: {path: /}}]` mounted at `/host`.",
+			"They `kubectl apply` the manifest. The API server runs through built-in admission, finds no PSA enforce label and no policy-engine webhook, and admits the pod.",
+			"The pod schedules on a node, mounts the host root filesystem, and the attacker `chroot`s into `/host` — they now have root on a Kubernetes node with full visibility into every container, secret, and network connection on it.",
+			"From the node they read `/var/lib/kubelet/pki/*` and `/etc/kubernetes/*` (when present), enumerate other nodes via the kubelet API, and pivot to control-plane material for full cluster takeover.",
+		},
+		Remediation: "Apply Pod Security Admission labels to every namespace at the appropriate level (`baseline` minimum, `restricted` for tenant workloads), or install Kyverno / Gatekeeper, or author ValidatingAdmissionPolicy resources. Pair PSA with a policy engine for defense in depth.",
+		RemediationSteps: []string{
+			"Inventory namespaces: `kubectl get namespaces -o jsonpath='{range .items[*]}{.metadata.name}{\"\\n\"}{end}'`. Decide a default level per namespace — `restricted` for application workloads, `baseline` only where a workload genuinely needs it, `privileged` only for control-plane components that must run with host access.",
+			"Label namespaces: `kubectl label namespace <ns> pod-security.kubernetes.io/enforce=restricted pod-security.kubernetes.io/audit=restricted pod-security.kubernetes.io/warn=restricted`. PSA only checks creates and updates, so existing pods continue to run; you'll see `audit`/`warn` log entries for the survivors so you can roll them out gradually.",
+			"For richer policy expression, install Kyverno (`helm install kyverno kyverno/kyverno -n kyverno --create-namespace`) or Gatekeeper (`helm install gatekeeper gatekeeper/gatekeeper -n gatekeeper-system --create-namespace`) and adopt one of the published policy bundles (Kyverno's `pod-security` set, Gatekeeper's `gatekeeper-library`).",
+			"For K8s-native CEL policies on v1.30+, author `ValidatingAdmissionPolicy` resources for the rules you care about most (e.g. block `securityContext.privileged: true` cluster-wide). Bind them with `ValidatingAdmissionPolicyBinding` and use `audit` mode first to size the impact before flipping to `deny`.",
+			"Re-run kubesplaining: this posture finding will disappear, and individual workload findings will start being suppressed (default) or attenuated (`--admission-mode=attenuate`) when the admission controls would block them.",
+		},
+		LearnMore: []models.Reference{
+			refK8sPSA,
+			refK8sPSS,
+			refK8sVAP,
+			refKyvernoIntro,
+			refOPABestPrac,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1562, mitreT1611, mitreT1525},
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/0hardik1/kubesplaining/internal/analyzer/admission/mitigation"
 	"github.com/0hardik1/kubesplaining/internal/models"
 	"github.com/0hardik1/kubesplaining/internal/scoring"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
@@ -60,7 +61,74 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 		}
 	}
 
+	// Cluster-wide posture check. The engine stage applyPolicyEnginePresenceTags
+	// strips this finding when --admission-mode=off, so the analyzer can stay
+	// admission-unaware: emit unconditionally when conditions are met.
+	if shouldEmitNoPolicyEngineFinding(snapshot) {
+		findings = append(findings, postureFinding(
+			"KUBE-ADMISSION-NO-POLICY-ENGINE-001",
+			models.SeverityMedium,
+			scoring.MinScoreForSeverity(models.SeverityMedium),
+			contentNoPolicyEngine(),
+			"no_policy_engine",
+		))
+	}
+
 	return findings, nil
+}
+
+// shouldEmitNoPolicyEngineFinding returns true when (a) the snapshot has at
+// least one namespace (gates out manifest-mode single-resource scans), (b) no
+// namespace carries a PSA enforce label at baseline or stricter, and (c) no
+// policy-engine resources were observed. All three must hold — any defense in
+// place suppresses the posture finding.
+func shouldEmitNoPolicyEngineFinding(snapshot models.Snapshot) bool {
+	if len(snapshot.Resources.Namespaces) == 0 {
+		return false
+	}
+	for _, ns := range snapshot.Resources.Namespaces {
+		if mitigation.PSAStateForLabels(ns.Labels).HasEnforce() {
+			return false
+		}
+	}
+	if len(snapshot.Resources.ValidatingAdmissionPolicies) > 0 ||
+		len(snapshot.Resources.KyvernoClusterPolicies) > 0 ||
+		len(snapshot.Resources.KyvernoPolicies) > 0 ||
+		len(snapshot.Resources.GatekeeperConstraintTemplates) > 0 {
+		return false
+	}
+	return true
+}
+
+// postureFinding materializes a cluster-wide finding with no Resource, Subject,
+// or Namespace. The deterministic ID is just the rule ID — there is only ever
+// one instance per cluster scan, so no per-instance disambiguation is needed.
+// Carries the module:admission tag (so the PSA stage's isPodSecurityFinding
+// check returns false and won't try to attenuate it) and a check tag for
+// downstream filtering.
+func postureFinding(ruleID string, severity models.Severity, score float64, content ruleContent, check string) models.Finding {
+	references := make([]string, 0, len(content.LearnMore))
+	for _, ref := range content.LearnMore {
+		references = append(references, ref.URL)
+	}
+	return models.Finding{
+		ID:               ruleID,
+		RuleID:           ruleID,
+		Severity:         severity,
+		Score:            scoring.Clamp(score),
+		Category:         models.CategoryInfrastructureModification,
+		Title:            content.Title,
+		Description:      content.Description,
+		Scope:            content.Scope,
+		Impact:           content.Impact,
+		AttackScenario:   content.AttackScenario,
+		Remediation:      content.Remediation,
+		RemediationSteps: content.RemediationSteps,
+		References:       references,
+		LearnMore:        content.LearnMore,
+		MitreTechniques:  content.MitreTechniques,
+		Tags:             []string{"module:admission", "check:" + check},
+	}
 }
 
 // analyzeMutating checks one mutating webhook entry for fail-open, bypassable selector, and sensitive-namespace exemption issues.

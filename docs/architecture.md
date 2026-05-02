@@ -25,11 +25,12 @@ In parallel (capped by `--parallelism`), lists every supported resource kind and
 - **RBAC** — Roles, ClusterRoles, RoleBindings, ClusterRoleBindings.
 - **Workloads** — Pods, Deployments, DaemonSets, StatefulSets, Jobs, CronJobs.
 - **Networking** — NetworkPolicies, Services, Ingresses.
-- **Admission** — ValidatingWebhookConfigurations, MutatingWebhookConfigurations.
+- **Admission** — ValidatingWebhookConfigurations, MutatingWebhookConfigurations, ValidatingAdmissionPolicies, ValidatingAdmissionPolicyBindings.
+- **Policy engines (CRDs, optional)** — Kyverno `(Cluster)Policy`, Gatekeeper `ConstraintTemplate`. Listed via the dynamic client when `Discovery().ServerGroups()` reports the API group is served; absent CRDs are not errors.
 - **Identity** — ServiceAccounts, Secrets (metadata only — raw values are never read), ConfigMaps.
 - **Platform** — Nodes, Namespaces.
 
-Forbidden / Unauthorized errors are **downgraded to warnings**, not fatal — a partial snapshot still produces useful output. This matters in locked-down clusters where the scanning credential cannot list everything.
+Forbidden / Unauthorized errors are **downgraded to warnings**, not fatal — a partial snapshot still produces useful output. This matters in locked-down clusters where the scanning credential cannot list everything. NoMatch / NotFound errors (CRDs not installed for Kyverno or Gatekeeper, VAP not served on older clusters) are also recorded as warnings rather than `missing_permissions`, since the resource genuinely does not exist on the cluster.
 
 The snapshot is a plain JSON file. `kubesplaining download` writes it; `kubesplaining scan --input-file` consumes it. This separation means you can capture a snapshot on a jumphost and analyze it offline, or diff snapshots over time.
 
@@ -101,6 +102,14 @@ Most analyzers currently emit a hand-picked `Score` directly; the engine's corre
 ## Access requirements
 
 Kubesplaining needs **cluster-wide read** on the resource kinds listed under Stage 2. A suitable ClusterRole is a subset of the built-in `view` role plus `get`/`list` on RBAC objects and webhook configurations. Forbidden listings are recorded as `missing_permissions` warnings in the snapshot and do not abort the run; the affected modules just operate on a partial view.
+
+For Phase 2's policy-engine detection, also grant `get`/`list` on:
+
+- `validatingadmissionpolicies.admissionregistration.k8s.io` and `validatingadmissionpolicybindings.admissionregistration.k8s.io` (in-tree, GA in v1.30)
+- `clusterpolicies.kyverno.io` and `policies.kyverno.io` (only required if Kyverno is installed)
+- `constrainttemplates.templates.gatekeeper.sh` (only required if Gatekeeper is installed)
+
+If RBAC is missing for one of these, the resource is recorded in `missing_permissions` and `KUBE-ADMISSION-NO-POLICY-ENGINE-001` may fire even though an engine is actually installed — grant access for accurate detection.
 
 No admission webhooks, CRDs, or agent pods are installed. The tool is safe to point at production.
 

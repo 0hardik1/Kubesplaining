@@ -60,6 +60,15 @@ Each rule produces zero or more findings against a given snapshot.
 | KUBE-ADMISSION-001 | HIGH | Security-critical webhook uses `failurePolicy: Ignore` | Webhook targets pods/workloads but fails open | Use `failurePolicy: Fail` for security webhooks |
 | KUBE-ADMISSION-002 | MEDIUM | Webhook can be bypassed via object labels | `objectSelector` keys on a workload-controlled label | Move rule to fields the workload cannot forge |
 | KUBE-ADMISSION-003 | MEDIUM | Webhook excludes sensitive namespaces | `namespaceSelector` exempts `kube-system` / `*-system` | Confirm exemption is intentional, narrow if not |
+| KUBE-ADMISSION-NO-POLICY-ENGINE-001 | MEDIUM | Cluster has no PSA enforce labels and no detected policy engine | No namespace carries `pod-security.kubernetes.io/enforce=baseline\|restricted` AND zero ValidatingAdmissionPolicy / Kyverno / Gatekeeper resources observed | Apply PSA labels per namespace, install Kyverno/Gatekeeper, or author ValidatingAdmissionPolicy resources |
+
+#### Admission tags
+
+These appear on `Finding.Tags` (visible in JSON, CSV, and SARIF output) and describe the relationship between a finding and the cluster's admission controls. None change the score.
+
+- `admission:audit-psa-<level>` / `admission:warn-psa-<level>` — the finding's namespace has a PSA `audit` or `warn` label at the given level. PSA logs the violation but does not block the workload, so the finding stays at full severity.
+- `admission:mitigated-psa-<level>` — `--admission-mode=attenuate` dropped the finding's severity by one bucket because the namespace's PSA `enforce` label would block the spec.
+- `admission:policy-engine-detected:<engine>` — appended when an admission policy engine (`kyverno`, `gatekeeper`, `vap`) was observed in the snapshot but kubesplaining didn't evaluate its rules. One tag per detected engine. Score is unchanged. Findings already suppressed by PSA do not receive this tag (they're gone from the slice before this stage runs).
 
 ### Secrets & ConfigMaps ([internal/analyzer/secrets/analyzer.go](../internal/analyzer/secrets/analyzer.go))
 
