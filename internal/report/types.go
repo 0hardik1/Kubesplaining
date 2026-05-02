@@ -150,16 +150,19 @@ type GraphLane struct {
 
 // GraphNode is a rendered rectangle in the attack graph. Kind is "entry" | "capability" | "impact".
 // Text content lives in Lines so the template can emit pre-wrapped <text> elements without doing
-// any layout work — Height is grown to match the wrapped line count.
+// any layout work — Height is grown to match the wrapped line count. AriaLabel is the per-node
+// accessible name announced by screen readers; without it every <g> would share a generic label
+// like "Entry point" / "Abused capability" / "Impact" and be indistinguishable while tabbing.
 type GraphNode struct {
-	ID       string
-	Kind     string
-	X        int
-	Y        int
-	Width    int
-	Height   int
-	SevClass string // crit | high | med
-	Lines    []GraphTextLine
+	ID        string
+	Kind      string
+	X         int
+	Y         int
+	Width     int
+	Height    int
+	SevClass  string // crit | high | med
+	AriaLabel string
+	Lines     []GraphTextLine
 }
 
 // GraphTextLine is one rendered <text> baseline inside a node, positioned relative to the node origin.

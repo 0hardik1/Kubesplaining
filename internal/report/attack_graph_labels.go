@@ -30,6 +30,18 @@ func shortKindLabel(kind, name string) string {
 	return kind + "  " + name
 }
 
+// capabilityAriaLabel composes the per-node accessible name for a capability
+// (Abused capability lane) <g> element. Generic "Abused capability" labels are
+// indistinguishable across nodes — embedding the rule ID, plain title, and
+// severity gives screen-reader users enough context to navigate the graph.
+func capabilityAriaLabel(f models.Finding) string {
+	title := stripMarkdown(f.Title)
+	if title == "" {
+		return "Abused capability: " + f.RuleID + " (severity " + string(f.Severity) + ")"
+	}
+	return "Abused capability: " + f.RuleID + " — " + title + " (severity " + string(f.Severity) + ")"
+}
+
 // impactLabel is the concise impact-lane heading for a risk category.
 func impactLabel(c models.RiskCategory) string {
 	switch c {

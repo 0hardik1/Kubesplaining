@@ -178,7 +178,7 @@ func writeHTML(path string, snapshot models.Snapshot, findings []models.Finding,
 			}
 			label := template.HTMLEscapeString(subjectDisplay(s))
 			if key := GlossaryKeyForSubject(s); key != "" {
-				return template.HTML(`<code class="gloss" data-glossary-key="` +
+				return template.HTML(`<code class="gloss" tabindex="0" data-glossary-key="` +
 					template.HTMLEscapeString(key) + `">` + label + `</code>`)
 			}
 			return template.HTML("<code>" + label + "</code>")
@@ -189,7 +189,7 @@ func writeHTML(path string, snapshot models.Snapshot, findings []models.Finding,
 			}
 			label := template.HTMLEscapeString(resourceDisplay(r))
 			if key := GlossaryKeyForResource(r); key != "" {
-				return template.HTML(`<code class="gloss" data-glossary-key="` +
+				return template.HTML(`<code class="gloss" tabindex="0" data-glossary-key="` +
 					template.HTMLEscapeString(key) + `">` + label + `</code>`)
 			}
 			return template.HTML("<code>" + label + "</code>")

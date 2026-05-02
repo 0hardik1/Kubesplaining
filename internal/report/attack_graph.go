@@ -249,13 +249,14 @@ func buildAttackGraph(findings []models.Finding) (AttackGraph, GraphPayload) {
 			{class: "node-meta", lineHeight: 14, leadIn: 17, lines: metaLines},
 		}, 12)
 		entryNodeList = append(entryNodeList, GraphNode{
-			ID:       "entry-" + slugify(k),
-			Kind:     "entry",
-			X:        laneEntryX,
-			Width:    laneEntryW,
-			Height:   height,
-			SevClass: e.SevClass,
-			Lines:    lines,
+			ID:        "entry-" + slugify(k),
+			Kind:      "entry",
+			X:         laneEntryX,
+			Width:     laneEntryW,
+			Height:    height,
+			SevClass:  e.SevClass,
+			AriaLabel: "Entry point: " + e.Title + ". " + e.Meta + ".",
+			Lines:     lines,
 		})
 	}
 
@@ -274,13 +275,14 @@ func buildAttackGraph(findings []models.Finding) (AttackGraph, GraphPayload) {
 			{class: "node-title", lineHeight: 17, leadIn: 22, lines: titleLines},
 		}, 14)
 		capNodes[i] = GraphNode{
-			ID:       "cap-" + slugify(f.RuleID+"-"+strconv.Itoa(i)),
-			Kind:     "capability",
-			X:        laneCapX,
-			Width:    laneCapW,
-			Height:   height,
-			SevClass: severityClass(f.Severity),
-			Lines:    lines,
+			ID:        "cap-" + slugify(f.RuleID+"-"+strconv.Itoa(i)),
+			Kind:      "capability",
+			X:         laneCapX,
+			Width:     laneCapW,
+			Height:    height,
+			SevClass:  severityClass(f.Severity),
+			AriaLabel: capabilityAriaLabel(f),
+			Lines:     lines,
 		}
 	}
 
@@ -294,13 +296,14 @@ func buildAttackGraph(findings []models.Finding) (AttackGraph, GraphPayload) {
 			{class: "node-meta", lineHeight: 14, leadIn: 18, lines: metaLines},
 		}, 14)
 		impactNodeList = append(impactNodeList, GraphNode{
-			ID:       "imp-" + categoryCSSKey(c),
-			Kind:     "impact",
-			X:        laneImpactX,
-			Width:    laneImpactW,
-			Height:   height,
-			SevClass: "crit", // impacts rendered with the critical accent gradient
-			Lines:    lines,
+			ID:        "imp-" + categoryCSSKey(c),
+			Kind:      "impact",
+			X:         laneImpactX,
+			Width:     laneImpactW,
+			Height:    height,
+			SevClass:  "crit", // impacts rendered with the critical accent gradient
+			AriaLabel: "Impact: " + impactLabel(c),
+			Lines:     lines,
 		})
 	}
 

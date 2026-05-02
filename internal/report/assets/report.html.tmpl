@@ -48,7 +48,9 @@
        shouting; the JS layer (initGlossTooltips in graph.js) shows the existing
        .kp-tooltip element with the entry on hover. */
     code.gloss { cursor: help; border-bottom: 1px dotted rgba(106,183,255,0.5); transition: background 0.12s ease, border-color 0.12s ease; }
-    code.gloss:hover { border-bottom-color: var(--accent); background: rgba(106,183,255,0.14); }
+    code.gloss:hover,
+    code.gloss:focus-visible { border-bottom-color: var(--accent); background: rgba(106,183,255,0.14); }
+    code.gloss:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
     h1, h2, h3, h4 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
     h1 { font-size: 30px; letter-spacing: -0.025em; line-height: 1.15; }
     h2 { font-size: 19px; }
@@ -393,6 +395,11 @@
     .legend-dot.med  { background: var(--medium); }
     .legend-dot.low  { background: var(--low); }
 
+    /* On wide viewports the heatmap grid fits within its column; .heat-scroll is a no-op
+       wrapper. On narrow viewports the wrapper becomes the scroll container, the grid
+       gets a min-width that forces real horizontal scroll, and the resource column
+       sticks so row labels stay visible while swiping the category columns. */
+    .heat-scroll { /* no-op on wide viewports */ }
     .heat { display: grid; grid-template-columns: minmax(220px, 1.2fr) repeat(5, minmax(80px, 1fr)); gap: 6px; margin-top: 4px; }
     .heat-hd { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-mut); padding: 8px 6px; text-align: center; border-bottom: 1px solid var(--border-soft); }
     .heat-hd.res { text-align: left; }
@@ -453,6 +460,7 @@
     .findings-search input:focus ~ .findings-search-hint { display: none; }
 
     .findings-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 16px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+    .findings-filters[hidden] { display: none; }
     .fl-active { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
     .fl-active[hidden] { display: none; }
     .fl-chip { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,0.02); color: var(--text); cursor: pointer; }
@@ -556,6 +564,13 @@
     .instance.finding > .instance-hd:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 10px; }
     .instance-title { flex: 1 1 240px; min-width: 0; font-size: 13.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
     .instance-title code { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 12.5px; background: rgba(255,255,255,0.10); padding: 1px 2px; border-radius: 4px; color: var(--text); }
+    /* Mobile-overflow guard: long unbreakable identifiers like Deployment/default/risky
+       force the title row past the viewport on phones unless we let them wrap. */
+    .rule-title, .rule-title code,
+    .instance-title, .instance-title code,
+    .finding .ev-row code,
+    .finding .ev-val code,
+    code.gloss { overflow-wrap: anywhere; word-break: break-word; }
     .instance-scope { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-mut); padding: 2px 7px; border: 1px solid var(--border-soft); border-radius: 999px; background: rgba(255,255,255,0.02); }
     .instance-score { font-size: 12px; color: var(--text-mut); font-variant-numeric: tabular-nums; }
     .instance-body { padding: 4px 16px 14px; border-top: 1px solid var(--border-soft); }
@@ -725,6 +740,16 @@
       .sev-grid { grid-template-columns: repeat(2, 1fr); }
       .dist-row { grid-template-columns: 130px 1fr 40px; }
       .heat { grid-template-columns: minmax(180px, 1fr) repeat(5, minmax(56px, 1fr)); }
+      /* Heatmap horizontal-scroll fallback: at 390px the grid's intrinsic min width
+         (180 + 5*56 + gaps ≈ 470px) still exceeds the viewport. Wrap it so the user
+         can swipe through the category columns; pin the resource column so the row
+         label remains visible. min-width on .heat forces real overflow into being. */
+      .heat-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity; }
+      .heat-scroll .heat { min-width: 520px; }
+      .heat-scroll .heat-hd.res,
+      .heat-scroll .heat-res { position: sticky; left: 0; background: var(--surface); z-index: 1; }
+      .heat-scroll .heat-hd:not(.res),
+      .heat-scroll .heat-cell { scroll-snap-align: start; }
     }
     @media (max-width: 640px) {
       main { padding: 16px 16px 60px; }
@@ -889,7 +914,8 @@
             {{ range .Graph.Nodes }}
               {{ $node := . }}
               {{ if eq .Kind "entry" }}
-                <g class="kp-node kp-node-entry" data-node-id="{{ .ID }}" data-kind="entry" data-sev="{{ .SevClass }}" tabindex="0" role="button" aria-label="Entry point">
+                <g class="kp-node kp-node-entry" data-node-id="{{ .ID }}" data-kind="entry" data-sev="{{ .SevClass }}" tabindex="0" role="button" aria-label="{{ .AriaLabel }}">
+                  <title>{{ .AriaLabel }}</title>
                   <rect class="kp-node-rect" x="{{ .X }}" y="{{ .Y }}" width="{{ .Width }}" height="{{ .Height }}" rx="10"
                         fill="#151c2c"
                         stroke="{{ if eq .SevClass "crit" }}#ff5568{{ else if eq .SevClass "high" }}#ff9a3c{{ else }}#6ab7ff{{ end }}"
@@ -900,7 +926,8 @@
                   {{ end }}
                 </g>
               {{ else if eq .Kind "capability" }}
-                <g class="kp-node kp-node-cap" data-node-id="{{ .ID }}" data-kind="capability" data-sev="{{ .SevClass }}" tabindex="0" role="button" aria-label="Abused capability">
+                <g class="kp-node kp-node-cap" data-node-id="{{ .ID }}" data-kind="capability" data-sev="{{ .SevClass }}" tabindex="0" role="button" aria-label="{{ .AriaLabel }}">
+                  <title>{{ .AriaLabel }}</title>
                   <rect class="kp-node-rect" x="{{ .X }}" y="{{ .Y }}" width="{{ .Width }}" height="{{ .Height }}" rx="8"
                         fill="#1a2338"
                         stroke="{{ if eq .SevClass "crit" }}#ff5568{{ else }}#ff9a3c{{ end }}"
@@ -911,7 +938,8 @@
                   {{ end }}
                 </g>
               {{ else if eq .Kind "impact" }}
-                <g class="kp-node kp-node-impact" data-node-id="{{ .ID }}" data-kind="impact" data-sev="{{ .SevClass }}" tabindex="0" role="button" aria-label="Impact">
+                <g class="kp-node kp-node-impact" data-node-id="{{ .ID }}" data-kind="impact" data-sev="{{ .SevClass }}" tabindex="0" role="button" aria-label="{{ .AriaLabel }}">
+                  <title>{{ .AriaLabel }}</title>
                   <rect class="kp-node-rect" x="{{ .X }}" y="{{ .Y }}" width="{{ .Width }}" height="{{ .Height }}" rx="10"
                         fill="url(#impact-crit)" stroke="#ff5568" stroke-width="1.2"/>
                   {{ range .Lines }}
@@ -1036,15 +1064,17 @@
           </div>
           <p class="sub">Cell color intensity = finding concentration. Rows sorted top-first by severity weight.</p>
         </div>
-        <div class="heat">
-          <div class="heat-hd res">Resource</div>
-          {{ range .HeatCats }}<div class="heat-hd">{{ .Label }}</div>{{ end }}
-          {{ range .HeatRows }}
-            <button type="button" class="heat-res heat-res-clickable" data-fl-target="resource:{{ .Label }}" aria-label="Show findings on {{ .Label }}"><span class="heat-sev {{ .SevClass }}">{{ .SevLabel }}</span>{{ .Label }}</button>
-            {{ range .Cells }}
-              {{ if .Count }}<button type="button" class="heat-cell heat-cell-clickable {{ .CatClass }} n{{ .Level }}" data-fl-target="resource:{{ .Resource }}|category:{{ .CatClass }}" aria-label="Show {{ .Count }} findings"><span>{{ .Count }}</span></button>{{ else }}<div class="heat-cell {{ .CatClass }} n{{ .Level }}"><span>{{ .Count }}</span></div>{{ end }}
+        <div class="heat-scroll">
+          <div class="heat">
+            <div class="heat-hd res">Resource</div>
+            {{ range .HeatCats }}<div class="heat-hd">{{ .Label }}</div>{{ end }}
+            {{ range .HeatRows }}
+              <button type="button" class="heat-res heat-res-clickable" data-fl-target="resource:{{ .Label }}" aria-label="Show findings on {{ .Label }}"><span class="heat-sev {{ .SevClass }}">{{ .SevLabel }}</span>{{ .Label }}</button>
+              {{ range .Cells }}
+                {{ if .Count }}<button type="button" class="heat-cell heat-cell-clickable {{ .CatClass }} n{{ .Level }}" data-fl-target="resource:{{ .Resource }}|category:{{ .CatClass }}" aria-label="Show {{ .Count }} findings"><span>{{ .Count }}</span></button>{{ else }}<div class="heat-cell {{ .CatClass }} n{{ .Level }}"><span>{{ .Count }}</span></div>{{ end }}
+              {{ end }}
             {{ end }}
-          {{ end }}
+          </div>
         </div>
       </div>
     </section>

@@ -1163,16 +1163,46 @@
     tooltip.hidden = false;
   }
 
-  document.addEventListener('mouseover', function(ev) {
-    var el = ev.target.closest && ev.target.closest('code.gloss[data-glossary-key]');
-    if (!el) return;
+  function glossTrigger(ev) {
+    return ev.target.closest && ev.target.closest('code.gloss[data-glossary-key]');
+  }
+  function showGlossFor(el) {
     var entry = glossary[el.getAttribute('data-glossary-key')];
     if (!entry) return;
     showFor(el, entry);
+  }
+  function hideGloss() {
+    tooltip.hidden = true;
+  }
+  document.addEventListener('mouseover', function(ev) {
+    var el = glossTrigger(ev);
+    if (el) showGlossFor(el);
   });
   document.addEventListener('mouseout', function(ev) {
-    if (!ev.target.closest || !ev.target.closest('code.gloss[data-glossary-key]')) return;
-    tooltip.hidden = true;
+    if (glossTrigger(ev)) hideGloss();
+  });
+  // Keyboard parity: focusing a code.gloss span (Tab into it) reveals the same tooltip,
+  // and blurring hides it. Without this, keyboard-only users can't reach the glossary.
+  document.addEventListener('focusin', function(ev) {
+    var el = glossTrigger(ev);
+    if (el) showGlossFor(el);
+  });
+  document.addEventListener('focusout', function(ev) {
+    if (glossTrigger(ev)) hideGloss();
+  });
+  // Touch parity: tap toggles the tooltip. Tap on the same term again — or anywhere
+  // outside the tooltip — dismisses. iOS dispatches `click` on a tap, so the same
+  // listener covers both touch and mouse-click.
+  document.addEventListener('click', function(ev) {
+    var el = glossTrigger(ev);
+    if (el) {
+      if (tooltip.hidden) showGlossFor(el); else hideGloss();
+      return;
+    }
+    if (!tooltip.hidden) hideGloss();
+  });
+  document.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Escape' && !tooltip.hidden) hideGloss();
   });
   // Hide on scroll so the tooltip doesn't drift away from its anchor.
   window.addEventListener('scroll', function() {
