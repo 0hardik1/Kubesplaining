@@ -275,10 +275,64 @@
     .kp-tt-tag { display: inline-block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; padding: 1px 2px; margin-right: 5px; border-radius: 999px; background: rgba(106,183,255,0.12); color: var(--accent); border: 1px solid rgba(106,183,255,0.25); vertical-align: middle; }
     .kp-tt-hint { margin-top: 6px; color: var(--accent); font-size: 11px; opacity: 0.8; }
 
+    /* "Attack paths from here" cards inside an entry-point panel. Each card is a button
+       so the whole surface is the tap target — important on phones where users thumb-scroll
+       and a tiny "View" link would be a miss. The left severity stripe (border-left-color)
+       carries severity at a glance so users can prioritize without reading the badge. */
+    .kp-paths-section { margin-top: 16px; }
+    .kp-paths-hint { color: var(--text-mut); font-size: 12.5px; line-height: 1.55; margin: 0 0 10px; }
+    .kp-path-card { display: block; width: 100%; min-height: 44px; text-align: left; font: inherit; color: var(--text); padding: 12px 14px; margin: 0 0 10px; background: rgba(255,255,255,0.025); border: 1px solid var(--border); border-left: 3px solid var(--border-strong); border-radius: 12px; cursor: pointer; transition: background 0.12s ease, border-color 0.12s ease, transform 0.12s ease; }
+    .kp-path-card:last-child { margin-bottom: 0; }
+    .kp-path-card:hover { background: rgba(255,255,255,0.05); border-color: var(--border-strong); }
+    .kp-path-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .kp-path-card:active { transform: scale(0.995); }
+    .kp-path-card-crit { border-left-color: var(--critical); }
+    .kp-path-card-high { border-left-color: var(--high); }
+    .kp-path-card-med  { border-left-color: var(--medium); }
+    .kp-path-card-hd { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
+    .kp-path-card-title { font-size: 13.5px; font-weight: 600; line-height: 1.4; color: var(--text); margin-bottom: 6px; word-break: break-word; }
+    .kp-path-card-meta { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; font-size: 12px; color: var(--text-mut); margin-bottom: 8px; }
+    .kp-path-arrow { color: var(--high); font-weight: 700; }
+    .kp-path-impact { color: var(--text); }
+    .kp-path-hops { padding: 2px 8px; border-radius: 999px; background: rgba(106,183,255,0.10); color: #bedbff; border: 1px solid rgba(106,183,255,0.22); font-size: 11px; }
+    .kp-path-cta { display: inline-block; font-size: 12px; font-weight: 600; color: var(--accent); letter-spacing: 0.02em; }
+
+    /* Back-to-entry breadcrumb. Appears at the top of a capability panel only when the
+       user reached it by tapping a path card from an entry view — direct SVG node clicks
+       and the close button both clear navStack, so we never show stale breadcrumbs. */
+    .kp-back-link { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12.5px; color: var(--text-mut); background: transparent; border: 1px dashed var(--border); border-radius: 999px; padding: 5px 11px; margin: 0 0 12px; cursor: pointer; transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease; }
+    .kp-back-link:hover { color: var(--text); border-color: var(--border-strong); background: rgba(255,255,255,0.04); }
+    .kp-back-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .kp-back-arrow { color: var(--accent); font-weight: 700; }
+    .kp-back-link strong { color: var(--text); font-weight: 600; word-break: break-word; }
+
+    /* Backdrop overlay. Hidden on desktop (no overlay needed when the panel is a side
+       rail), faded in only at the mobile breakpoint via the @media block below. */
+    .kp-backdrop { position: fixed; inset: 0; background: rgba(7, 11, 22, 0.0); z-index: 49; opacity: 0; pointer-events: none; transition: opacity 0.18s ease, background-color 0.18s ease; }
+    .kp-backdrop.kp-backdrop-on { opacity: 1; }
+
     @media (max-width: 1180px) {
       .kp-detail { position: relative; top: auto; right: auto; width: 100%; max-width: 100%; margin-top: 12px; transform: translateY(8px); }
       .kp-detail.kp-open { transform: translateY(0); }
     }
+
+    /* Phone bottom-sheet treatment. Below 720px the side panel becomes a true full-screen
+       modal: slides up from the bottom, sticky header so close is always thumb-reachable,
+       backdrop dims the page, and body scroll is locked so the page underneath doesn't
+       slide while the user reads the sheet. The 720px breakpoint is intentional —
+       720–1180px (tablets) keep the inline-below-SVG layout where horizontal real estate
+       is enough that a sheet would feel heavy. */
+    @media (max-width: 720px) {
+      .kp-detail { position: fixed; inset: 0; top: 0; right: 0; left: 0; bottom: 0; width: 100vw; max-width: 100vw; max-height: 100vh; height: 100vh; margin: 0; padding: 0 18px calc(env(safe-area-inset-bottom, 0px) + 24px); border-radius: 0; border-left: 1px solid var(--border-strong); border-right: 1px solid var(--border-strong); border-bottom: 0; box-shadow: 0 -10px 40px rgba(0,0,0,0.7); transform: translateY(100%); transition: transform 0.24s cubic-bezier(0.2, 0.8, 0.2, 1); overflow-y: auto; -webkit-overflow-scrolling: touch; z-index: 70; }
+      .kp-detail.kp-open { transform: translateY(0); }
+      .kp-detail-hd { position: sticky; top: 0; background: var(--surface); padding: 14px 0 10px; margin: 0 -18px 12px; padding-left: 18px; padding-right: 18px; z-index: 1; border-bottom: 1px solid var(--border); }
+      .kp-detail-hd h3 { font-size: 15px; }
+      .kp-detail-close { width: 36px; height: 36px; font-size: 22px; }
+      .kp-backdrop { background: rgba(7, 11, 22, 0.6); pointer-events: auto; backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); }
+      .kp-path-card { padding: 14px 14px; min-height: 56px; }
+      .kp-path-card-title { font-size: 14px; }
+    }
+    body.kp-modal-open { overflow: hidden; }
 
     .narratives { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; }
     /* Narrative card: severity badge is the first child and pinned to the top-left corner
@@ -870,6 +924,7 @@
         </div>
       </div>
 
+      <div class="kp-backdrop" hidden aria-hidden="true"></div>
       <aside class="kp-detail" hidden role="dialog" aria-modal="false" aria-labelledby="kp-detail-title">
         <header class="kp-detail-hd">
           <h3 id="kp-detail-title">Click a node</h3>
