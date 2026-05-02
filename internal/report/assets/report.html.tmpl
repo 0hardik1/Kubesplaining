@@ -101,6 +101,16 @@
     .tldr strong { color: var(--text); font-weight: 600; }
     .tldr code { color: #ffdbe0; background: rgba(255,85,104,0.12); padding: 1px 2px; border-radius: 4px; }
 
+    .admission-banner { margin-top: 12px; font-size: 13.5px; line-height: 1.55; color: var(--text-mut);
+      padding: 10px 14px; border: 1px solid rgba(106,183,255,0.28);
+      background: rgba(106,183,255,0.06); border-radius: 10px; }
+    .admission-banner strong { color: var(--text); font-weight: 600; }
+    .admission-banner code { color: var(--accent); background: rgba(106,183,255,0.10); padding: 1px 4px; border-radius: 4px; }
+    .admission-banner details { margin-top: 6px; }
+    .admission-banner summary { cursor: pointer; color: var(--accent); font-size: 12.5px; }
+    .admission-banner ul { margin: 6px 0 0; padding-left: 18px; }
+    .admission-banner li { margin: 2px 0; }
+
     .sev-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 16px; }
     .sev-tile { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px 12px 22px;
       background: rgba(10,13,22,0.35); position: relative; overflow: hidden; }
@@ -712,6 +722,24 @@
           <div class="sev-tile med"><div class="sev-num">{{ .Summary.Medium }}</div><div class="sev-lbl">Medium</div></div>
           <div class="sev-tile low"><div class="sev-num">{{ .Summary.Low }}</div><div class="sev-lbl">Low</div></div>
         </div>
+
+        {{ if and .Admission.Mode (or .Admission.Suppressed .Admission.Attenuated) }}
+        <div class="admission-banner">
+          <strong>Pod Security Admission:</strong>
+          {{ if .Admission.Suppressed }}{{ .Admission.Suppressed }} pod-security {{ pluralize .Admission.Suppressed "finding" "findings" }} suppressed{{ end }}{{ if and .Admission.Suppressed .Admission.Attenuated }} · {{ end }}{{ if .Admission.Attenuated }}{{ .Admission.Attenuated }} {{ pluralize .Admission.Attenuated "finding" "findings" }} attenuated{{ end }}
+          because the workload's namespace carries a <code>pod-security.kubernetes.io/enforce</code> label that would block it at admission time. Run with <code>--admission-mode=off</code> to see every finding regardless of admission state, or <code>--admission-mode=attenuate</code> to keep them visible at reduced severity.
+          {{ if .Admission.SuppressedByNamespace }}
+          <details>
+            <summary>Suppressed findings by namespace</summary>
+            <ul>
+              {{ range $ns, $rules := .Admission.SuppressedByNamespace }}
+              <li><strong>{{ $ns }}</strong>{{ range $rule, $count := $rules }} — <code>{{ $rule }}</code> ×{{ $count }}{{ end }}</li>
+              {{ end }}
+            </ul>
+          </details>
+          {{ end }}
+        </div>
+        {{ end }}
       </div>
 
       <div class="card risk-card">

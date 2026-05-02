@@ -716,3 +716,35 @@ metadata:
 type: Opaque
 data:
   dummy: ZmFrZQ==
+---
+# === MODULE: admission-aware reweight (PSA enforce label applied after pod) ===
+# The script applies pod-security.kubernetes.io/enforce=restricted to this namespace
+# AFTER the deployment rolls out. The privileged pod stays running (PSA only checks
+# at create/update time), but the snapshot captures both: the running pod AND the
+# enforce label. This is the realistic "label was tightened after the workload was
+# already deployed" scenario the suppress mode targets.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: psa-suppressed
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: psa-priv-app
+  namespace: psa-suppressed
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: psa-priv-app
+  template:
+    metadata:
+      labels:
+        app: psa-priv-app
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.27
+          securityContext:
+            privileged: true

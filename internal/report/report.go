@@ -16,6 +16,14 @@ import (
 // Write emits the requested formats (html, json, csv, sarif) to outputDir along with the snapshot metadata side-file.
 // It always writes metadata.json; unsupported format names return an error without partial cleanup.
 func Write(outputDir string, formats []string, snapshot models.Snapshot, findings []models.Finding) ([]string, error) {
+	return WriteWithAdmission(outputDir, formats, snapshot, findings, models.AdmissionSummary{})
+}
+
+// WriteWithAdmission is Write plus an AdmissionSummary that is rendered into the HTML
+// header banner, written as a sidecar admission-summary.json alongside the metadata file
+// (so `kubesplaining report` can re-render the banner without re-running analysis), and
+// embedded in the SARIF run properties for downstream CI consumers.
+func WriteWithAdmission(outputDir string, formats []string, snapshot models.Snapshot, findings []models.Finding, admission models.AdmissionSummary) ([]string, error) {
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create output directory: %w", err)
 	}
@@ -27,6 +35,14 @@ func Write(outputDir string, formats []string, snapshot models.Snapshot, finding
 	}
 	written = append(written, metadataPath)
 
+	if admission.Mode != "" {
+		admissionPath, err := WriteAdmissionSummary(outputDir, admission)
+		if err != nil {
+			return written, err
+		}
+		written = append(written, admissionPath)
+	}
+
 	for _, format := range dedupeFormats(formats) {
 		switch format {
 		case "json":
@@ -37,7 +53,7 @@ func Write(outputDir string, formats []string, snapshot models.Snapshot, finding
 			written = append(written, path)
 		case "html":
 			path := filepath.Join(outputDir, "report.html")
-			if err := writeHTML(path, snapshot, findings); err != nil {
+			if err := writeHTML(path, snapshot, findings, admission); err != nil {
 				return written, err
 			}
 			written = append(written, path)
@@ -49,7 +65,7 @@ func Write(outputDir string, formats []string, snapshot models.Snapshot, finding
 			written = append(written, path)
 		case "sarif":
 			path := filepath.Join(outputDir, "findings.sarif")
-			if err := writeSARIF(path, findings); err != nil {
+			if err := writeSARIF(path, findings, admission); err != nil {
 				return written, err
 			}
 			written = append(written, path)

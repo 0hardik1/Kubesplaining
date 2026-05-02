@@ -27,12 +27,15 @@ type Module interface {
 	Analyze(ctx context.Context, snapshot models.Snapshot) ([]models.Finding, error)
 }
 
-// Options selects which modules run, sets a severity floor, and tunes privesc path depth.
+// Options selects which modules run, sets a severity floor, tunes privesc path depth,
+// and chooses how the engine reacts to namespace-level admission controls.
 type Options struct {
 	OnlyModules     []string
 	SkipModules     []string
 	Threshold       models.Severity
 	MaxPrivescDepth int
+	// AdmissionMode controls the admission-aware reweight stage. Empty defaults to suppress.
+	AdmissionMode AdmissionMode
 }
 
 // Engine holds the set of registered analysis modules to run.
@@ -69,8 +72,16 @@ func NewWithConfig(cfg Config) *Engine {
 	}
 }
 
-// Analyze runs the selected modules in parallel, filters findings at or above the threshold, and returns them sorted by severity then score.
-func (e *Engine) Analyze(ctx context.Context, snapshot models.Snapshot, opts Options) ([]models.Finding, error) {
+// Analyze runs the selected modules in parallel, applies admission-aware reweighting,
+// correlates and dedupes the results, filters at or above the severity threshold, and
+// returns them sorted by severity then score along with an AdmissionSummary describing
+// what the reweight stage did.
+func (e *Engine) Analyze(ctx context.Context, snapshot models.Snapshot, opts Options) (AnalyzeResult, error) {
+	mode := opts.AdmissionMode
+	if mode == "" {
+		mode = AdmissionModeSuppress
+	}
+
 	selected := make([]Module, 0, len(e.modules))
 	for _, module := range e.modules {
 		if len(opts.OnlyModules) > 0 && !slices.Contains(opts.OnlyModules, module.Name()) {
@@ -83,7 +94,7 @@ func (e *Engine) Analyze(ctx context.Context, snapshot models.Snapshot, opts Opt
 	}
 
 	if len(selected) == 0 {
-		return nil, fmt.Errorf("no analysis modules selected")
+		return AnalyzeResult{}, fmt.Errorf("no analysis modules selected")
 	}
 
 	var (
@@ -110,6 +121,7 @@ func (e *Engine) Analyze(ctx context.Context, snapshot models.Snapshot, opts Opt
 
 	wg.Wait()
 
+	findings, admissionSummary := applyAdmissionMitigations(findings, snapshot, mode)
 	findings = correlate(findings)
 	findings = dedupe(findings)
 
@@ -133,5 +145,5 @@ func (e *Engine) Analyze(ctx context.Context, snapshot models.Snapshot, opts Opt
 		return filtered[i].Title < filtered[j].Title
 	})
 
-	return filtered, firstErr
+	return AnalyzeResult{Findings: filtered, Admission: admissionSummary}, firstErr
 }

@@ -25,6 +25,8 @@ Each rule produces zero or more findings against a given snapshot.
 
 ### Pod Security ([internal/analyzer/podsec/analyzer.go](../internal/analyzer/podsec/analyzer.go))
 
+> **Admission-aware reweight.** Every pod-security finding below is filtered through [`internal/analyzer/admission/mitigation/`](../internal/analyzer/admission/mitigation/psa.go) before the report is written. The default `--admission-mode=suppress` drops findings that the namespace's `pod-security.kubernetes.io/enforce` label would block at admission time (e.g. `restricted` blocks `privileged`, `hostPath`, `hostNetwork/PID/IPC`, `allowPrivilegeEscalation`, `runAsRoot`; `baseline` blocks the first four but not `allowPrivilegeEscalation` or `runAsRoot`). The suppression count appears in the HTML report header banner and `admission-summary.json`. Use `--admission-mode=attenuate` to keep findings visible at reduced severity (severity drops exactly one bucket, score snaps to the new bucket's floor) with an `admission:mitigated-psa-<level>` tag. Use `--admission-mode=off` to disable the reweight entirely. Namespaces with only `audit`/`warn` labels are never suppressed — they pick up `admission:audit-psa-<level>` / `admission:warn-psa-<level>` tags so the report can flag "logged but not blocked."
+
 | Rule ID | Sev | Title | What it detects | Remediation |
 | --- | --- | --- | --- | --- |
 | KUBE-ESCAPE-001 | CRITICAL | Privileged container | `securityContext.privileged: true` | Drop privileged, add only the specific capabilities needed |
@@ -107,7 +109,7 @@ The following rules are on the roadmap but not yet implemented. See [PLAN.md](..
 
 **Service Account** — cross-module risk correlation; DaemonSet blast-radius flag.
 
-**Admission** — "no mutating webhook present" / "no policy engine detected" posture findings.
+**Admission** — "no mutating webhook present" / "no policy engine detected" posture findings; ValidatingAdmissionPolicy (v1 CEL) collection + cel-go evaluation; operator-attestation flow for Kyverno / Gatekeeper effect that cannot be reproduced offline (see Phase 4 of the admission-aware design).
 
 **Container Security** — missing resource limits/requests (DoS), missing probes, lifecycle exec commands, image registry allowlist / digest pinning.
 

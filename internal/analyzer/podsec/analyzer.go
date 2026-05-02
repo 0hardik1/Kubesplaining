@@ -109,7 +109,7 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 			}
 
 			findings = appendFinding(findings, seen, newFindingFromContent(target, ruleID,
-				severityForScore(score), models.CategoryPrivilegeEscalation, scoring.Clamp(score),
+				scoring.SeverityForScore(score), models.CategoryPrivilegeEscalation, scoring.Clamp(score),
 				map[string]any{"volume": volume.Name, "path": volume.HostPath.Path}, "hostPath", content).withSuffix(":"+volume.Name))
 		}
 
@@ -313,21 +313,5 @@ func resourceAPIGroup(kind string) string {
 		return batchv1.GroupName
 	default:
 		return ""
-	}
-}
-
-// severityForScore maps a numeric base score to the corresponding severity bucket.
-func severityForScore(score float64) models.Severity {
-	switch {
-	case score >= 9.0:
-		return models.SeverityCritical
-	case score >= 7.0:
-		return models.SeverityHigh
-	case score >= 4.0:
-		return models.SeverityMedium
-	case score >= 2.0:
-		return models.SeverityLow
-	default:
-		return models.SeverityInfo
 	}
 }
