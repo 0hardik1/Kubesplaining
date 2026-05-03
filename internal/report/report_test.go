@@ -128,6 +128,43 @@ func TestBuildHTMLDataGroupsFindings(t *testing.T) {
 	if len(data.TopNamespaces) == 0 || data.TopNamespaces[0].Label != "default" {
 		t.Fatalf("unexpected top namespaces: %#v", data.TopNamespaces)
 	}
+	// The recon panel must always be populated end-to-end so the template never
+	// nil-derefs; HeadlineChips is the four-pill teaser shown on the closed disclosure.
+	if got := len(data.Recon.HeadlineChips); got != 4 {
+		t.Fatalf("Recon.HeadlineChips: want 4, got %d", got)
+	}
+	if data.Recon.Shape.NodeCount != 0 {
+		t.Errorf("Recon.Shape.NodeCount: want 0 from empty snapshot, got %d", data.Recon.Shape.NodeCount)
+	}
+}
+
+// TestBuildHTMLDataReconPlumbsPrivescAnchor verifies that a privesc finding present in
+// the input slice surfaces a clickable anchor on the recon panel — the cheapest end-to-end
+// proof that buildRecon is wired into BuildHTMLData rather than left dangling.
+func TestBuildHTMLDataReconPlumbsPrivescAnchor(t *testing.T) {
+	t.Parallel()
+
+	snapshot := models.NewSnapshot()
+	findings := []models.Finding{
+		{
+			ID:       "f-privesc",
+			RuleID:   "KUBE-PRIVESC-PATH-CLUSTER-ADMIN",
+			Severity: models.SeverityCritical,
+			Category: models.CategoryPrivilegeEscalation,
+			Title:    "privesc path",
+			Subject:  &models.SubjectRef{Kind: "ServiceAccount", Name: "risky", Namespace: "default"},
+			Tags:     []string{"module:privesc"},
+		},
+	}
+
+	data := BuildHTMLData(snapshot, findings)
+	if data.Recon.Ownership.PrivescToAdminCount != 1 {
+		t.Errorf("PrivescToAdminCount: want 1, got %d", data.Recon.Ownership.PrivescToAdminCount)
+	}
+	if data.Recon.Ownership.PrivescToAdminAnchor != "finding-KUBE-PRIVESC-PATH-CLUSTER-ADMIN" {
+		t.Errorf("PrivescToAdminAnchor: want finding-KUBE-PRIVESC-PATH-CLUSTER-ADMIN, got %q",
+			data.Recon.Ownership.PrivescToAdminAnchor)
+	}
 }
 
 func TestBuildHTMLDataTOCEntries(t *testing.T) {
@@ -440,6 +477,9 @@ func TestHTMLReportInteractiveGraph(t *testing.T) {
 		`class="kp-detail"`,
 		`class="kp-tooltip"`,
 		`KUBE-PRIVESC-009`,
+		// Cluster-reconnaissance panel — collapsed by default but always rendered.
+		`class="recon-card"`,
+		`Cluster reconnaissance`,
 	}
 	for _, needle := range mustContain {
 		if !strings.Contains(html, needle) {

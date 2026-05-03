@@ -11,6 +11,7 @@ import (
 	"unicode"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/permissions"
 )
 
 // BuildSummary counts findings by severity to produce a Summary.
@@ -96,6 +97,8 @@ func BuildHTMLData(snapshot models.Snapshot, findings []models.Finding) htmlRepo
 	summary := BuildSummary(findings)
 	risk, level, gaugeColor := computeRiskIndex(summary)
 	graph, graphPayload := buildAttackGraph(findings)
+	subjects := permissions.Aggregate(snapshot)
+	recon := buildRecon(snapshot, findings, subjects)
 
 	// AnchorByFindingID maps Finding.ID → the rule-level anchor ("finding-<RuleID>") on
 	// the FIRST occurrence of each rule across all modules in render order. The narrative
@@ -127,6 +130,7 @@ func BuildHTMLData(snapshot models.Snapshot, findings []models.Finding) htmlRepo
 
 	data := htmlReportData{
 		Snapshot:      snapshot,
+		Recon:         recon,
 		Summary:       summary,
 		Findings:      findings,
 		Modules:       modules,
