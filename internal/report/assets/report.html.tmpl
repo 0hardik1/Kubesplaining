@@ -764,6 +764,16 @@
     @media (max-width: 480px) {
       .finding .impact { grid-template-columns: 1fr; gap: 4px; }
       .finding .impact .k { padding-top: 0; }
+      /* Affected-subjects cards: at iPhone widths the 240px flex-basis on
+         .instance-title pushed the identifier off row 1, then wrapping bumped
+         the score to row 3. Force the identifier to its own row (order: 99
+         flows it last) and pin the score to the right edge of row 1, so each
+         card is 2 rows: chrome (▸ + sev + scope + score) over identifier. */
+      .instance.finding { margin-bottom: 4px; }
+      .instance.finding > .instance-hd { padding: 8px 12px; gap: 6px 8px; }
+      .instance.finding > .instance-hd .instance-title { flex: 1 1 100%; order: 99; font-size: 13px; }
+      .instance.finding > .instance-hd .instance-score { margin-left: auto; }
+      .instance-scope { padding: 1px 6px; font-size: 10px; letter-spacing: 0.06em; }
     }
 
     .notes { display: grid; gap: 8px; font-size: 13px; color: var(--text-mut); }
