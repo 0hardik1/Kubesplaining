@@ -504,9 +504,19 @@
     .toc-row a { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--text); padding: 6px 10px; border-radius: 8px; font-size: 13px; line-height: 1.35; transition: background 0.12s ease; }
     .toc-row a:hover { background: rgba(255,255,255,0.04); }
     .toc-row .badge-sev { flex: 0 0 auto; }
-    .toc-row-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .toc-row-title { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+    /* TOC titles embed backtick-quoted resource refs (e.g. `ServiceAccount/ns/name`) that
+       inlineHTML turns into <code>. The global code rule's mono font + tinted card looks
+       out-of-place in this dense navigation row and, on iPhone-class viewports, the
+       unbreakable mono token would push the row past the viewport (Safari then autosizes
+       it up, which is what made the text look "much bigger than the rest of the page").
+       Reset code to inherit the row's font so the ref reads as prose. */
+    .toc-row-title code { font: inherit; background: transparent; border: 0; padding: 0; border-radius: 0; }
     .toc-row-count { flex: 0 0 auto; font-size: 11px; color: var(--text-mut); background: rgba(255,255,255,0.04); padding: 1px 7px; border-radius: 999px; font-variant-numeric: tabular-nums; }
-    @media (max-width: 720px) { .toc-rows { grid-template-columns: 1fr; } }
+    /* minmax(0, 1fr) — not bare 1fr — so the column track may shrink below its grid
+       item's min-content. Without this, a long unbreakable child token would expand the
+       track and punch the panel out past the viewport on phones. */
+    @media (max-width: 720px) { .toc-rows { grid-template-columns: minmax(0, 1fr); } }
 
     .module-section { margin-top: 28px; }
     .module-section .module-hd { display: flex; align-items: baseline; gap: 14px; margin-bottom: 12px; flex-wrap: wrap; padding-bottom: 12px; border-bottom: 1px solid var(--border-soft); }
