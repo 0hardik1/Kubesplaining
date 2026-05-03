@@ -428,10 +428,10 @@ func collectSecretReaders(subjects map[string]*permissions.EffectivePermissions)
 
 func grantsSecretRead(rules []permissions.EffectiveRule) bool {
 	for _, r := range rules {
-		if !(sliceContains(r.Resources, "secrets") || sliceContains(r.Resources, "*")) {
+		if !sliceContains(r.Resources, "secrets") && !sliceContains(r.Resources, "*") {
 			continue
 		}
-		if !(sliceContains(r.APIGroups, "") || sliceContains(r.APIGroups, "*")) {
+		if !sliceContains(r.APIGroups, "") && !sliceContains(r.APIGroups, "*") {
 			continue
 		}
 		if sliceContains(r.Verbs, "*") || sliceContains(r.Verbs, "get") || sliceContains(r.Verbs, "list") || sliceContains(r.Verbs, "watch") {
