@@ -114,6 +114,99 @@
     .admission-banner ul { margin: 6px 0 0; padding-left: 18px; }
     .admission-banner li { margin: 2px 0; }
 
+    /* Cluster reconnaissance — collapsible top-of-report panel surfacing
+       pentester-relevant snapshot facts. Sits as the first card inside <main>
+       (above the executive-summary hero) so the recon view is the first thing
+       the reader sees, and stays out of the sticky topbar to avoid the
+       sticky-grow-on-expand layout footgun. */
+    .recon-card { background: linear-gradient(180deg, rgba(21,28,44,0.85) 0%, rgba(18,24,38,0.85) 100%);
+      border: 1px solid var(--border); border-radius: 14px; margin-bottom: 16px; overflow: hidden; }
+    .recon-card[open] { border-color: var(--border-strong); }
+    .recon-card > summary { cursor: pointer; list-style: none; padding: 14px 18px;
+      display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; }
+    .recon-card > summary::-webkit-details-marker { display: none; }
+    /* Big, clearly-affordant disclosure triangle. The default <details> marker is
+       too easy to miss on a dark surface, and on phones a 13px ▸ next to wide
+       letter-spacing turned into "is this clickable?" guesswork. Use a chunky
+       BLACK RIGHT-POINTING TRIANGLE inside an outlined chip so the affordance
+       reads as a button. */
+    .recon-card > summary::before {
+      content: '▶'; color: var(--accent); font-size: 11px; font-weight: 700;
+      width: 22px; height: 22px; flex: 0 0 22px; line-height: 22px; text-align: center;
+      border: 1px solid rgba(106,183,255,0.4); border-radius: 6px;
+      background: rgba(106,183,255,0.08);
+      transition: transform 0.18s ease, background 0.18s ease;
+      display: inline-block; }
+    .recon-card[open] > summary::before { transform: rotate(90deg); background: rgba(106,183,255,0.18); }
+    .recon-card > summary:hover::before { background: rgba(106,183,255,0.18); }
+    .recon-title { font-size: 12px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.14em; color: var(--text); }
+    .recon-teaser { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+    .recon-chip { display: inline-flex; align-items: baseline; gap: 5px; font-size: 12px;
+      font-weight: 500; padding: 4px 10px; border-radius: 999px;
+      border: 1px solid var(--border); background: rgba(255,255,255,0.02); color: var(--text-mut); }
+    .recon-chip strong { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
+    .recon-chip-ok { border-color: rgba(82,227,164,0.32); background: rgba(82,227,164,0.06); }
+    .recon-chip-warn { border-color: rgba(255,154,60,0.36); background: rgba(255,154,60,0.07); }
+    .recon-chip-warn strong { color: #ffc89a; }
+    .recon-chip-danger { border-color: rgba(255,85,104,0.4); background: rgba(255,85,104,0.08); }
+    .recon-chip-danger strong { color: #ffb4be; }
+    .recon-hint { margin-left: auto; font-size: 11.5px; color: var(--text-dim); font-style: italic; }
+    .recon-card[open] .recon-hint { display: none; }
+    .recon-body { padding: 4px 18px 18px; display: grid; gap: 16px;
+      grid-template-columns: 1fr 1fr; border-top: 1px solid var(--border-soft); }
+    @media (max-width: 900px) { .recon-body { grid-template-columns: 1fr; } }
+    .recon-section { padding: 12px 0 0; min-width: 0; }
+    .recon-section .kicker { margin-bottom: 8px; }
+    .recon-grid { display: grid; grid-template-columns: max-content 1fr;
+      column-gap: 14px; row-gap: 0; font-size: 13px; line-height: 1.5; color: var(--text); }
+    .recon-row { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1;
+      align-items: baseline; padding: 5px 0; border-top: 1px solid rgba(255,255,255,0.04); }
+    .recon-row:first-child { border-top: 0; padding-top: 0; }
+    .recon-key { color: var(--text-dim); font-size: 10.5px; text-transform: uppercase;
+      letter-spacing: 0.08em; font-weight: 600; white-space: nowrap; }
+    .recon-val { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline;
+      min-width: 0; word-break: break-word; }
+    .recon-val code, .recon-val .recon-tag {
+      padding: 1px 6px; border-radius: 4px;
+      font-family: "JetBrains Mono", "SF Mono", Menlo, monospace;
+      font-size: 11.5px; color: var(--text);
+      background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.06);
+      max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
+    .recon-tag { display: inline-flex; align-items: center; gap: 4px; }
+    .recon-tag.tag-ok { color: #a6f2cf; border-color: rgba(82,227,164,0.32); background: rgba(82,227,164,0.10); }
+    .recon-tag.tag-warn { color: #ffc89a; border-color: rgba(255,154,60,0.36); background: rgba(255,154,60,0.10); }
+    .recon-tag.tag-danger { color: #ffb4be; border-color: rgba(255,85,104,0.4); background: rgba(255,85,104,0.12); }
+    .recon-tag.tag-mut { color: var(--text-mut); }
+    a.recon-tag { text-decoration: none; }
+    a.recon-tag:hover { background: rgba(255,255,255,0.06); border-color: var(--border-strong); }
+    .recon-more { font-size: 11.5px; color: var(--text-mut); }
+    .recon-more a { color: var(--accent); }
+    .recon-empty { color: var(--text-dim); font-style: italic; font-size: 12px; }
+    .recon-prov { grid-column: 1 / -1; margin-top: 4px; padding-top: 12px;
+      border-top: 1px solid var(--border-soft); }
+    .recon-prov > summary { cursor: pointer; list-style: none; font-size: 11px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-mut); padding: 4px 0; }
+    .recon-prov > summary::-webkit-details-marker { display: none; }
+    .recon-prov > summary::before { content: '▸ '; color: var(--accent); }
+    .recon-prov[open] > summary::before { content: '▾ '; }
+    .recon-prov-inner { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding-top: 10px; }
+    @media (max-width: 720px) { .recon-prov-inner { grid-template-columns: 1fr; } }
+    .recon-prov ul { margin: 4px 0; padding: 0; list-style: none;
+      font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: var(--text-mut);
+      max-height: 180px; overflow-y: auto; }
+    .recon-prov li { padding: 1px 0; word-break: break-all; }
+    .recon-prov details summary { cursor: pointer; }
+    @media (max-width: 640px) {
+      .recon-card > summary { padding: 12px 14px; gap: 8px 10px; }
+      .recon-title { font-size: 11px; letter-spacing: 0.10em; }
+      .recon-chip { font-size: 11px; padding: 3px 8px; }
+      .recon-hint { display: none; }
+      .recon-body { padding: 4px 14px 14px; gap: 12px; }
+      .recon-row { grid-template-columns: 1fr; padding: 4px 0; row-gap: 2px; }
+      .recon-key { padding-top: 2px; }
+    }
+
     .sev-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 16px; }
     .sev-tile { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px 12px 22px;
       background: rgba(10,13,22,0.35); position: relative; overflow: hidden; }
@@ -848,6 +941,134 @@
   </header>
 
   <main>
+    <details class="recon-card">
+      <summary>
+        <span class="recon-title">Cluster reconnaissance</span>
+        <span class="recon-teaser">{{ range .Recon.HeadlineChips }}<span class="recon-chip recon-chip-{{ .Tone }}"><strong>{{ .Value }}</strong> {{ .Label }}</span>{{ end }}</span>
+        <span class="recon-hint">Click to expand</span>
+      </summary>
+      <div class="recon-body">
+
+        <section class="recon-section">
+          <div class="kicker">Cluster shape</div>
+          <div class="recon-grid">
+            {{ if .Recon.Shape.Distribution }}<div class="recon-row"><span class="recon-key">Distribution</span><span class="recon-val"><strong>{{ .Recon.Shape.Distribution }}</strong></span></div>{{ end }}
+            {{ if .Recon.Shape.CloudLabel }}<div class="recon-row"><span class="recon-key">Cloud</span><span class="recon-val">{{ .Recon.Shape.CloudLabel }}</span></div>{{ end }}
+            <div class="recon-row">
+              <span class="recon-key">API server</span>
+              <span class="recon-val">
+                {{ if .Recon.Shape.APIHost }}<code>{{ .Recon.Shape.APIHost }}</code>{{ end }}
+                <span class="recon-tag tag-{{ if eq .Recon.Shape.APIReachability "public" }}danger{{ else if eq .Recon.Shape.APIReachability "private" }}ok{{ else if eq .Recon.Shape.APIReachability "loopback" }}mut{{ else }}mut{{ end }}">{{ .Recon.Shape.APIReachability }}</span>
+              </span>
+            </div>
+            <div class="recon-row">
+              <span class="recon-key">Nodes</span>
+              <span class="recon-val">
+                <strong>{{ .Recon.Shape.NodeCount }}</strong>
+                {{ if .Recon.Shape.ArchBreakdown }}<span class="recon-more">{{ .Recon.Shape.ArchBreakdown }}</span>{{ end }}
+                {{ if .Recon.Shape.OSImage }}<span class="recon-more">· {{ .Recon.Shape.OSImage }}</span>{{ end }}
+              </span>
+            </div>
+            {{ if .Recon.Shape.KubeletVersions }}<div class="recon-row"><span class="recon-key">Kubelet</span><span class="recon-val">{{ range .Recon.Shape.KubeletVersions }}<code>{{ . }}</code>{{ end }}</span></div>{{ end }}
+            {{ if .Recon.Shape.RuntimeVersions }}<div class="recon-row"><span class="recon-key">Runtime</span><span class="recon-val">{{ range .Recon.Shape.RuntimeVersions }}<code>{{ . }}</code>{{ end }}</span></div>{{ end }}
+            <div class="recon-row">
+              <span class="recon-key">Inventory</span>
+              <span class="recon-val">
+                <strong>{{ .Recon.Shape.NamespaceCount }}</strong> {{ pluralize .Recon.Shape.NamespaceCount "namespace" "namespaces" }} ·
+                <strong>{{ .Recon.Shape.PodCount }}</strong> {{ pluralize .Recon.Shape.PodCount "pod" "pods" }} ·
+                <strong>{{ .Recon.Shape.SACount }}</strong> {{ pluralize .Recon.Shape.SACount "service account" "service accounts" }}
+              </span>
+            </div>
+          </div>
+        </section>
+
+        <section class="recon-section">
+          <div class="kicker">Who already owns this cluster</div>
+          <div class="recon-grid">
+            <div class="recon-row"><span class="recon-key">cluster-admin</span><span class="recon-val">{{ template "reconSubjectList" .Recon.Ownership.ClusterAdmins }}</span></div>
+            <div class="recon-row"><span class="recon-key">Wildcard verbs</span><span class="recon-val">{{ template "reconSubjectList" .Recon.Ownership.WildcardVerbSubjects }}</span></div>
+            <div class="recon-row"><span class="recon-key">Reads secrets</span><span class="recon-val">{{ template "reconSubjectList" .Recon.Ownership.SecretReaders }}</span></div>
+            <div class="recon-row">
+              <span class="recon-key">Privesc paths</span>
+              <span class="recon-val">
+                {{ if gt .Recon.Ownership.PrivescToAdminCount 0 }}<a href="#{{ .Recon.Ownership.PrivescToAdminAnchor }}" class="recon-tag tag-danger">{{ .Recon.Ownership.PrivescToAdminCount }} → cluster-admin</a>{{ end }}
+                {{ if gt .Recon.Ownership.NodeEscapeCount 0 }}<a href="#{{ .Recon.Ownership.NodeEscapeAnchor }}" class="recon-tag tag-danger">{{ .Recon.Ownership.NodeEscapeCount }} → node escape</a>{{ end }}
+                {{ if and (eq .Recon.Ownership.PrivescToAdminCount 0) (eq .Recon.Ownership.NodeEscapeCount 0) }}<span class="recon-empty">none detected</span>{{ end }}
+              </span>
+            </div>
+          </div>
+        </section>
+
+        <section class="recon-section">
+          <div class="kicker">Exposed surface</div>
+          <div class="recon-grid">
+            <div class="recon-row"><span class="recon-key">LoadBalancers</span><span class="recon-val">{{ template "reconResourceList" .Recon.Surface.LoadBalancers }}</span></div>
+            <div class="recon-row"><span class="recon-key">NodePort / extIP</span><span class="recon-val"><strong>{{ .Recon.Surface.NodePorts }}</strong> NodePort · <strong>{{ .Recon.Surface.ExternalIPs }}</strong> externalIP</span></div>
+            <div class="recon-row"><span class="recon-key">HostNetwork pods</span><span class="recon-val">{{ template "reconResourceList" .Recon.Surface.HostNetworkPods }}</span></div>
+            <div class="recon-row"><span class="recon-key">Privileged pods</span><span class="recon-val">{{ template "reconResourceList" .Recon.Surface.PrivilegedPods }}</span></div>
+            <div class="recon-row">
+              <span class="recon-key">Mutating webhooks</span>
+              <span class="recon-val">
+                <strong>{{ .Recon.Surface.MutatingWebhooks }}</strong>
+                {{ if gt .Recon.Surface.OutOfClusterWebhooks 0 }}<span class="recon-tag tag-warn">{{ .Recon.Surface.OutOfClusterWebhooks }} out-of-cluster</span>{{ end }}
+              </span>
+            </div>
+          </div>
+        </section>
+
+        <section class="recon-section">
+          <div class="kicker">Guardrails</div>
+          <div class="recon-grid">
+            <div class="recon-row">
+              <span class="recon-key">NetworkPolicies</span>
+              <span class="recon-val">
+                <strong>{{ .Recon.Guardrails.NetworkPolicies }}</strong>
+                <span class="recon-more">across {{ .Recon.Guardrails.NamespacesProtected }} {{ pluralize .Recon.Guardrails.NamespacesProtected "namespace" "namespaces" }}</span>
+                {{ if gt .Recon.Guardrails.NamespacesUnprotected 0 }}<span class="recon-tag tag-danger">{{ .Recon.Guardrails.NamespacesUnprotected }} unprotected</span>{{ end }}
+              </span>
+            </div>
+            <div class="recon-row">
+              <span class="recon-key">Pod Security</span>
+              <span class="recon-val">
+                {{ if .Recon.Guardrails.PSAEnforce }}{{ range $mode, $count := .Recon.Guardrails.PSAEnforce }}<span class="recon-tag {{ if eq $mode "restricted" }}tag-ok{{ else if eq $mode "baseline" }}tag-warn{{ else }}tag-danger{{ end }}">enforce={{ $mode }} ×{{ $count }}</span>{{ end }}{{ else }}<span class="recon-empty">no PSA labels</span>{{ end }}
+              </span>
+            </div>
+            <div class="recon-row">
+              <span class="recon-key">Policy engines</span>
+              <span class="recon-val">
+                {{ if .Recon.Guardrails.Engines }}{{ range .Recon.Guardrails.Engines }}<span class="recon-tag tag-ok">{{ . }}</span>{{ end }}{{ else }}<span class="recon-empty">none</span>{{ end }}
+              </span>
+            </div>
+            <div class="recon-row">
+              <span class="recon-key">Default-SA pods</span>
+              <span class="recon-val">
+                <strong>{{ .Recon.Guardrails.DefaultSATokenMounts }}</strong>
+                <span class="recon-more">with token automount</span>
+              </span>
+            </div>
+          </div>
+        </section>
+
+        <details class="recon-prov">
+          <summary>Collection provenance</summary>
+          <div class="recon-prov-inner">
+            <div class="recon-grid">
+              {{ if .Recon.Provenance.CollectorIdentity }}<div class="recon-row"><span class="recon-key">Collector</span><span class="recon-val"><code>{{ .Recon.Provenance.CollectorIdentity }}</code></span></div>{{ end }}
+              <div class="recon-row"><span class="recon-key">Permissions seen</span><span class="recon-val"><strong>{{ len .Recon.Provenance.PermissionsAvailable }}</strong> · missing <strong>{{ len .Recon.Provenance.PermissionsMissing }}</strong></span></div>
+              <div class="recon-row"><span class="recon-key">Warnings</span><span class="recon-val"><strong>{{ len .Recon.Provenance.CollectionWarnings }}</strong></span></div>
+              <div class="recon-row"><span class="recon-key">Namespaces scanned</span><span class="recon-val"><strong>{{ len .Recon.Provenance.NamespacesScanned }}</strong></span></div>
+              {{ if .Recon.Provenance.CollectionDurationSec }}<div class="recon-row"><span class="recon-key">Duration</span><span class="recon-val">{{ printf "%.1fs" .Recon.Provenance.CollectionDurationSec }}</span></div>{{ end }}
+            </div>
+            <div>
+              {{ if .Recon.Provenance.PermissionsMissing }}<details><summary class="recon-key">Missing permissions ({{ len .Recon.Provenance.PermissionsMissing }})</summary><ul>{{ range .Recon.Provenance.PermissionsMissing }}<li>{{ . }}</li>{{ end }}</ul></details>{{ end }}
+              {{ if .Recon.Provenance.CollectionWarnings }}<details><summary class="recon-key">Warnings ({{ len .Recon.Provenance.CollectionWarnings }})</summary><ul>{{ range .Recon.Provenance.CollectionWarnings }}<li>{{ . }}</li>{{ end }}</ul></details>{{ end }}
+            </div>
+          </div>
+        </details>
+
+      </div>
+    </details>
+
     <section class="hero" data-tab="overview">
       <div class="card soft">
         <div class="kicker">Executive summary</div>
@@ -1363,4 +1584,12 @@
   </script>
   <script>{{ .GraphScript }}</script>
 </body>
+
+{{- define "reconSubjectList" -}}
+{{ if eq .Total 0 }}<span class="recon-empty">none</span>{{ else }}<strong>{{ .Total }}</strong>{{ range .Sample }} <code>{{ . }}</code>{{ end }}{{ if gt .MoreCount 0 }} <span class="recon-more">{{ if .Anchor }}<a href="#{{ .Anchor }}">+{{ .MoreCount }} more</a>{{ else }}+{{ .MoreCount }} more{{ end }}</span>{{ end }}{{ end }}
+{{- end -}}
+
+{{- define "reconResourceList" -}}
+{{ if eq .Total 0 }}<span class="recon-empty">none</span>{{ else }}<strong>{{ .Total }}</strong>{{ range .Sample }} <code>{{ . }}</code>{{ end }}{{ if gt .MoreCount 0 }} <span class="recon-more">+{{ .MoreCount }} more</span>{{ end }}{{ end }}
+{{- end -}}
 </html>

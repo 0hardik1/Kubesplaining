@@ -238,6 +238,7 @@ type HopView struct {
 // htmlReportData is the template input for the HTML dashboard; assembled by BuildHTMLData.
 type htmlReportData struct {
 	Snapshot      models.Snapshot
+	Recon         Recon
 	Summary       Summary
 	Findings      []models.Finding
 	Modules       []ModuleSection
