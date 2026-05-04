@@ -35,7 +35,7 @@ jobs:
           cp .tmp/e2e-report/findings.json _site/findings.json
           cp .tmp/e2e-report/triage.csv    _site/triage.csv
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
 
