@@ -165,11 +165,13 @@ func TestForPrivescPathDropsSubject(t *testing.T) {
 		Subject: &subject,
 		EscalationPath: []models.EscalationHop{
 			{
-				Step:        1,
-				Action:      "impersonate",
-				FromSubject: subject,
-				ToSubject:   models.SubjectRef{Kind: "User", Name: "admin"},
-				Permission:  "users:impersonate",
+				Step:             1,
+				Action:           "impersonate",
+				FromSubject:      subject,
+				ToSubject:        models.SubjectRef{Kind: "User", Name: "admin"},
+				Permission:       "users:impersonate",
+				SourceBinding:    "crb-elevated",
+				BindingNamespace: "",
 			},
 		},
 	}
@@ -326,11 +328,30 @@ func TestForPrivescPathCoversConfusedDeputy(t *testing.T) {
 	}
 }
 
-// TestForPrivescPathFallsBackWithoutProvenance keeps the synthetic-edge path working:
-// a pod-escape-rooted chain has no binding to name, so the old scan still applies.
-func TestForPrivescPathFallsBackWithoutProvenance(t *testing.T) {
+// TestForPrivescPathDoesNotInventABindingCutForSyntheticChains is the
+// regression test for defect (a). An earlier version of ForPrivescPath, when
+// hop 1 carried no binding provenance, fell back to scanning the snapshot for
+// the first (Cluster)RoleBinding that happened to list the subject and printed
+// a diff cutting it. That binding need not have anything to do with the
+// chain: this fixture's hop is pod_host_escape, a workload-level primitive
+// (privileged + hostPath, see the e2e fixture testdata/e2e/vulnerable/00-baseline.yaml
+// for the real-world shape), and the only binding in the snapshot grants a
+// plain `edit` ClusterRole that has nothing to do with escaping to the node.
+// Printing "remove the subject from only-binding" told the operator a fix
+// closed the chain when it did nothing of the kind, and the cut-resilient
+// pass agreed by construction: alternatesForSource only ever models cutting
+// the binding a hop's own provenance names (see pathfinder.go's edgeCut), so
+// it never simulated cutting only-binding either and never tagged this
+// finding privesc:survives-first-cut. The fix and the simulation disagreed.
+//
+// With no binding provenance, ForPrivescPath must go straight to the
+// advisory diff and must never name a binding it did not simulate cutting.
+func TestForPrivescPathDoesNotInventABindingCutForSyntheticChains(t *testing.T) {
 	subject := models.SubjectRef{Kind: "ServiceAccount", Name: "app", Namespace: "team"}
 	snap := models.Snapshot{}
+	// Kept in the snapshot deliberately: an unrelated binding that lists the
+	// subject is exactly what the old subject scan would have matched. Its
+	// continued presence is what makes the absence assertion below meaningful.
 	snap.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{{
 		ObjectMeta: metav1.ObjectMeta{Name: "only-binding"},
 		RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "edit"},
@@ -345,10 +366,16 @@ func TestForPrivescPathFallsBackWithoutProvenance(t *testing.T) {
 
 	hint := ForPrivescPath(finding, snap)
 	if hint == nil {
-		t.Fatal("ForPrivescPath returned nil for a synthetic-rooted chain, want the fallback hint")
+		t.Fatal("ForPrivescPath returned nil for a synthetic-rooted chain, want the advisory hint")
 	}
-	if !strings.Contains(hint.RBACDiff, "only-binding") {
-		t.Errorf("fallback did not use the subject scan:\n%s", hint.RBACDiff)
+	if strings.Contains(hint.RBACDiff, "only-binding") {
+		t.Errorf("diff names a binding cut that was never simulated:\n%s", hint.RBACDiff)
+	}
+	if !strings.Contains(hint.RBACDiff, "synthetic edge") {
+		t.Errorf("expected the advisory form explaining the chain is synthetic; got:\n%s", hint.RBACDiff)
+	}
+	if hint.Patch != nil {
+		t.Errorf("Patch should be nil for the advisory branch; got %+v", hint.Patch)
 	}
 }
 

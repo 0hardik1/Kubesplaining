@@ -344,17 +344,30 @@ func buildDangerousAfter(roleKind, roleName, namespace string) string {
 //
 // Two shapes of fix exist:
 //
-//  1. If the first hop names a binding we can identify (either by the hop's
-//     own provenance: SourceBinding / BindingNamespace, or, absent that, by
-//     scanning the snapshot for a binding that carries the subject), we emit
-//     a unified diff of the binding with the subject removed from
-//     `subjects:`. This is the cheapest cut because the binding may still be
-//     useful for *other* subjects.
+//  1. If the first hop names a binding we can identify by its own provenance
+//     (SourceBinding / BindingNamespace), we emit a unified diff of the
+//     binding with the subject removed from `subjects:`. This is the
+//     cheapest cut because the binding may still be useful for *other*
+//     subjects.
 //
-//  2. If we can't pin down the binding (synthetic edges like pod_host_escape
-//     don't trace back to a single binding), we fall back to a generic
-//     advisory diff: the subject is annotated with a comment explaining that
-//     the chain comes from a workload-level permission, not an RBAC grant.
+//  2. Otherwise, we fall back to a generic advisory diff: the subject is
+//     annotated with a comment explaining that the chain comes from a
+//     workload-level permission, not an RBAC grant. This covers both
+//     synthetic edges (pod_host_escape, token mint) that never traced back
+//     to a single binding, and the degenerate case where the named binding
+//     is somehow absent from the snapshot.
+//
+// We deliberately never fall back to scanning the snapshot for some other
+// binding that merely lists the subject. An earlier version did exactly
+// that, and it could name a binding the chain never used: the cut-resilient
+// pass (pathfinder.go's edgeCut / alternatesForSource) only ever simulates
+// removing the binding named by a hop's own provenance, so any other binding
+// we might print was never evaluated. A hop with no provenance describes a
+// workload-level primitive (e.g. pod_host_escape from a privileged hostPath
+// pod); an unrelated RBAC binding that happens to list the same subject has
+// no bearing on that primitive, and printing a confident diff against it
+// tells the operator a fix closes the chain when it does nothing of the
+// kind.
 //
 // Either way the Command is a `kubectl edit` invocation against the
 // candidate object so the operator can hand-apply the change. Returns nil
@@ -370,22 +383,17 @@ func ForPrivescPath(finding models.Finding, snap models.Snapshot) *models.Remedi
 	subject := *finding.Subject
 	firstHop := finding.EscalationPath[0]
 
-	// Prefer the binding the first hop actually came from. findBindingForSubject
-	// returns the first binding listing the subject, which need not be the one that
-	// granted the dangerous verb, so cutting it can close nothing. Provenance is
-	// empty for synthetic edges (pod escape, token mint), where the subject scan and
-	// its advisory-diff fallback remain correct.
+	// Cut only the binding hop 1's own provenance names: it is the only cut the
+	// cut-resilient pass ever simulated for this chain.
 	if binding := findBindingByName(snap, firstHop.SourceBinding, firstHop.BindingNamespace); binding != nil {
 		return remediationDropSubjectFromBinding(*binding, subject, firstHop)
 	}
-	if binding := findBindingForSubject(snap, subject); binding != nil {
-		return remediationDropSubjectFromBinding(*binding, subject, firstHop)
-	}
 
-	// Fallback when no enumerable binding carries the subject: emit a generic
-	// advisory diff that explains the chain stems from a pod-escape or
-	// synthetic edge that doesn't have a single binding to cut. We still set
-	// the Command so the report has something actionable.
+	// No binding provenance (synthetic edge), or the named binding is somehow
+	// absent from the snapshot: emit a generic advisory diff that explains the
+	// chain stems from a pod-escape or synthetic edge that doesn't have a
+	// single binding to cut. We still set the Command so the report has
+	// something actionable.
 	return &models.RemediationHint{
 		RBACDiff: privescPathAdvisoryDiff(subject, firstHop),
 	}
@@ -447,33 +455,6 @@ func findBindingByName(snap models.Snapshot, name, namespace string) *bindingRef
 	for _, b := range collectBindings(snap) {
 		if b.Name == name && b.Namespace == namespace {
 			return &b
-		}
-	}
-	return nil
-}
-
-// findBindingForSubject is the fallback for chains with no binding provenance:
-// synthetic-rooted edges (pod_host_escape, token_mint via SA token API) carry
-// no SourceBinding, so ForPrivescPath can't look one up by name and instead
-// scans for the first (Cluster)RoleBinding whose subject list includes the
-// given subject. We don't try to use the hop's Permission to disambiguate
-// among multiple matching bindings here, since without provenance there's no
-// principled way to prefer one over another.
-//
-// Returns nil when no binding lists the subject. That happens when the chain
-// is rooted at a synthetic edge rather than an explicit binding: the
-// ForPrivescPath caller falls back to the advisory diff in that case.
-func findBindingForSubject(snap models.Snapshot, subject models.SubjectRef) *bindingRef {
-	// Walk ClusterRoleBindings first: they're shorter (cluster-scoped subjects
-	// usually accumulate here) and the deterministic order keeps test goldens
-	// stable.
-	bindings := collectBindings(snap)
-	for _, b := range bindings {
-		for _, s := range b.Subjects {
-			if subjectsMatch(s, subject, b.Namespace) {
-				out := b
-				return &out
-			}
 		}
 	}
 	return nil
