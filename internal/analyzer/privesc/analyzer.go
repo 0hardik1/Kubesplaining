@@ -64,6 +64,13 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 func findingFromPath(path models.EscalationPath) models.Finding {
 	target := path.Target
 	severity, score, ruleID := targetScoring(target, len(path.Hops))
+	// Confused-deputy chains get their own rule ID so operators can triage the
+	// "a controller acted on my behalf" class separately from direct RBAC paths.
+	// This is a technique overlay on the first hop, not a distinct sink: the chain
+	// still terminates at whatever the controller itself reaches.
+	if firstAction(path.Hops) == "operator_reconcile" {
+		ruleID = "KUBE-CONFUSED-DEPUTY-001"
+	}
 	category := models.CategoryPrivilegeEscalation
 	if target == models.TargetKubeSystemSecrets {
 		category = models.CategoryDataExfiltration

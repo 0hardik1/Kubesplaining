@@ -80,6 +80,18 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 	// subject reaches already exists as a node.
 	addNamespaceAdminTokenTheftEdges(graph, subjectsByNs)
 
+	// Confused-deputy bridges need every controller SA node to already exist, and a
+	// controller holding no RBAC of its own never appears in permissions.Aggregate.
+	// Materialize every known ServiceAccount first, then bridge in a second pass.
+	for _, refs := range subjectsByNs {
+		for _, ref := range refs {
+			ensureSubjectNode(graph, ref)
+		}
+	}
+	for _, perms := range effective {
+		addConfusedDeputyEdges(graph, perms.Subject, perms.Rules)
+	}
+
 	for _, pod := range snapshot.Resources.Pods {
 		addPodEscapeEdges(graph, pod)
 	}
