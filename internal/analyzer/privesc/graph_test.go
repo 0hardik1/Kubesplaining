@@ -2,6 +2,8 @@ package privesc
 
 import (
 	"context"
+	"slices"
+	"sort"
 	"testing"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
@@ -90,6 +92,164 @@ func TestCSRApproveEdgeRequiresBothHalves(t *testing.T) {
 			}
 			if sawEdge != tc.expectEdge {
 				t.Fatalf("expectEdge=%v, sawEdge=%v; edges=%+v", tc.expectEdge, sawEdge, graph.Edges)
+			}
+		})
+	}
+}
+
+// TestCSRApproveEdgeWildcardGrantors pins the split addCSRApprovalEdge keeps between
+// the two questions it asks about each CSR half.
+//
+// "Does this half exist?" gates emission and ignores full `*/*/*` rules: a subject
+// whose only grant is a wildcard is already reported as cluster-admin in one hop
+// through that same binding, so a second route to system:masters would be noise. That
+// was the behaviour of the wildcard early return in addEdgesForRule, which the CSR
+// halves used to sit behind, and it must not change.
+//
+// "Who grants this half?" feeds CutBreakers and DOES count wildcard rules, because a
+// wildcard binding really does grant both verbs. Before the split, a wildcard binding
+// was invisible to collection, so a half it granted alongside a narrow binding looked
+// like it had a sole grantor. The cut pass then banned the csr_approve edge on the
+// narrow binding's cut and reported the route closed, while the wildcard binding still
+// opened it: a surviving route reported as remediated, which hides exposure.
+func TestCSRApproveEdgeWildcardGrantors(t *testing.T) {
+	t.Parallel()
+
+	wildcard := rbacv1.PolicyRule{APIGroups: []string{"*"}, Resources: []string{"*"}, Verbs: []string{"*"}}
+	// Same wildcard pinned to resourceNames. permissions.Grants drops `create` on a
+	// top-level resource when resourceNames is set (create carries no object name at
+	// authorization time) but keeps update/patch on a subresource, so this rule really
+	// grants the approve half and really does not grant the create half.
+	wildcardNamed := rbacv1.PolicyRule{APIGroups: []string{"*"}, Resources: []string{"*"}, Verbs: []string{"*"}, ResourceNames: []string{"pinned"}}
+	createHalf := rbacv1.PolicyRule{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests"}, Verbs: []string{"create"}}
+	approveHalf := rbacv1.PolicyRule{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests/approval"}, Verbs: []string{"update"}}
+
+	type binding struct {
+		name  string
+		rules []rbacv1.PolicyRule
+	}
+
+	cases := []struct {
+		name string
+		// clusterBindings each become a ClusterRole plus a ClusterRoleBinding of the
+		// same name granting it to the subject.
+		clusterBindings []binding
+		// namespacedBinding, when set, becomes a Role plus a RoleBinding in namespace
+		// "team-a". CSRs are cluster-scoped, so it must count for neither question.
+		namespacedBinding *binding
+		expectEdge        bool
+		wantBreakers      []string
+	}{
+		{
+			name:            "pure wildcard subject emits no edge",
+			clusterBindings: []binding{{name: "crb-wild", rules: []rbacv1.PolicyRule{wildcard}}},
+			expectEdge:      false,
+		},
+		{
+			name: "wildcard beside a narrow create-only binding emits no edge",
+			clusterBindings: []binding{
+				{name: "crb-wild", rules: []rbacv1.PolicyRule{wildcard}},
+				{name: "crb-create", rules: []rbacv1.PolicyRule{createHalf}},
+			},
+			expectEdge: false,
+		},
+		{
+			name:            "single narrow binding is the sole grantor of both halves",
+			clusterBindings: []binding{{name: "crb-csr", rules: []rbacv1.PolicyRule{createHalf, approveHalf}}},
+			expectEdge:      true,
+			wantBreakers:    []string{"crb-csr"},
+		},
+		{
+			name: "wildcard beside a narrow binding leaves neither half with a sole grantor",
+			clusterBindings: []binding{
+				{name: "crb-wild", rules: []rbacv1.PolicyRule{wildcard}},
+				{name: "crb-csr", rules: []rbacv1.PolicyRule{createHalf, approveHalf}},
+			},
+			expectEdge:   true,
+			wantBreakers: nil,
+		},
+		{
+			name: "wildcard pinned to resourceNames grants only the approve half",
+			clusterBindings: []binding{
+				{name: "crb-wild-named", rules: []rbacv1.PolicyRule{wildcardNamed}},
+				{name: "crb-csr", rules: []rbacv1.PolicyRule{createHalf, approveHalf}},
+			},
+			expectEdge: true,
+			// The approve half now has two grantors and contributes nothing; the create
+			// half still has crb-csr alone, so cutting it does close the route.
+			wantBreakers: []string{"crb-csr"},
+		},
+		{
+			name:              "namespaced wildcard grants neither half of a cluster-scoped primitive",
+			clusterBindings:   []binding{{name: "crb-csr", rules: []rbacv1.PolicyRule{createHalf, approveHalf}}},
+			namespacedBinding: &binding{name: "rb-wild", rules: []rbacv1.PolicyRule{wildcard}},
+			expectEdge:        true,
+			wantBreakers:      []string{"crb-csr"},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			subject := rbacv1.Subject{Kind: "ServiceAccount", Name: "csr-sa", Namespace: "default"}
+			snapshot := models.Snapshot{}
+			for _, b := range tc.clusterBindings {
+				snapshot.Resources.ClusterRoles = append(snapshot.Resources.ClusterRoles, rbacv1.ClusterRole{
+					ObjectMeta: objectMeta(b.name+"-role", ""),
+					Rules:      b.rules,
+				})
+				snapshot.Resources.ClusterRoleBindings = append(snapshot.Resources.ClusterRoleBindings, rbacv1.ClusterRoleBinding{
+					ObjectMeta: objectMeta(b.name, ""),
+					RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: b.name + "-role"},
+					Subjects:   []rbacv1.Subject{subject},
+				})
+			}
+			if b := tc.namespacedBinding; b != nil {
+				snapshot.Resources.Roles = append(snapshot.Resources.Roles, rbacv1.Role{
+					ObjectMeta: objectMeta(b.name+"-role", "team-a"),
+					Rules:      b.rules,
+				})
+				snapshot.Resources.RoleBindings = append(snapshot.Resources.RoleBindings, rbacv1.RoleBinding{
+					ObjectMeta: objectMeta(b.name, "team-a"),
+					RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: b.name + "-role"},
+					Subjects:   []rbacv1.Subject{subject},
+				})
+			}
+
+			graph := BuildGraph(snapshot)
+			const subjectID = "subject:ServiceAccount/default/csr-sa"
+			var edges []*models.EscalationEdge
+			for _, edge := range graph.Edges {
+				if edge.From == subjectID && edge.Action == "csr_approve" {
+					edges = append(edges, edge)
+				}
+			}
+			if !tc.expectEdge {
+				if len(edges) != 0 {
+					t.Fatalf("want no csr_approve edge, got %d: %+v", len(edges), edges[0])
+				}
+				return
+			}
+			if len(edges) != 1 {
+				t.Fatalf("want exactly 1 csr_approve edge, got %d; edges=%+v", len(edges), graph.Edges)
+			}
+			// A correlation edge stays uncuttable in its own right: it extends the ban
+			// predicate through CutBreakers only, never through edgeCut. Stamping a
+			// SourceBinding here would also make it a candidate first-hop cut key,
+			// which would change which alternates get searched for.
+			if edges[0].SourceBinding != "" || edges[0].BindingNamespace != "" {
+				t.Errorf("csr_approve edge must carry no binding provenance, got %+v", *edges[0])
+			}
+			var got []string
+			for _, b := range edges[0].CutBreakers {
+				got = append(got, b.Name)
+			}
+			sort.Strings(got)
+			want := append([]string(nil), tc.wantBreakers...)
+			sort.Strings(want)
+			if !slices.Equal(got, want) {
+				t.Fatalf("CutBreakers: got %v, want %v", got, want)
 			}
 		})
 	}

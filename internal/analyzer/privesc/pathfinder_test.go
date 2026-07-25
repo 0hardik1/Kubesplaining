@@ -601,6 +601,75 @@ func TestCSREdgeIsCutWhenOneBindingGrantsBothHalves(t *testing.T) {
 	}
 }
 
+// TestCSREdgeSurvivesCutWhenWildcardBindingGrantsBothHalves is the inverse of
+// TestCSREdgeIsCutWhenOneBindingGrantsBothHalves and guards the opposite error. Same
+// subject and same narrow ClusterRoleBinding, plus a second binding to a `*/*/*`
+// ClusterRole. Cutting the narrow binding removes the impersonate hop, but the
+// wildcard binding still grants both CSR halves, so the csr_approve route to
+// system:masters survives and must be reported as an alternate.
+//
+// Before the fix, collection never saw the wildcard rule (the wildcard early return in
+// addEdgesForRule fired first), so the narrow binding looked like the sole grantor of
+// both halves, the csr_approve edge was banned on its cut, and the finding claimed the
+// route was closed. That direction hides exposure: the operator makes the recommended
+// change and stays compromised.
+func TestCSREdgeSurvivesCutWhenWildcardBindingGrantsBothHalves(t *testing.T) {
+	snapshot := models.Snapshot{}
+	snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+		{ObjectMeta: objectMeta("csr-both", "csrgap")},
+	}
+	subject := rbacv1.Subject{Kind: "ServiceAccount", Name: "csr-both", Namespace: "csrgap"}
+	snapshot.Resources.ClusterRoles = []rbacv1.ClusterRole{
+		{
+			ObjectMeta: objectMeta("csr-and-impersonate", ""),
+			Rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{""}, Resources: []string{"users", "groups"}, Verbs: []string{"impersonate"}},
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests"}, Verbs: []string{"create"}},
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests/approval"}, Verbs: []string{"update"}},
+			},
+		},
+		{
+			ObjectMeta: objectMeta("wildcard", ""),
+			Rules:      []rbacv1.PolicyRule{{APIGroups: []string{"*"}, Resources: []string{"*"}, Verbs: []string{"*"}}},
+		},
+	}
+	snapshot.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{
+		{
+			ObjectMeta: objectMeta("csr-narrow-binding", ""),
+			RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "csr-and-impersonate"},
+			Subjects:   []rbacv1.Subject{subject},
+		},
+		{
+			ObjectMeta: objectMeta("csr-wildcard-binding", ""),
+			RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "wildcard"},
+			Subjects:   []rbacv1.Subject{subject},
+		},
+	}
+
+	paths := FindPaths(BuildGraph(snapshot), 5)
+	src := models.SubjectRef{Kind: "ServiceAccount", Name: "csr-both", Namespace: "csrgap"}
+	var p models.EscalationPath
+	var found int
+	for _, candidate := range paths {
+		if candidate.Source.Key() == src.Key() && candidate.Target == models.TargetSystemMasters {
+			p = candidate
+			found++
+		}
+	}
+	if found != 1 {
+		t.Fatalf("want exactly 1 csr-both -> system_masters path, got %d (of %d total)", found, len(paths))
+	}
+	// Pin the premise: the primary route is still the impersonate hop through the
+	// narrow binding, so the alternate below is genuinely a second route surviving
+	// that binding's cut, not the same route re-reported.
+	if len(p.Hops) != 1 || p.Hops[0].Action != "impersonate_system_masters" || p.Hops[0].SourceBinding != "csr-narrow-binding" {
+		t.Fatalf("want a 1-hop impersonate_system_masters primary via csr-narrow-binding, got %+v", p.Hops)
+	}
+	if len(p.AlternateHops) != 1 || p.AlternateHops[0].Action != "csr_approve" {
+		t.Fatalf("want a 1-hop csr_approve alternate: csr-wildcard-binding grants both CSR halves too, so cutting csr-narrow-binding leaves the route open; got %+v", p.AlternateHops)
+	}
+}
+
 // buildUnstampedAlternateGraph gives TestAlternateHopNeverSharesPrimarysCutBinding the
 // case the task brief's second note warns about: an alternate whose own first hop
 // carries NO SourceBinding at all. src reaches node_escape two ways: a stamped edge

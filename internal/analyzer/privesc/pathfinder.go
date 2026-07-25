@@ -183,7 +183,7 @@ func edgeCut(edge *models.EscalationEdge) (cutKey, bool) {
 // would break edge. That is true either when key is the single binding that
 // granted the edge (edgeCut), or when key appears in the edge's CutBreakers: a
 // two-rule correlation edge (see addSecretMintEdge, addNodeMigrateEdge,
-// finalizeCSRApprovals) that
+// addCSRApprovalEdge) that
 // carries no single granting binding but whose key IS the sole grantor of one of
 // the two required halves, so cutting it un-grants that half and the correlation
 // no longer holds.
