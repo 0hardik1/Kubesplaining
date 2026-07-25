@@ -150,6 +150,16 @@ func dedupe(findings []models.Finding) []models.Finding {
 				out[prevIdx].Severity = finding.Severity
 			}
 			out[prevIdx].Tags = mergeTags(out[prevIdx].Tags, finding.Tags)
+			// Tags merge across a dedupe collision but fields do not. A tag that
+			// asserts something about a field is only true of the finding that
+			// carries that field, so re-assert the coupling here rather than
+			// let the merged tag outlive the field it describes.
+			// "privesc:survives-first-cut" asserts AlternateEscalationPath is
+			// non-empty; if the surviving finding doesn't have one, the tag must
+			// go, not get grafted onto a chain that describes a different sink.
+			if len(out[prevIdx].AlternateEscalationPath) == 0 {
+				out[prevIdx].Tags = dropTag(out[prevIdx].Tags, "privesc:survives-first-cut")
+			}
 			continue
 		}
 		indexByKey[key] = len(out)
@@ -189,6 +199,18 @@ func mergeTags(a, b []string) []string {
 			continue
 		}
 		seen[tag] = struct{}{}
+		out = append(out, tag)
+	}
+	return out
+}
+
+// dropTag returns tags with every occurrence of victim removed.
+func dropTag(tags []string, victim string) []string {
+	out := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		if tag == victim {
+			continue
+		}
 		out = append(out, tag)
 	}
 	return out

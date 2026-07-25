@@ -224,6 +224,70 @@ func TestDedupeKeepsHighestScoreAndUnionsTags(t *testing.T) {
 	}
 }
 
+// TestDedupeDropsSurviveTagWhenAlternateIsNotOnTheSurvivor proves the invariant that
+// tags merge but fields do not: "privesc:survives-first-cut" asserts that
+// AlternateEscalationPath is non-empty, so a survivor that did not itself carry that
+// route must not keep the tag just because the finding merged away had it. The
+// dropped finding here is the second one - its own fields, including
+// AlternateEscalationPath, never reach the survivor, only its tags and (if higher)
+// its score do.
+func TestDedupeDropsSurviveTagWhenAlternateIsNotOnTheSurvivor(t *testing.T) {
+	resource := &models.ResourceRef{Kind: "Namespace", Name: "prod"}
+	subject := &models.SubjectRef{Kind: "ServiceAccount", Namespace: "app", Name: "deployer"}
+	findings := []models.Finding{
+		{RuleID: "KUBE-CONFUSED-DEPUTY-001", Score: 7.0, Subject: subject, Resource: resource, Tags: []string{"module:privesc"}},
+		{
+			RuleID:                  "KUBE-CONFUSED-DEPUTY-001",
+			Score:                   8.0,
+			Subject:                 subject,
+			Resource:                resource,
+			Tags:                    []string{"module:privesc", "privesc:survives-first-cut"},
+			AlternateEscalationPath: []models.EscalationHop{{Step: 1, Action: "bound_to_cluster_admin"}},
+		},
+	}
+
+	got := dedupe(findings)
+
+	if len(got) != 1 {
+		t.Fatalf("want the two findings to collide into 1, got %d - the rest of this test is meaningless if they did not collide", len(got))
+	}
+	if len(got[0].AlternateEscalationPath) != 0 {
+		t.Fatalf("survivor must not inherit the dropped finding's AlternateEscalationPath, got %d hops", len(got[0].AlternateEscalationPath))
+	}
+	if slices.Contains(got[0].Tags, "privesc:survives-first-cut") {
+		t.Errorf("survivor has no AlternateEscalationPath, so it must not carry privesc:survives-first-cut; got tags %v", got[0].Tags)
+	}
+}
+
+// TestDedupeKeepsSurviveTagWhenAlternateIsOnTheSurvivor is the positive companion:
+// when the surviving finding itself carries AlternateEscalationPath, the tag must
+// come through the ordinary tag-merge path. Without this test, unconditionally
+// stripping the tag in dedupe would also satisfy the negative test above.
+func TestDedupeKeepsSurviveTagWhenAlternateIsOnTheSurvivor(t *testing.T) {
+	resource := &models.ResourceRef{Kind: "Namespace", Name: "prod"}
+	subject := &models.SubjectRef{Kind: "ServiceAccount", Namespace: "app", Name: "deployer"}
+	findings := []models.Finding{
+		{
+			RuleID:                  "KUBE-CONFUSED-DEPUTY-001",
+			Score:                   7.0,
+			Subject:                 subject,
+			Resource:                resource,
+			Tags:                    []string{"module:privesc", "privesc:survives-first-cut"},
+			AlternateEscalationPath: []models.EscalationHop{{Step: 1, Action: "bound_to_cluster_admin"}},
+		},
+		{RuleID: "KUBE-CONFUSED-DEPUTY-001", Score: 8.0, Subject: subject, Resource: resource, Tags: []string{"module:privesc"}},
+	}
+
+	got := dedupe(findings)
+
+	if len(got) != 1 {
+		t.Fatalf("want the two findings to collide into 1, got %d", len(got))
+	}
+	if !slices.Contains(got[0].Tags, "privesc:survives-first-cut") {
+		t.Errorf("survivor carries AlternateEscalationPath, so the tag must be preserved; got tags %v", got[0].Tags)
+	}
+}
+
 func TestDedupePreservesDifferentKeys(t *testing.T) {
 	findings := []models.Finding{
 		{RuleID: "KUBE-PRIVESC-005", Score: 7.0, Subject: &models.SubjectRef{Kind: "SA", Name: "a"}},
