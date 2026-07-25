@@ -343,27 +343,54 @@ ok "no deny-guard violations (${#DENY_RULES[@]} guards checked)"
 step "Verifying escalation-chain shape"
 # Each *.chain file asserts that a finding exists AND that its escalation chain is
 # still deep and correctly ordered. Format, one assertion per non-comment line:
-#   <finding-id-prefix> <min-hop-count> <ordered,comma,separated,actions>
+#   <finding-id-prefix> <min-hop-count> <ordered,comma,separated,actions> [primary|alternate]
+# The fourth column selects which chain to check: primary reads escalation_path and is
+# the default when the column is omitted, so every pre-existing assertion reads
+# unchanged; alternate reads alternate_escalation_path, the route that survives the
+# recommended fix's binding cut (present only on findings tagged privesc:survives-first-cut).
 # The action list must appear as an ordered SUBSEQUENCE of the finding's hop actions,
 # so adding a new intermediate hop does not spuriously fail the gate.
 #
 # This is the gate the rule-ID goldens cannot express: they prove which rules fired,
-# not that the graph still chains. A regression collapsing every path to a single hop
-# keeps the rule-ID set identical and would otherwise pass silently.
+# not that the graph still chains. A regression collapsing every path to a single hop,
+# or collapsing every alternate route back to nothing, keeps the rule-ID set identical
+# and would otherwise pass silently.
 chain_violations=()
 chain_checks=0
 shopt -s nullglob
 for f in "${ROOT_DIR}/testdata/e2e/expectations/"*.chain; do
-  while read -r prefix min_hops actions; do
+  while read -r prefix min_hops actions variant; do
     case "${prefix}" in ''|'#'*) continue ;; esac
     chain_checks=$(( chain_checks + 1 ))
 
-    actual_hops="$(jq -r --arg p "${prefix}" \
-      '[.[] | select(.id == $p or (.id | startswith($p + ":")))] | first | (.escalation_path | length) // 0' \
+    # Fourth column selects which chain to assert against. Omitted means primary, so
+    # every pre-existing assertion reads unchanged.
+    case "${variant}" in
+      ''|primary) path_field="escalation_path" ;;
+      alternate)  path_field="alternate_escalation_path" ;;
+      *) chain_violations+=("${prefix} has unknown variant ${variant}, want primary or alternate"); continue ;;
+    esac
+
+    match_count="$(jq -r --arg p "${prefix}" \
+      '[.[] | select(.id == $p or (.id | startswith($p + ":")))] | length' \
+      "${ROOT_DIR}/.tmp/e2e-report-full/findings.json")"
+    if [[ "${match_count}" != "1" ]]; then
+      chain_violations+=("${prefix} matched ${match_count} findings, want exactly 1 (make the prefix more specific)")
+      continue
+    fi
+
+    actual_hops="$(jq -r --arg p "${prefix}" --arg pf "${path_field}" \
+      '[.[] | select(.id == $p or (.id | startswith($p + ":")))][0] | (.[$pf] | length) // 0' \
       "${ROOT_DIR}/.tmp/e2e-report-full/findings.json")"
 
+    # match_count already proved the finding exists, so a zero-length chain here means
+    # the finding has no path field, not that the finding is missing. Reporting the two
+    # cases identically would be actively misleading for the alternate variant: this is
+    # exactly the shape a regression that collapsed alternate detection back to nothing
+    # would produce, and it would send whoever reads the failure hunting a missing
+    # finding that was never missing.
     if [[ -z "${actual_hops}" || "${actual_hops}" == "null" || "${actual_hops}" == "0" ]]; then
-      chain_violations+=("no finding matching ${prefix}")
+      chain_violations+=("${prefix} exists but has no ${path_field} chain")
       continue
     fi
     if (( actual_hops < min_hops )); then
@@ -371,8 +398,8 @@ for f in "${ROOT_DIR}/testdata/e2e/expectations/"*.chain; do
       continue
     fi
 
-    actual_actions="$(jq -r --arg p "${prefix}" \
-      '[.[] | select(.id == $p or (.id | startswith($p + ":")))] | first | [.escalation_path[].action] | join(",")' \
+    actual_actions="$(jq -r --arg p "${prefix}" --arg pf "${path_field}" \
+      '[.[] | select(.id == $p or (.id | startswith($p + ":")))][0] | [.[$pf][].action] | join(",")' \
       "${ROOT_DIR}/.tmp/e2e-report-full/findings.json")"
 
     # Consume the actual action list left to right, requiring each wanted action to
@@ -393,7 +420,7 @@ for f in "${ROOT_DIR}/testdata/e2e/expectations/"*.chain; do
       chain_violations+=("${prefix} chain [${actual_actions}] missing ordered action ${missing}")
       continue
     fi
-    ok "chain ${prefix}: ${actual_hops} hops [${actual_actions}]"
+    ok "chain ${prefix} (${path_field}): ${actual_hops} hops [${actual_actions}]"
   done < "${f}"
 done
 shopt -u nullglob

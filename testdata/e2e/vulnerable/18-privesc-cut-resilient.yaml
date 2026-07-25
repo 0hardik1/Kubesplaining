@@ -1,0 +1,107 @@
+# Cut-resilient privesc fixture. Every other shard proves a path EXISTS; this one
+# proves the recommended fix does not always close it.
+#
+# Two shapes, both RBAC-only:
+#
+#   1. cutres-parallel is named in two separate cluster-admin ClusterRoleBindings.
+#      permissions.Aggregate yields one EffectiveRule per binding and addEdge does
+#      not dedupe, so the graph carries two parallel edges per binding: the direct
+#      loop's bound_to_cluster_admin edge, and a wildcard_permission edge from the
+#      resolved cluster-admin rule (verbs/resources/apiGroups all "*"). The wildcard
+#      edge is inserted first, so shortest-path BFS reports it, meaning the observed
+#      hop action is wildcard_permission rather than bound_to_cluster_admin even
+#      though the finding is a plain cluster-admin bind. Cutting the first binding
+#      leaves the second, and the alternate comes back at the SAME hop count.
+#      cutres-parallel is also load-bearing for shape 2 below: it is the
+#      cluster-admin-bound identity that shape 2's detour reaches by way of
+#      colocated_sa_token_theft, so renaming or deleting it silently breaks shape
+#      2's alternate as well.
+#
+#   2. cutres-detour reaches cluster-admin directly, and also by binding roles
+#      inside its own namespace, which co-hosts cutres-parallel, the
+#      cluster-admin-bound identity from shape 1. Cutting the direct binding
+#      leaves the longer namespace-admin route through cutres-parallel.
+#
+# Like shard 17 this needs no pods, so it takes no *.rollout entry: every edge
+# here is derived from RBAC alone.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cutres
+---
+# Shape 1: the same subject, bound to cluster-admin twice.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cutres-parallel
+  namespace: cutres
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cutres-parallel-a
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: cutres-parallel
+    namespace: cutres
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cutres-parallel-b
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: cutres-parallel
+    namespace: cutres
+---
+# Shape 2: a direct route plus a longer one through the namespace it can bind in.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cutres-detour
+  namespace: cutres
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cutres-detour-direct
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: cutres-detour
+    namespace: cutres
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cutres-detour-binder
+  namespace: cutres
+rules:
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cutres-detour-binder
+  namespace: cutres
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cutres-detour-binder
+subjects:
+  - kind: ServiceAccount
+    name: cutres-detour
+    namespace: cutres

@@ -1,0 +1,30 @@
+# Cut-resilience assertions: <finding-id-prefix> <min-hops> <ordered,hop,actions> [primary|alternate]
+#
+# The *.ruleset goldens prove WHICH rules fire and the other *.chain files prove the
+# graph still chains. These prove something neither can: that a path knows whether the
+# remediation printed alongside it actually closes the route. A regression that dropped
+# alternate-route detection would keep every rule ID identical and pass every other gate.
+#
+# Action note: a direct ClusterRoleBinding to the cluster-admin ClusterRole resolves, via
+# permissions.Aggregate, to an EffectiveRule with verbs/resources/apiGroups all "*". That
+# rule trips the wildcard check in addEdgesForRule before the per-subject loop finishes,
+# so a wildcard_permission edge lands in the graph ahead of the bound_to_cluster_admin
+# edge the direct-ClusterRoleBinding loop adds for the same binding later in BuildGraph.
+# Both edges exist and share the same source binding, but shortest-path BFS reports
+# whichever it inserted first, so the observed hop action below is wildcard_permission,
+# not bound_to_cluster_admin, even though the finding is a plain cluster-admin bind.
+#
+# Shape 1: bound to cluster-admin by two separate ClusterRoleBindings. The primary is a
+# single hop, and cutting its binding leaves the parallel one, so the alternate is also
+# a single hop. This is the case that shows an alternate is not merely a longer detour.
+KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/cutres/cutres-parallel 1 wildcard_permission primary
+KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/cutres/cutres-parallel 1 wildcard_permission alternate
+#
+# Shape 2: a direct binding plus a longer route through the namespace this SA can bind
+# roles in, which co-hosts a cluster-admin-bound identity (cutres-parallel, from shape
+# 1 above). Cutting the direct binding leaves the detour, so the alternate must be
+# strictly deeper than the primary: subject -> (modify_role_binding) -> namespace_admin
+# sink -> (colocated_sa_token_theft) -> cutres-parallel -> (wildcard_permission) ->
+# cluster_admin, the same three-hop shape shard 17 already pins for deepchain-binder.
+KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/cutres/cutres-detour 1 wildcard_permission primary
+KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/cutres/cutres-detour 3 modify_role_binding,colocated_sa_token_theft alternate

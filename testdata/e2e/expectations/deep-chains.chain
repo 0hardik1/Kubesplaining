@@ -1,4 +1,8 @@
-# Chain-shape assertions: <finding-id-prefix> <min-hops> <ordered,hop,actions>
+# Chain-shape assertions: <finding-id-prefix> <min-hops> <ordered,hop,actions> [primary|alternate]
+#
+# The fourth column selects escalation_path (primary, the default when omitted) or
+# alternate_escalation_path (alternate). Every assertion below predates the alternate
+# column and omits it, so all of them keep reading against the primary path unchanged.
 #
 # The *.ruleset goldens prove WHICH rules fire; these prove the graph still produces
 # real multi-hop chains. Without them a regression that flattened every path to a
