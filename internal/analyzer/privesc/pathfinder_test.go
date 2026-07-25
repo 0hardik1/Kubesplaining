@@ -200,6 +200,17 @@ func TestAlternateIsMissedWhenTheSurvivingRouteExceedsMaxDepth(t *testing.T) {
 // TestSyntheticRootedPathSkipsCutPass proves a chain whose first hop names no
 // binding is left alone. There is no binding to model cutting, so claiming an
 // alternate would be meaningless.
+//
+// The third edge carries a binding on purpose and is what makes this test gate.
+// The property under test lives in edgeCut's `edge.SourceBinding == ""` guard, and
+// with only the two unstamped edges, deleting that guard left the suite green: both
+// edges collapse to the same empty cut key, the ban catches both, no route survives,
+// and the assertion below is reached for the wrong reason. With a stamped edge in the
+// graph the mutation instead produces an alternate via "pods-crb" plus an
+// operator-facing string that reads "Evaluated cut: removing this subject from the
+// binding that grants hop 1" with the binding name rendered empty. That guard is what lets
+// alternateCutNote promise a populated binding name (see its doc comment in
+// content.go), so it needs a test that fails without it.
 func TestSyntheticRootedPathSkipsCutPass(t *testing.T) {
 	graph := &models.EscalationGraph{Nodes: map[string]*models.EscalationNode{}}
 	src := models.SubjectRef{Kind: "ServiceAccount", Name: "escaper", Namespace: "app"}
@@ -207,16 +218,28 @@ func TestSyntheticRootedPathSkipsCutPass(t *testing.T) {
 	graph.Nodes[sinkNodeEscape] = &models.EscalationNode{
 		ID: sinkNodeEscape, IsSink: true, Target: models.TargetNodeEscape,
 	}
-	// No SourceBinding: a pod-escape edge.
+	// No SourceBinding: a pod-escape edge. Inserted first, so BFS reports it as the
+	// primary and the chain under test is the synthetic-rooted one.
 	addEdge(graph, nodeID(src), sinkNodeEscape, &models.EscalationEdge{Action: "pod_host_escape"})
 	addEdge(graph, nodeID(src), sinkNodeEscape, &models.EscalationEdge{Action: "pod_host_escape_2"})
+	// Stamped, and reaching the same sink: a route that WOULD be reported as an
+	// alternate if the cut pass ever keyed a cut off the unstamped primary.
+	addEdge(graph, nodeID(src), sinkNodeEscape, &models.EscalationEdge{
+		Action:        "pod_create_privileged_escape",
+		SourceBinding: "pods-crb",
+	})
 
 	paths := FindPaths(graph, 5)
 	if len(paths) != 1 {
 		t.Fatalf("want 1 path, got %d", len(paths))
 	}
+	if paths[0].Hops[0].SourceBinding != "" {
+		t.Fatalf("fixture regression: the primary must be the unstamped chain, got binding %q on hop 1",
+			paths[0].Hops[0].SourceBinding)
+	}
 	if len(paths[0].AlternateHops) != 0 {
-		t.Fatalf("want no alternate for a synthetic-rooted chain, got %d hops", len(paths[0].AlternateHops))
+		t.Fatalf("want no alternate for a synthetic-rooted chain, got %d hops (%+v)",
+			len(paths[0].AlternateHops), paths[0].AlternateHops)
 	}
 }
 
