@@ -238,6 +238,79 @@ func TestForPrivescPathFallback(t *testing.T) {
 	}
 }
 
+// TestForPrivescPathCutsGrantingBinding is the regression test for a real defect:
+// findBindingForSubject returns the FIRST binding listing the subject, which need
+// not be the binding that granted the dangerous verb. Editing that binding closes
+// nothing. With hop provenance we cut the binding that actually enabled hop 1.
+func TestForPrivescPathCutsGrantingBinding(t *testing.T) {
+	subject := models.SubjectRef{Kind: "ServiceAccount", Name: "app", Namespace: "team"}
+	rbacSubject := []rbacv1.Subject{{Kind: "ServiceAccount", Name: "app", Namespace: "team"}}
+
+	snap := models.Snapshot{}
+	// Sorted first by collectBindings (ClusterRoleBinding, then name), so this is
+	// what the old first-match scan would have picked. It grants nothing dangerous.
+	snap.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "aaa-harmless-view"},
+			RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "view"},
+			Subjects:   rbacSubject,
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "zzz-dangerous-admin"},
+			RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "cluster-admin"},
+			Subjects:   rbacSubject,
+		},
+	}
+
+	finding := models.Finding{
+		RuleID:  "KUBE-PRIVESC-PATH-CLUSTER-ADMIN",
+		Subject: &subject,
+		EscalationPath: []models.EscalationHop{{
+			Step:          1,
+			Action:        "bound_to_cluster_admin",
+			SourceBinding: "zzz-dangerous-admin",
+			SourceRole:    "cluster-admin",
+		}},
+	}
+
+	hint := ForPrivescPath(finding, snap)
+	if hint == nil {
+		t.Fatal("ForPrivescPath returned nil, want a hint")
+	}
+	if !strings.Contains(hint.RBACDiff, "zzz-dangerous-admin") {
+		t.Errorf("diff does not mention the granting binding:\n%s", hint.RBACDiff)
+	}
+	if strings.Contains(hint.RBACDiff, "aaa-harmless-view") {
+		t.Errorf("diff cuts the wrong binding (first match, not the granting one):\n%s", hint.RBACDiff)
+	}
+}
+
+// TestForPrivescPathFallsBackWithoutProvenance keeps the synthetic-edge path working:
+// a pod-escape-rooted chain has no binding to name, so the old scan still applies.
+func TestForPrivescPathFallsBackWithoutProvenance(t *testing.T) {
+	subject := models.SubjectRef{Kind: "ServiceAccount", Name: "app", Namespace: "team"}
+	snap := models.Snapshot{}
+	snap.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{{
+		ObjectMeta: metav1.ObjectMeta{Name: "only-binding"},
+		RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "edit"},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "app", Namespace: "team"}},
+	}}
+
+	finding := models.Finding{
+		RuleID:         "KUBE-PRIVESC-PATH-NODE-ESCAPE",
+		Subject:        &subject,
+		EscalationPath: []models.EscalationHop{{Step: 1, Action: "pod_host_escape"}},
+	}
+
+	hint := ForPrivescPath(finding, snap)
+	if hint == nil {
+		t.Fatal("ForPrivescPath returned nil for a synthetic-rooted chain, want the fallback hint")
+	}
+	if !strings.Contains(hint.RBACDiff, "only-binding") {
+		t.Errorf("fallback did not use the subject scan:\n%s", hint.RBACDiff)
+	}
+}
+
 // TestForPrivescPathSkipsNonPathRule guards the call-site contract: callers
 // pass any privesc-analyzer finding through here, but the generator only
 // applies to KUBE-PRIVESC-PATH-* findings. Anything else must return nil so

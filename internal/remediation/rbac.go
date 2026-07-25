@@ -339,11 +339,12 @@ func buildDangerousAfter(roleKind, roleName, namespace string) string {
 //
 // Two shapes of fix exist:
 //
-//  1. If the first hop names a binding we can identify (we look up the binding
-//     by the hop's Permission or by scanning the snapshot for a binding that
-//     carries the subject), we emit a unified diff of the binding with the
-//     subject removed from `subjects:`. This is the cheapest cut because the
-//     binding may still be useful for *other* subjects.
+//  1. If the first hop names a binding we can identify (either by the hop's
+//     own provenance: SourceBinding / BindingNamespace, or, absent that, by
+//     scanning the snapshot for a binding that carries the subject), we emit
+//     a unified diff of the binding with the subject removed from
+//     `subjects:`. This is the cheapest cut because the binding may still be
+//     useful for *other* subjects.
 //
 //  2. If we can't pin down the binding (synthetic edges like pod_host_escape
 //     don't trace back to a single binding), we fall back to a generic
@@ -364,6 +365,14 @@ func ForPrivescPath(finding models.Finding, snap models.Snapshot) *models.Remedi
 	subject := *finding.Subject
 	firstHop := finding.EscalationPath[0]
 
+	// Prefer the binding the first hop actually came from. findBindingForSubject
+	// returns the first binding listing the subject, which need not be the one that
+	// granted the dangerous verb, so cutting it can close nothing. Provenance is
+	// empty for synthetic edges (pod escape, token mint), where the subject scan and
+	// its advisory-diff fallback remain correct.
+	if binding := findBindingByName(snap, firstHop.SourceBinding, firstHop.BindingNamespace); binding != nil {
+		return remediationDropSubjectFromBinding(*binding, subject, firstHop)
+	}
 	if binding := findBindingForSubject(snap, subject); binding != nil {
 		return remediationDropSubjectFromBinding(*binding, subject, firstHop)
 	}
@@ -421,16 +430,34 @@ type bindingRef struct {
 	BindingObject any
 }
 
-// findBindingForSubject scans the snapshot for the (Cluster)RoleBinding whose
-// subject list includes the given subject. We don't try to use the hop's
-// Permission to disambiguate among multiple matching bindings: the user-visible
-// fix is "drop this subject from any binding that grants the dangerous verb",
-// and the first match is good enough for the hint.
+// findBindingByName returns the binding a hop's provenance names. Namespace is
+// empty for ClusterRoleBindings, matching how permissions.Aggregate records it,
+// so the (kind, name) pair is unambiguous. Returns nil when the snapshot has no
+// such binding, which happens on a partial snapshot where the collector could not
+// list one of the two binding kinds.
+func findBindingByName(snap models.Snapshot, name, namespace string) *bindingRef {
+	if name == "" {
+		return nil
+	}
+	for _, b := range collectBindings(snap) {
+		if b.Name == name && b.Namespace == namespace {
+			return &b
+		}
+	}
+	return nil
+}
+
+// findBindingForSubject is the fallback for chains with no binding provenance:
+// synthetic-rooted edges (pod_host_escape, token_mint via SA token API) carry
+// no SourceBinding, so ForPrivescPath can't look one up by name and instead
+// scans for the first (Cluster)RoleBinding whose subject list includes the
+// given subject. We don't try to use the hop's Permission to disambiguate
+// among multiple matching bindings here, since without provenance there's no
+// principled way to prefer one over another.
 //
 // Returns nil when no binding lists the subject. That happens when the chain
-// is rooted at a synthetic edge (pod_host_escape, token_mint via SA token
-// API) rather than an explicit binding: the ForPrivescPath caller falls back
-// to the advisory diff in that case.
+// is rooted at a synthetic edge rather than an explicit binding: the
+// ForPrivescPath caller falls back to the advisory diff in that case.
 func findBindingForSubject(snap models.Snapshot, subject models.SubjectRef) *bindingRef {
 	// Walk ClusterRoleBindings first: they're shorter (cluster-scoped subjects
 	// usually accumulate here) and the deterministic order keeps test goldens
