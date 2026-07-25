@@ -39,8 +39,11 @@ type Finding struct {
 	// AlternateEscalationPath is a route to the same sink that survives the binding cut
 	// this finding's RemediationHint recommends. Non-empty means the printed fix is not
 	// sufficient on its own, and the finding also carries the tag
-	// "privesc:survives-first-cut". Empty (the common case) means either that no such
-	// route exists, or that the chain is synthetic-rooted so no binding cut was modeled.
+	// "privesc:survives-first-cut". Empty (the common case) means one of three things:
+	// no such route exists within the searched depth; the chain is synthetic-rooted so
+	// no binding cut was modeled; or a surviving route exists but is longer than the
+	// configured search depth (--max-privesc-depth, default 5), since the alternate
+	// search runs on the same depth bound as the primary search that found this path.
 	AlternateEscalationPath []EscalationHop `json:"alternate_escalation_path,omitempty"`
 	Frameworks              []FrameworkRef  `json:"frameworks,omitempty"` // compliance/hardening controls this rule maps to (CIS, NSA, …); populated post-analysis from the static mapping table
 	Excluded                bool            `json:"excluded"`             // set post-analysis by the exclusions matcher

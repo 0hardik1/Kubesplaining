@@ -107,7 +107,10 @@ type EscalationPath struct {
 	Hops     []EscalationHop `json:"hops"`
 	// AlternateHops is a route to the same Target that survives cutting the binding
 	// named by Hops[0]. Non-empty means the obvious remediation is not sufficient on
-	// its own. Empty means either that no such route exists, or that Hops[0] is a
-	// synthetic edge with no binding to model cutting.
+	// its own. Empty means one of three things: no such route exists within the
+	// searched depth; Hops[0] is a synthetic edge with no binding to model cutting; or
+	// a surviving route exists but is longer than the configured search depth
+	// (--max-privesc-depth, default 5), since the alternate search runs on the same
+	// depth bound as the primary search that found this path.
 	AlternateHops []EscalationHop `json:"alternate_hops,omitempty"`
 }

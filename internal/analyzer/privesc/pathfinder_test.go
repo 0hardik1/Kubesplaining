@@ -137,6 +137,66 @@ func TestNoAlternateWhenCutClosesEverything(t *testing.T) {
 	}
 }
 
+// TestAlternateIsMissedWhenTheSurvivingRouteExceedsMaxDepth pins documented
+// behaviour, it does not assert a bug is correct. See the doc comments on
+// models.Finding.AlternateEscalationPath and models.EscalationPath.AlternateHops:
+// alternatesForSource runs on the same maxDepth as the primary search
+// (pathfinder.go), so a route that survives the cut but sits just past that
+// bound is indistinguishable, from the field alone, from "no such route exists".
+func TestAlternateIsMissedWhenTheSurvivingRouteExceedsMaxDepth(t *testing.T) {
+	src := models.SubjectRef{Kind: "ServiceAccount", Name: "src", Namespace: "app"}
+	build := func() *models.EscalationGraph {
+		graph := &models.EscalationGraph{Nodes: map[string]*models.EscalationNode{}}
+		mid1 := models.SubjectRef{Kind: "ServiceAccount", Name: "mid1", Namespace: "app"}
+		mid2 := models.SubjectRef{Kind: "ServiceAccount", Name: "mid2", Namespace: "app"}
+		ensureSubjectNode(graph, src)
+		ensureSubjectNode(graph, mid1)
+		ensureSubjectNode(graph, mid2)
+		graph.Nodes[sinkClusterAdmin] = &models.EscalationNode{
+			ID: sinkClusterAdmin, IsSink: true, Target: models.TargetClusterAdmin,
+		}
+		// The shortest route: 1 hop, cut by removing "direct".
+		addEdge(graph, nodeID(src), sinkClusterAdmin, bindingEdge("bound_to_cluster_admin", "direct"))
+		// The route that survives cutting "direct": 3 hops through mid1 and mid2.
+		// None of these three edges name "direct", and the ban is scoped to edges
+		// leaving src, so this detour is untouched by the cut.
+		addEdge(graph, nodeID(src), nodeID(mid1), bindingEdge("impersonate", "detour-1"))
+		addEdge(graph, nodeID(mid1), nodeID(mid2), bindingEdge("impersonate", "detour-2"))
+		addEdge(graph, nodeID(mid2), sinkClusterAdmin, bindingEdge("bound_to_cluster_admin", "detour-3"))
+		return graph
+	}
+	findSrcPath := func(t *testing.T, paths []models.EscalationPath) models.EscalationPath {
+		t.Helper()
+		for _, p := range paths {
+			if p.Source.Key() == src.Key() {
+				return p
+			}
+		}
+		t.Fatalf("no path found rooted at %s", src.Key())
+		return models.EscalationPath{}
+	}
+
+	// At depth 2, the primary 1-hop route is found and its binding is the one
+	// proposed for cutting, but the surviving 3-hop detour needs depth 3 to
+	// reach the sink: bfsToSinks drops queue items once len(path) >= maxDepth.
+	// The alternate search shares that same bound, so it never gets past mid2.
+	shallow := findSrcPath(t, FindPaths(build(), 2))
+	if len(shallow.Hops) != 1 {
+		t.Fatalf("want the primary to stay the 1-hop direct route, got %d hops", len(shallow.Hops))
+	}
+	if len(shallow.AlternateHops) != 0 {
+		t.Fatalf("want no alternate at depth 2 (the surviving route needs 3 hops), got %d hops", len(shallow.AlternateHops))
+	}
+
+	// The same graph, searched deep enough to contain the surviving detour: the
+	// alternate is found. Without this half, an implementation that never finds
+	// any alternate would also pass the assertion above.
+	deep := findSrcPath(t, FindPaths(build(), 3))
+	if len(deep.AlternateHops) != 3 {
+		t.Fatalf("want the 3-hop alternate once depth allows it, got %d hops", len(deep.AlternateHops))
+	}
+}
+
 // TestSyntheticRootedPathSkipsCutPass proves a chain whose first hop names no
 // binding is left alone. There is no binding to model cutting, so claiming an
 // alternate would be meaningless.

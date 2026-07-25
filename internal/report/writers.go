@@ -261,8 +261,10 @@ func writeHTMLWithOptions(path string, snapshot models.Snapshot, findings []mode
 		},
 		// alternatePathHTML renders Finding.AlternateEscalationPath: a route to the same
 		// sink that survives cutting the binding the remediation hint recommends removing.
-		// Returns "" for empty input so the template gate suppresses the whole block on
-		// the common case where the recommended fix is sufficient.
+		// Returns "" for empty input so the template gate suppresses the whole block. Empty
+		// does not mean the recommended fix is sufficient: it means no surviving route was
+		// found within the search depth. See AlternateEscalationPath's doc comment for the
+		// other causes an empty result can have.
 		"alternatePathHTML": func(hops []models.EscalationHop) template.HTML {
 			return renderEscalationPathVariant(hops, "alternate")
 		},
@@ -308,6 +310,7 @@ func writeHTMLWithOptions(path string, snapshot models.Snapshot, findings []mode
 	data.DefaultTab = opts.DefaultTab
 	data.UsageInfo = opts.UsageInfo
 	data.LeastPrivilegeOnly = opts.LeastPrivilegeOnly
+	data.MaxPrivescDepth = opts.MaxPrivescDepth
 
 	if err := tmpl.Execute(file, data); err != nil {
 		return fmt.Errorf("render html report: %w", err)
