@@ -350,12 +350,14 @@ func buildDangerousAfter(roleKind, roleName, namespace string) string {
 //     cheapest cut because the binding may still be useful for *other*
 //     subjects.
 //
-//  2. Otherwise, we fall back to a generic advisory diff: the subject is
-//     annotated with a comment explaining that the chain comes from a
-//     workload-level permission, not an RBAC grant. This covers both
-//     synthetic edges (pod_host_escape, token mint) that never traced back
-//     to a single binding, and the degenerate case where the named binding
-//     is somehow absent from the snapshot.
+//  2. Otherwise, we fall back to an advisory diff: a comment-only block naming
+//     where the mitigation lives. Three different situations land here and
+//     privescPathAdvisoryDiff tells them apart from the hop alone: a synthetic
+//     workload edge (pod_host_escape and friends), a correlation edge that needs
+//     two RBAC grants at once, and the degenerate case where hop 1 DOES name a
+//     binding that is absent from the snapshot. The third must not be described
+//     as having no binding: the finding's own prose names that binding, and a
+//     hint denying it exists sends the reader hunting a contradiction.
 //
 // We deliberately never fall back to scanning the snapshot for some other
 // binding that merely lists the subject. An earlier version did exactly
@@ -389,11 +391,11 @@ func ForPrivescPath(finding models.Finding, snap models.Snapshot) *models.Remedi
 		return remediationDropSubjectFromBinding(*binding, subject, firstHop)
 	}
 
-	// No binding provenance (synthetic edge), or the named binding is somehow
-	// absent from the snapshot: emit a generic advisory diff that explains the
-	// chain stems from a pod-escape or synthetic edge that doesn't have a
-	// single binding to cut. We still set the Command so the report has
-	// something actionable.
+	// No binding provenance (synthetic or correlation edge), or the named binding
+	// is absent from the snapshot: emit an advisory diff that names where the
+	// mitigation lives. Patch stays nil in all three cases, because there is no
+	// object in the snapshot to patch and a half-correct kubectl invocation is
+	// worse than none.
 	return &models.RemediationHint{
 		RBACDiff: privescPathAdvisoryDiff(subject, firstHop),
 	}
@@ -630,18 +632,35 @@ var correlationRootedActions = map[string]bool{
 // through a binding somewhere: but we'd rather emit an explanatory comment than
 // nothing.
 //
-// Two causes reach here and they need different advice. A synthetic edge (pod
-// escape, IMDS pivot) really is a workload-layer problem: no RBAC change closes
-// it. A correlation edge is pure RBAC, and telling its operator to remove
-// hostPath or revoke `serviceaccounts/token` create is advice that does not apply
-// to their finding: for node_drain_migrate, say, the enabler is `delete pods` plus
-// node manipulation, both RBAC grants.
+// Three causes reach here and they need different advice, told apart from the hop
+// alone. A synthetic edge (pod escape, IMDS pivot) really is a workload-layer
+// problem: no RBAC change closes it. A correlation edge is pure RBAC, and telling
+// its operator to remove hostPath or revoke `serviceaccounts/token` create is
+// advice that does not apply to their finding: for node_drain_migrate, say, the
+// enabler is `delete pods` plus node manipulation, both RBAC grants. And a hop that
+// names a binding the snapshot does not contain is not a chain without a binding at
+// all: the cut is known, only the object is missing, and the finding's own prose
+// (privesc's alternateCutNote) names that binding, so a hint claiming no binding
+// exists contradicts it.
 func privescPathAdvisoryDiff(subject models.SubjectRef, firstHop models.EscalationHop) string {
 	header := fmt.Sprintf("# Subject\n# kind: %s\n# name: %s\n# namespace: %s\n# first-hop action: %s\n",
 		subject.Kind, subject.Name, subject.Namespace, firstHop.Action)
 
 	note := "# NOTE: this chain starts at a synthetic edge (pod escape, token mint,\n# or similar) that does not map to a single (Cluster)RoleBinding. Mitigation\n# is at the workload layer: remove hostPath / hostPID / hostNetwork on the\n# offending pod or revoke `serviceaccounts/token` create on the role that\n# enables the mint.\n"
-	if correlationRootedActions[firstHop.Action] {
+	switch {
+	case firstHop.SourceBinding != "":
+		// Reached only when ForPrivescPath's findBindingByName missed, which means a
+		// partial snapshot (one binding kind could not be listed, see the collector's
+		// PermissionsMissing) or an object deleted between collection and analysis.
+		// The recommended cut is unchanged and still correct; only the diff of it is
+		// unavailable, so say that instead of inventing a cause.
+		scope := "ClusterRoleBinding"
+		if firstHop.BindingNamespace != "" {
+			scope = fmt.Sprintf("RoleBinding in namespace %s", firstHop.BindingNamespace)
+		}
+		note = fmt.Sprintf("# NOTE: hop 1 is granted by the `%s` binding (%s), which is not in this\n# snapshot: either the collection was partial (see collection warnings) or the\n# object changed between collection and analysis. The fix is unchanged: remove\n# this subject from that binding. Re-run against a complete snapshot to get the\n# exact diff.\n",
+			firstHop.SourceBinding, scope)
+	case correlationRootedActions[firstHop.Action]:
 		// Permission names both halves ("delete pods + node scheduling control").
 		// Every correlation builder sets it, but the copy still has to read as a
 		// sentence if one ever does not.

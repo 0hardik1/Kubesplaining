@@ -301,6 +301,61 @@ func TestForPrivescPathAdvisorySplitsCorrelationFromWorkload(t *testing.T) {
 	}
 }
 
+// TestForPrivescPathAdvisoryKeepsTheBindingWhenTheSnapshotLacksIt covers the third
+// way into the advisory branch: hop 1 DOES name a binding, but findBindingByName
+// cannot find it, which happens on a partial snapshot (one binding kind could not be
+// listed) or when the object changed between collection and analysis. The hint used to
+// claim the chain "does not map to a single (Cluster)RoleBinding" while the finding's
+// own prose said "Evaluated cut: removing this subject from the `X` binding". The two
+// disagreed about whether a binding was identified, and the prose was the only place
+// X appeared.
+func TestForPrivescPathAdvisoryKeepsTheBindingWhenTheSnapshotLacksIt(t *testing.T) {
+	t.Parallel()
+
+	subject := models.SubjectRef{Kind: "ServiceAccount", Name: "app", Namespace: "team"}
+	for _, tc := range []struct {
+		name      string
+		hop       models.EscalationHop
+		wantScope string
+	}{
+		{
+			name:      "cluster-scoped binding",
+			hop:       models.EscalationHop{Step: 1, Action: "impersonate", SourceBinding: "crb-vanished"},
+			wantScope: "ClusterRoleBinding",
+		},
+		{
+			name:      "namespaced binding",
+			hop:       models.EscalationHop{Step: 1, Action: "impersonate", SourceBinding: "rb-vanished", BindingNamespace: "team"},
+			wantScope: "RoleBinding in namespace team",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			// Empty snapshot: the named binding is not there, so the lookup misses.
+			hint := ForPrivescPath(models.Finding{
+				RuleID:         "KUBE-PRIVESC-PATH-CLUSTER-ADMIN",
+				Subject:        &subject,
+				EscalationPath: []models.EscalationHop{tc.hop},
+			}, models.Snapshot{})
+			if hint == nil {
+				t.Fatal("ForPrivescPath returned nil, want the advisory hint")
+			}
+			if !strings.Contains(hint.RBACDiff, tc.hop.SourceBinding) {
+				t.Errorf("advisory diff drops the binding the prose names (%q); got:\n%s", tc.hop.SourceBinding, hint.RBACDiff)
+			}
+			if !strings.Contains(hint.RBACDiff, tc.wantScope) {
+				t.Errorf("advisory diff should say which kind of binding (%q); got:\n%s", tc.wantScope, hint.RBACDiff)
+			}
+			if strings.Contains(hint.RBACDiff, "does not map to a single") {
+				t.Errorf("advisory diff still denies a binding was identified; got:\n%s", hint.RBACDiff)
+			}
+			if hint.Patch != nil {
+				t.Errorf("Patch should stay nil: there is no object in the snapshot to patch; got %+v", hint.Patch)
+			}
+		})
+	}
+}
+
 // TestForPrivescPathCutsGrantingBinding proves ForPrivescPath cuts the binding
 // hop 1's own provenance names, not merely some other binding that happens to
 // list the subject. The snapshot lists the subject in two ClusterRoleBindings;
