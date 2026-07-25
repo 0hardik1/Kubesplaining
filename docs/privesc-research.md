@@ -481,3 +481,79 @@ is the deconflicted allocation.)
   corrections (e.g. webhooks tap request objects not secrets-at-rest; VAP bindings AND-combine so
   you cannot shadow a Deny; `system:node` ≠ cluster-admin; containerd→runc version is a proxy) are
   reflected inline.
+
+---
+
+## O. Follow-up: implemented items, corrections, and disclosures since 2026-07-12
+
+Added 2026-07-24 after re-auditing this document against the tree.
+
+### O1. Implemented from this document
+
+Landed on the deep-chain work (see `docs/superpowers/specs/2026-07-24-privesc-deep-chains-design.md`):
+
+- **A1** — `namespace_admin` is now traversable, with `colocated_sa_token_theft` edges to every
+  ServiceAccount in the namespace.
+- **A2** — `node_escape` now continues to `system_masters` (`control_plane_pki_theft`) and
+  `token_mint` (`static_pod_admission_bypass`), gated on the snapshot containing a control-plane
+  node with no `NoSchedule` taint for its role.
+- **A3** — confused-deputy edge family shipped as `KUBE-CONFUSED-DEPUTY-001`, catalog-driven and
+  RBAC-only, in `internal/analyzer/privesc/deputy.go`. Precision gate: the controller
+  ServiceAccount must exist in the snapshot.
+- **Structural, not in the original A-list** — `IsSystem` was doing double duty as both a
+  source-block and an intermediate-hop-block. Split into `IsSystem` (name prefix `system:`,
+  blocked both ways) and `IsControlPlane` (non-built-in kube-system SA: traversable as an
+  intermediate, never seeded as a source).
+- **Scoring** — replaced the flat "0.5 per hop, downgrade at 3+ hops" attenuation with a per-edge
+  `Difficulty` rating summed across the chain. Length alone no longer downgrades severity; a
+  chain containing a `hard` hop does.
+
+### O2. Correction to A5(b)
+
+**A5(b) is inaccurate as written, and was already inaccurate when this document was published.**
+External AWS-IAM nodes DO carry outbound return edges to `system_masters` and `cluster_admin`
+(`cloud_edges.go:170,182`), and the pathfinder deliberately continues traversal through external
+sinks. Only **A5(a)** (GKE / AKS unmodeled) is genuinely open.
+
+### O3. A fifth structural limit, still open
+
+Sections A1-A6 miss one: **path search records only the shortest chain per (source, sink) pair.**
+The global visited prune, the shorter-chain guard, and the one-path-per-pair dedupe together mean
+that once a subject has any 1-hop edge to a sink, every richer route to that same sink is
+invisible. This is why `--max-privesc-depth` is not the binding constraint: building the graph
+over both test snapshots and running the search at depth 5 and depth 10 produces byte-identical
+output. Raising the cap changes nothing until this and the edge topology change.
+
+Consequence for the deep-chain work: e2e chains now reach 4 hops and the 3-plus-hop population
+grew from 8 findings to 14, but 5-plus-hop chains will not appear until a subject can reach a
+sink *only* by a long route. Surfacing the instructive longer path alongside the shortest one is
+the next structural change worth making.
+
+### O4. Publicly disclosed since this document was written
+
+Sixteen items not covered by sections A-N. "RBAC-inferable" means detectable from the snapshot
+kubesplaining already collects.
+
+| Technique | Disclosed | Inferable | Data needed |
+| --- | --- | --- | --- |
+| **Copy Fail** CVE-2026-31431: unprivileged container escape via shared image-layer page cache | 2026-04 | yes | `KernelVersion` (collected, unparsed) **plus a new join**: does an unprivileged pod share an image layer with a privileged pod? Defeats every securityContext check we have. |
+| runc triad CVE-2025-31133 / -52565 / -52881 | 2025-11 | yes | `ContainerRuntimeVersion` (collected). containerd-to-runc version proxy. |
+| NVIDIAScape CVE-2025-23266 (LD_PRELOAD via createContainer OCI hook) | 2025-07 | yes | nvidia-container-toolkit DaemonSet image tag from the pod spec. |
+| DRA `resourceclaims/binding` and `resourceclaims/driver` node-aware verbs | 2026-04 (1.36 GA) | yes | Pure RBAC, but the verbs are **prefixed** (`associated-node:update`). The matcher will silently fail to match them: a latent correctness bug, not just a gap. |
+| OCI image volumes `volumes[].image` GA | 2026-04 (1.36) | yes | PodSpec field, already collected. |
+| ServiceMonitor `bearerTokenFile` token exfil (GHSA-cxh2-4639-vmc5) | 2026-06 | yes | Shipped: `monitoring.coreos.com/servicemonitors` is in the confused-deputy catalog. |
+| Argo CD repo-server unauthenticated gRPC RCE (unpatched) | 2026-07 | yes | Not an RBAC edge, a **NetworkPolicy** edge: unauthenticated in-cluster service with no policy selecting it. Generalises to Ray dashboards, Redis, etcd, kubelet 10250. |
+| ConstrainedImpersonation KEP-5284 | 2026-04 (beta) | yes | Changes the impersonation threat model that gap A6 targets. |
+| User namespaces `hostUsers: false` GA | 2026-04 | yes | Inverse signal: should **attenuate** every escape rule. PodSpec field, uninspected today. |
+| CVE-2024-10220 `gitRepo` volume command execution | 2024-11 | yes | PodSpec `volumes[].gitRepo`, collected but never inspected. Missed by section H. |
+| 2026 kernel escape band (io_uring, ptrace, nf_tables, epoll, futex) | 2026 | yes | Extends the proposed `KUBE-NODE-KERNEL-CVE-001` bands. |
+| flux-operator GHSA-4xh5-jcj2-ch8q (impersonation bypass on empty OIDC claims) | 2026 | yes | Operator deployment presence plus image version band. |
+| CVE-2026-42880 Argo CD read-only users read plaintext Secrets | 2026 | no | Policy lives in `argocd-rbac-cm`, whose values the collector blanks. |
+| CVE-2025-5187 NodeRestriction OwnerReferences | 2025 | yes | apiserver version band. Availability impact; low priority. |
+| CVE-2026-33105 AKS improper authorization | 2026 | no | Control-plane side, invisible to a snapshot. |
+| TeamPCP Trivy / Actions supply-chain compromise | 2026-03 | no | Useful only as severity evidence, not as a detection. |
+
+Highest value next, by (impact x cost): the **DRA prefixed-verb matcher fix** (latent bug),
+`hostUsers` attenuation and `gitRepo` / image-volume inspection (Tier A, pure PodSpec), then the
+**unauthenticated-service NetworkPolicy join** (reuses two subsystems that already exist), then
+the Copy Fail image-sharing join (a genuinely new analysis shape).
