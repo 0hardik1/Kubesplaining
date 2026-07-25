@@ -118,7 +118,16 @@ var secretTypeLabels = map[string]string{
 	"bootstrap.kubernetes.io/token":       "Bootstrap token (joins new nodes to the cluster)",
 }
 
-// hostNamespaceHints explains what each pod-level "host*" boolean grants when set.
+// trueIsSafeBoolKeys names the boolean evidence fields whose *false* value is the
+// risky one, inverting the default true-is-bad polarity that every host*/privileged
+// flag follows. boolRow consults this to decide whether to apply the "danger" chip
+// styling and surface the hint, so a hardened `runAsNonRoot: true` is not painted red.
+// A key absent from this map is treated as true-is-bad.
+var trueIsSafeBoolKeys = map[string]bool{
+	"runAsNonRoot": true,
+}
+
+// hostNamespaceHints explains what each pod-level boolean means in its risky state.
 var hostNamespaceHints = map[string]string{
 	"hostNetwork":              "Shares the node's network namespace (sees every pod's traffic, binds to node IPs)",
 	"hostPID":                  "Shares the node's process namespace (can ptrace/kill node processes)",

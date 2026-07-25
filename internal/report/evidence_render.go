@@ -17,13 +17,8 @@ import (
 	"sort"
 	"strings"
 
-	"golang.org/x/text/cases"
-	"golang.org/x/text/language"
-
 	"github.com/0hardik1/kubesplaining/internal/models"
 )
-
-var titleCaser = cases.Title(language.English)
 
 // renderEvidence parses Evidence (an analyzer-emitted JSON object) and renders a
 // labeled grid with semantic formatting per known key. Returns "" when the payload
@@ -135,14 +130,18 @@ func renderEvidenceRow(key string, val any, obj map[string]any) string {
 	case "source_binding":
 		return kubectlRow("Source binding", asString(val), sourceBindingCmd(asString(val), obj))
 	case "scope":
-		return plainRow("Scope", titleCaser.String(asString(val)), "")
+		// The evidence payload carries the raw models.ScopeLevel string; render it
+		// through the same Label() helper the finding card uses (wired as the
+		// `scopeLabel` template func) so the two never disagree, including on the
+		// "Unknown" fallback for a level outside the four constants.
+		return textRow("Scope", models.ScopeLevel(asString(val)).Label(), "")
 	case "namespace":
 		return codeRow("Namespace", asString(val))
 	case "container":
 		return codeRow("Container", asString(val))
 	case "image":
 		img := asString(val)
-		return plainRow("Image", img, mutableImageHint(img))
+		return textRow("Image", img, mutableImageHint(img))
 	case "service_account":
 		return codeRow("ServiceAccount", asString(val))
 	case "hostNetwork", "hostPID", "hostIPC", "privileged",
@@ -444,6 +443,14 @@ func plainRow(label, valueHTML, hint string) string {
 	return b.String()
 }
 
+// textRow emits "Label: value" for a plain-text value. Use this, not plainRow, for
+// anything sourced from a Kubernetes object: a container image reference (or any
+// other analyzer-supplied string) can contain arbitrary characters, and plainRow
+// writes its value argument as raw HTML.
+func textRow(label, value, hint string) string {
+	return plainRow(label, template.HTMLEscapeString(value), hint)
+}
+
 // codeRow emits "Label: <code>value</code>" — the default for short identifiers.
 func codeRow(label, value string) string {
 	if value == "" {
@@ -479,14 +486,18 @@ func boolRow(key string, val any) string {
 	if !ok {
 		return jsonFallbackRow(key, val)
 	}
+	// The chip prints the literal value, but the danger styling and the explanatory
+	// hint follow the field's *risky* state, which is not always `true`. See
+	// trueIsSafeBoolKeys for the inverted fields (runAsNonRoot: false is the finding).
 	state := "false"
-	class := "ev-chip"
 	if bv {
 		state = "true"
-		class += " danger"
 	}
+	risky := bv != trueIsSafeBoolKeys[key]
+	class := "ev-chip"
 	hint := ""
-	if bv {
+	if risky {
+		class += " danger"
 		hint = hostNamespaceHint(key)
 	}
 	var b strings.Builder
