@@ -600,22 +600,34 @@ func ensureSubjectNode(graph *models.EscalationGraph, ref models.SubjectRef) {
 		return
 	}
 	graph.Nodes[id] = &models.EscalationNode{
-		ID:       id,
-		Subject:  ref,
-		IsSystem: isSystemSubject(ref),
+		ID:             id,
+		Subject:        ref,
+		IsSystem:       isSystemSubject(ref),
+		IsControlPlane: isControlPlaneSubject(ref),
 	}
 }
 
-// isSystemSubject flags built-in control-plane subjects so path search does not traverse them.
+// isSystemSubject flags built-in control-plane identities by name prefix. These are
+// neither traversed nor seeded: laundering a chain through the control plane's own
+// built-in identities is a modeling artifact rather than an attack.
+//
 // Note: external cloud-IAM nodes carry IDs prefixed "external:aws-iam:" (see
 // cloud_edges.go) and never flow through ensureSubjectNode, so isSystemSubject
 // is never asked about them. The "external:" prefix is therefore non-system by
 // construction; the pathfinder skips them by checking node.IsExternal directly.
 func isSystemSubject(ref models.SubjectRef) bool {
-	if strings.HasPrefix(ref.Name, "system:") {
-		return true
+	return strings.HasPrefix(ref.Name, "system:")
+}
+
+// isControlPlaneSubject flags a non-built-in ServiceAccount in a control-plane
+// namespace. These are traversable intermediates but not path-search sources; see
+// the IsControlPlane doc comment on models.EscalationNode for the reasoning.
+func isControlPlaneSubject(ref models.SubjectRef) bool {
+	if isSystemSubject(ref) || ref.Kind != "ServiceAccount" {
+		return false
 	}
-	if ref.Kind == "ServiceAccount" && (ref.Namespace == "kube-system" || ref.Namespace == "kube-public" || ref.Namespace == "kube-node-lease") {
+	switch ref.Namespace {
+	case "kube-system", "kube-public", "kube-node-lease":
 		return true
 	}
 	return false

@@ -32,6 +32,12 @@ func FindPaths(graph *models.EscalationGraph, maxDepth int) []models.EscalationP
 		if node.IsExternal {
 			continue
 		}
+		// Control-plane controller SAs are traversable intermediates (see
+		// models.EscalationNode.IsControlPlane) but seeding them as sources would
+		// report the control plane escalating to itself on every cluster.
+		if node.IsControlPlane {
+			continue
+		}
 		sources = append(sources, id)
 	}
 	sort.Strings(sources)

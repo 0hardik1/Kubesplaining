@@ -240,3 +240,43 @@ func TestCSRApprovePathReachesSystemMasters(t *testing.T) {
 		t.Fatalf("expected KUBE-PRIVESC-PATH-SYSTEM-MASTERS finding for csr-attacker, got %d findings", len(findings))
 	}
 }
+
+// TestControlPlaneSAIsTraversableButNotASource proves a non-system kube-system
+// ServiceAccount can serve as a chain intermediate while never seeding a search.
+func TestControlPlaneSAIsTraversableButNotASource(t *testing.T) {
+	t.Parallel()
+
+	graph := &models.EscalationGraph{Nodes: map[string]*models.EscalationNode{}}
+	addSink(graph, sinkClusterAdmin, models.TargetClusterAdmin)
+
+	tenant := models.SubjectRef{Kind: "ServiceAccount", Name: "tenant", Namespace: "app"}
+	controller := models.SubjectRef{Kind: "ServiceAccount", Name: "some-controller", Namespace: "kube-system"}
+	builtin := models.SubjectRef{Kind: "ServiceAccount", Name: "system:kube-scheduler", Namespace: "kube-system"}
+	ensureSubjectNode(graph, tenant)
+	ensureSubjectNode(graph, controller)
+	ensureSubjectNode(graph, builtin)
+
+	if graph.Nodes[nodeID(controller)].IsSystem {
+		t.Fatal("a non-system kube-system SA must not be flagged IsSystem")
+	}
+	if !graph.Nodes[nodeID(controller)].IsControlPlane {
+		t.Fatal("a non-system kube-system SA must be flagged IsControlPlane")
+	}
+	if !graph.Nodes[nodeID(builtin)].IsSystem {
+		t.Fatal("a system: prefixed subject must stay IsSystem")
+	}
+
+	addEdge(graph, nodeID(tenant), nodeID(controller), &models.EscalationEdge{Action: "pod_create_token_theft"})
+	addEdge(graph, nodeID(controller), sinkClusterAdmin, &models.EscalationEdge{Action: "bound_to_cluster_admin"})
+
+	paths := FindPaths(graph, 5)
+	if len(paths) != 1 {
+		t.Fatalf("want exactly 1 path (tenant only; the controller must not seed), got %d", len(paths))
+	}
+	if paths[0].Source.Name != "tenant" {
+		t.Fatalf("want source tenant, got %s", paths[0].Source.Name)
+	}
+	if len(paths[0].Hops) != 2 {
+		t.Fatalf("want a 2-hop chain through the controller, got %d", len(paths[0].Hops))
+	}
+}

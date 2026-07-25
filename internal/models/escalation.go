@@ -24,6 +24,12 @@ type EscalationNode struct {
 	ID       string     `json:"id"`
 	Subject  SubjectRef `json:"subject,omitempty"`
 	IsSystem bool       `json:"is_system,omitempty"` // built-in control-plane subjects; not traversed during path search
+	// IsControlPlane marks a non-built-in ServiceAccount living in a control-plane
+	// namespace (kube-system, kube-public, kube-node-lease). Unlike IsSystem these
+	// ARE traversed as chain intermediates, because a co-located controller SA is
+	// exactly what a real escalation launders through. They are still never seeded
+	// as path-search sources, which would report the control plane escalating to itself.
+	IsControlPlane bool `json:"is_control_plane,omitempty"`
 	// external (non-Kubernetes) subject such as a cloud IAM role; not seeded as a BFS source this slot
 	IsExternal bool `json:"is_external,omitempty"`
 	IsSink     bool `json:"is_sink,omitempty"`
