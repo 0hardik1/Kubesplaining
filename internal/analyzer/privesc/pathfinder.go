@@ -58,6 +58,7 @@ func FindPaths(graph *models.EscalationGraph, maxDepth int) []models.EscalationP
 			targetNode := graph.Nodes[targetID]
 			path := buildPath(graph, sourceNode.Subject, targetNode.Target, chain)
 			path.TargetNamespace = targetNode.TargetNamespace
+			path.TargetID = targetID
 			if alt, ok := alternates[targetID]; ok {
 				path.AlternateHops = buildPath(graph, sourceNode.Subject, targetNode.Target, alt).Hops
 			}
@@ -75,7 +76,18 @@ func FindPaths(graph *models.EscalationGraph, maxDepth int) []models.EscalationP
 		if paths[i].TargetNamespace != paths[j].TargetNamespace {
 			return paths[i].TargetNamespace < paths[j].TargetNamespace
 		}
-		return len(paths[i].Hops) < len(paths[j].Hops)
+		if len(paths[i].Hops) != len(paths[j].Hops) {
+			return len(paths[i].Hops) < len(paths[j].Hops)
+		}
+		// Final tiebreak: TargetID is the graph node ID, unique per sink node even
+		// when several nodes share one Target enum and TargetNamespace, which every
+		// external AWS IAM role does (one graph node per ARN, but Target is always
+		// TargetAWSIAMRole and TargetNamespace is always empty). Without this, two
+		// same-length paths to two different IAM roles tie on every key above, and
+		// sort.Slice is documented unstable: it is fed by the "for targetID, chain
+		// := range found" map above, so without a total order the tied elements'
+		// relative order depends on map iteration, which Go re-randomizes per run.
+		return paths[i].TargetID < paths[j].TargetID
 	})
 
 	return paths

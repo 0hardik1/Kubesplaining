@@ -93,7 +93,18 @@ type EscalationPath struct {
 	Source          SubjectRef       `json:"source"`
 	Target          EscalationTarget `json:"target"`
 	TargetNamespace string           `json:"target_namespace,omitempty"` // populated only when Target == TargetNamespaceAdmin
-	Hops            []EscalationHop  `json:"hops"`
+	// TargetID is the graph node ID of the terminal node (see privesc.nodeID /
+	// externalAWSIAMNodeID), unique per node even when several nodes share the same
+	// Target enum and TargetNamespace, as every external AWS IAM role does (each ARN
+	// gets its own node, but Target is always TargetAWSIAMRole and TargetNamespace is
+	// always empty). Without it, two paths to two different IAM roles tie on every
+	// other field FindPaths sorts by, so an unstable sort orders them arbitrarily and
+	// findingFromPath cannot tell them apart when building a finding ID. Not
+	// serialized to any production output surface today (only Hops/AlternateHops
+	// reach Finding.EscalationPath/AlternateEscalationPath), so a plain tag is fine;
+	// this struct's other fields are already tagged despite the same non-surfacing.
+	TargetID string          `json:"target_id,omitempty"`
+	Hops     []EscalationHop `json:"hops"`
 	// AlternateHops is a route to the same Target that survives cutting the binding
 	// named by Hops[0]. Non-empty means the obvious remediation is not sufficient on
 	// its own. Empty means either that no such route exists, or that Hops[0] is a

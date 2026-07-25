@@ -93,6 +93,24 @@ func findingFromPath(path models.EscalationPath) models.Finding {
 		// findings, so keep the namespace in the deterministic finding ID.
 		id = fmt.Sprintf("%s:%s", id, path.TargetNamespace)
 	}
+	if target == models.TargetAWSIAMRole {
+		// Every external AWS IAM role gets its own graph node (cloud_edges.go's
+		// externalAWSIAMNodeID keys on the ARN), but Target and TargetNamespace above
+		// are identical for all of them, so two different roles reached from the same
+		// source would otherwise collide on this ID, exactly like two namespace-admin
+		// sinks would without the suffix three lines above. Distinguish by the ARN
+		// itself rather than the sanitized node ID: it is what an operator greps for,
+		// and it needs no further plumbing, since buildPath already sets the terminal
+		// hop's ToSubject to the external node's Subject (Name = the raw ARN; see
+		// ensureExternalAWSIAMNode). Fall back to TargetID, the sanitized node ID, only
+		// if a path somehow carries no hops, which should not happen since the source
+		// itself is never a sink.
+		suffix := path.TargetID
+		if n := len(path.Hops); n > 0 && path.Hops[n-1].ToSubject.Name != "" {
+			suffix = path.Hops[n-1].ToSubject.Name
+		}
+		id = fmt.Sprintf("%s:%s", id, suffix)
+	}
 	references := make([]string, 0, len(content.LearnMore))
 	for _, ref := range content.LearnMore {
 		references = append(references, ref.URL)

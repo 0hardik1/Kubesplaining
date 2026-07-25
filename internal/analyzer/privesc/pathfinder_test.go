@@ -240,19 +240,91 @@ func TestAlternatesDeterministicWhenCutKeyCoversTwoSinks(t *testing.T) {
 		t.Fatalf("token-mint's cut closes its only route, want no alternate, got %d hops", n)
 	}
 
-	want, err := json.Marshal(baseline)
+	assertFindPathsStable(t, 20, "a targetID is reachable from two cut keys", func() []models.EscalationPath {
+		return FindPaths(build(), 5)
+	})
+}
+
+// assertFindPathsStable runs fn N times and fails at the first run whose
+// JSON-marshaled []models.EscalationPath differs from the first call's result,
+// quoting both. hint is appended to the failure message so each caller's own
+// "why would this diverge" reasoning survives in the test output. Shared by the
+// two determinism regressions in this file: one rebuilds the graph on every call
+// (catching upstream BuildGraph nondeterminism and cut-key partition bugs), the
+// other holds one graph fixed and calls FindPaths repeatedly (catching
+// nondeterminism inside FindPaths itself, e.g. the map range at "for targetID,
+// chain := range found" feeding an unstable sort).
+func assertFindPathsStable(t *testing.T, n int, hint string, run func() []models.EscalationPath) {
+	t.Helper()
+	want, err := json.Marshal(run())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 20; i++ {
-		got, err := json.Marshal(FindPaths(build(), 5))
+	for i := 0; i < n; i++ {
+		got, err := json.Marshal(run())
 		if err != nil {
 			t.Fatal(err)
 		}
 		if string(got) != string(want) {
-			t.Fatalf("run %d diverged, so a targetID is reachable from two cut keys\n want %s\n  got %s", i, want, got)
+			t.Fatalf("run %d diverged: %s\n want %s\n  got %s", i, hint, want, got)
 		}
 	}
+}
+
+// TestFindPathsStableWhenTwoSinksTieOnEveryOtherKey is the "one graph, many
+// FindPaths calls" level of the task-12(a) determinism guard: even holding the
+// graph fixed, FindPaths itself must return the same result every call.
+//
+// Two external AWS-IAM-shaped sink nodes reachable from one source at the same hop
+// count tie on every key FindPaths' comparator checked before TargetID was added
+// as the final tiebreak: same Source, same Target enum (every IAM role node
+// carries TargetAWSIAMRole), same TargetNamespace (always empty for this target),
+// same hop count. Before the fix, "for targetID, chain := range found" (a map, see
+// FindPaths) appended these two paths to the pre-sort slice in a random order each
+// call, and sort.Slice's documented instability let that randomness survive into
+// the returned order. This is the same shape behind the audit's reproduced 26/4
+// AWS IAM role split (see analyzer_test.go's two-IRSA-role fixture), tested here
+// one layer down: at FindPaths itself, isolated from BuildGraph and from the
+// finding-ID collapse inside Analyze's seen map.
+func TestFindPathsStableWhenTwoSinksTieOnEveryOtherKey(t *testing.T) {
+	graph := &models.EscalationGraph{Nodes: map[string]*models.EscalationNode{}}
+	src := models.SubjectRef{Kind: "ServiceAccount", Name: "src", Namespace: "app"}
+	ensureSubjectNode(graph, src)
+
+	roleOneARN := "arn:aws:iam::111111111111:role/RoleOne"
+	roleTwoARN := "arn:aws:iam::222222222222:role/RoleTwo"
+	roleOneID := externalAWSIAMNodeID(roleOneARN)
+	roleTwoID := externalAWSIAMNodeID(roleTwoARN)
+	graph.Nodes[roleOneID] = &models.EscalationNode{
+		ID: roleOneID, IsSink: true, IsExternal: true, Traversable: true,
+		Subject: models.SubjectRef{Kind: "User", Name: roleOneARN},
+		Target:  models.TargetAWSIAMRole,
+	}
+	graph.Nodes[roleTwoID] = &models.EscalationNode{
+		ID: roleTwoID, IsSink: true, IsExternal: true, Traversable: true,
+		Subject: models.SubjectRef{Kind: "User", Name: roleTwoARN},
+		Target:  models.TargetAWSIAMRole,
+	}
+	addEdge(graph, nodeID(src), roleOneID, &models.EscalationEdge{Action: "irsa_assume_role", Permission: roleOneARN})
+	addEdge(graph, nodeID(src), roleTwoID, &models.EscalationEdge{Action: "irsa_assume_role", Permission: roleTwoARN})
+
+	// Pin the fixture's premise before pinning its stability: without this, the
+	// comparison below would pass just as happily against a fixture with only one
+	// path, which cannot tie and so cannot exercise the bug.
+	baseline := FindPaths(graph, 5)
+	var tied int
+	for _, p := range baseline {
+		if p.Source.Key() == src.Key() && p.Target == models.TargetAWSIAMRole {
+			tied++
+		}
+	}
+	if tied != 2 {
+		t.Fatalf("fixture does not tie: want 2 same-source aws_iam_role paths, got %d (%+v)", tied, baseline)
+	}
+
+	assertFindPathsStable(t, 20, "two AWS IAM role sinks tie on Source/Target/TargetNamespace/hop-count", func() []models.EscalationPath {
+		return FindPaths(graph, 5)
+	})
 }
 
 // TestAlternateFoundWhenSecondBindingGrantsPodCreate is the end-to-end property: with
