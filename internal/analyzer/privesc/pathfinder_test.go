@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 )
 
 // TestFindPathsContinuesThroughTraversableSink proves a sink marked Traversable
@@ -250,5 +252,75 @@ func TestAlternatesDeterministicWhenCutKeyCoversTwoSinks(t *testing.T) {
 		if string(got) != string(want) {
 			t.Fatalf("run %d diverged, so a targetID is reachable from two cut keys\n want %s\n  got %s", i, want, got)
 		}
+	}
+}
+
+// TestAlternateFoundWhenSecondBindingGrantsPodCreate is the end-to-end property: with
+// two bindings granting `create pods`, cutting the first must leave a surviving route,
+// so the finding warns the operator instead of implying the fix is sufficient.
+func TestAlternateFoundWhenSecondBindingGrantsPodCreate(t *testing.T) {
+	snapshot := models.Snapshot{}
+	snapshot.Resources.Namespaces = []corev1.Namespace{
+		{ObjectMeta: objectMeta("team-a", "")},
+		{ObjectMeta: objectMeta("team-b", "")},
+	}
+	snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+		{ObjectMeta: objectMeta("deployer", "dev")},
+	}
+	snapshot.Resources.Roles = []rbacv1.Role{
+		{
+			ObjectMeta: objectMeta("pod-creator-a", "team-a"),
+			Rules: []rbacv1.PolicyRule{{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"create"},
+			}},
+		},
+		{
+			ObjectMeta: objectMeta("pod-creator-b", "team-b"),
+			Rules: []rbacv1.PolicyRule{{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"create"},
+			}},
+		},
+	}
+	snapshot.Resources.RoleBindings = []rbacv1.RoleBinding{
+		{
+			ObjectMeta: objectMeta("deploy-a", "team-a"),
+			RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "pod-creator-a"},
+			Subjects: []rbacv1.Subject{
+				{Kind: "ServiceAccount", Name: "deployer", Namespace: "dev"},
+			},
+		},
+		{
+			ObjectMeta: objectMeta("deploy-b", "team-b"),
+			RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "pod-creator-b"},
+			Subjects: []rbacv1.Subject{
+				{Kind: "ServiceAccount", Name: "deployer", Namespace: "dev"},
+			},
+		},
+	}
+
+	graph := BuildGraph(snapshot)
+	paths := FindPaths(graph, 5)
+
+	deployer := models.SubjectRef{Kind: "ServiceAccount", Name: "deployer", Namespace: "dev"}
+	var found int
+	var p models.EscalationPath
+	for _, candidate := range paths {
+		if candidate.Source.Key() == deployer.Key() && candidate.Target == models.TargetNodeEscape {
+			p = candidate
+			found++
+		}
+	}
+	if found != 1 {
+		t.Fatalf("want exactly 1 deployer -> node_escape path, got %d (of %d total)", found, len(paths))
+	}
+	if len(p.AlternateHops) != 1 {
+		t.Fatalf("want a 1-hop alternate via the second binding, got %d hops (path=%+v)", len(p.AlternateHops), p)
+	}
+	if p.AlternateHops[0].SourceBinding == p.Hops[0].SourceBinding {
+		t.Errorf("alternate reuses the cut binding %q", p.Hops[0].SourceBinding)
 	}
 }

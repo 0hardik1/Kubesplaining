@@ -562,3 +562,126 @@ func TestPrivilegedPodCreateEdgeStampsProvenance(t *testing.T) {
 		t.Fatal("no pod_create_privileged_escape edge emitted; fixture is wrong")
 	}
 }
+
+// TestPrivilegedPodCreateEmitsEdgePerBinding pins that two bindings granting the same
+// capability produce two edges. Collapsing them to one makes the cut-resilient pass
+// report a route closed while the second binding still opens it, which is the failure
+// this whole feature exists to prevent.
+func TestPrivilegedPodCreateEmitsEdgePerBinding(t *testing.T) {
+	snapshot := models.Snapshot{}
+	snapshot.Resources.Namespaces = []corev1.Namespace{
+		{ObjectMeta: objectMeta("team-a", "")},
+		{ObjectMeta: objectMeta("team-b", "")},
+	}
+	snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+		{ObjectMeta: objectMeta("deployer", "dev")},
+	}
+	snapshot.Resources.Roles = []rbacv1.Role{
+		{
+			ObjectMeta: objectMeta("pod-creator-a", "team-a"),
+			Rules: []rbacv1.PolicyRule{{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"create"},
+			}},
+		},
+		{
+			ObjectMeta: objectMeta("pod-creator-b", "team-b"),
+			Rules: []rbacv1.PolicyRule{{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"create"},
+			}},
+		},
+	}
+	snapshot.Resources.RoleBindings = []rbacv1.RoleBinding{
+		{
+			ObjectMeta: objectMeta("deploy-a", "team-a"),
+			RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "pod-creator-a"},
+			Subjects: []rbacv1.Subject{
+				{Kind: "ServiceAccount", Name: "deployer", Namespace: "dev"},
+			},
+		},
+		{
+			ObjectMeta: objectMeta("deploy-b", "team-b"),
+			RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "pod-creator-b"},
+			Subjects: []rbacv1.Subject{
+				{Kind: "ServiceAccount", Name: "deployer", Namespace: "dev"},
+			},
+		},
+	}
+
+	graph := BuildGraph(snapshot)
+
+	const subjectID = "subject:ServiceAccount/dev/deployer"
+	bindings := map[string]bool{}
+	var count int
+	for _, edge := range graph.Edges {
+		if edge.From != subjectID || edge.To != sinkNodeEscape || edge.Action != "pod_create_privileged_escape" {
+			continue
+		}
+		count++
+		bindings[edge.SourceBinding] = true
+	}
+	if count != 2 {
+		t.Fatalf("want 2 pod_create_privileged_escape edges, got %d (edges=%+v)", count, graph.Edges)
+	}
+	for _, want := range []string{"deploy-a", "deploy-b"} {
+		if !bindings[want] {
+			t.Errorf("no pod_create_privileged_escape edge stamped with binding %q; got %v", want, bindings)
+		}
+	}
+}
+
+// TestPrivilegedPodCreateDedupesWithinOneBinding keeps the fix from swinging too far:
+// one binding whose Role carries two rules that both match must still yield one edge,
+// or a role with many pod rules would fan out into meaningless parallel edges.
+func TestPrivilegedPodCreateDedupesWithinOneBinding(t *testing.T) {
+	snapshot := models.Snapshot{}
+	snapshot.Resources.Namespaces = []corev1.Namespace{
+		{ObjectMeta: objectMeta("team-a", "")},
+	}
+	snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+		{ObjectMeta: objectMeta("deployer", "dev")},
+	}
+	snapshot.Resources.Roles = []rbacv1.Role{
+		{
+			ObjectMeta: objectMeta("pod-creator", "team-a"),
+			Rules: []rbacv1.PolicyRule{
+				{
+					APIGroups: []string{""},
+					Resources: []string{"pods"},
+					Verbs:     []string{"create"},
+				},
+				{
+					APIGroups: []string{""},
+					Resources: []string{"pods", "secrets"},
+					Verbs:     []string{"create"},
+				},
+			},
+		},
+	}
+	snapshot.Resources.RoleBindings = []rbacv1.RoleBinding{
+		{
+			ObjectMeta: objectMeta("deploy-a", "team-a"),
+			RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "pod-creator"},
+			Subjects: []rbacv1.Subject{
+				{Kind: "ServiceAccount", Name: "deployer", Namespace: "dev"},
+			},
+		},
+	}
+
+	graph := BuildGraph(snapshot)
+
+	const subjectID = "subject:ServiceAccount/dev/deployer"
+	var count int
+	for _, edge := range graph.Edges {
+		if edge.From != subjectID || edge.To != sinkNodeEscape || edge.Action != "pod_create_privileged_escape" {
+			continue
+		}
+		count++
+	}
+	if count != 1 {
+		t.Fatalf("want 1 pod_create_privileged_escape edge (two rules, one binding), got %d (edges=%+v)", count, graph.Edges)
+	}
+}

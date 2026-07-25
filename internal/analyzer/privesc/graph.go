@@ -529,6 +529,12 @@ func addNodeMigrateEdge(graph *models.EscalationGraph, subject models.SubjectRef
 // not block privileged pods can launch a privileged pod and escape to the node.
 // Full wildcards are already cluster-admin (-017), so they are skipped.
 func addPrivilegedPodCreateEdges(graph *models.EscalationGraph, subject models.SubjectRef, rules []permissions.EffectiveRule, privilegedNamespaces map[string]bool) {
+	// One edge per distinct granting binding, not one per subject. The cut-resilient pass
+	// models removing this subject from a single binding, so two bindings granting the
+	// same capability have to appear as two edges: collapsed into one, cutting it reports
+	// the route closed while the other binding still opens it. Keyed on cutKey so the
+	// builder and the cut agree on binding identity by construction.
+	emitted := map[cutKey]bool{}
 	for _, r := range rules {
 		if !matchesResourceVerb(r, []string{"pods"}, []string{"create"}) {
 			continue
@@ -539,6 +545,11 @@ func addPrivilegedPodCreateEdges(graph *models.EscalationGraph, subject models.S
 		if !podCreateAllowsPrivileged(r.Namespace == "", r.Namespace, privilegedNamespaces) {
 			continue
 		}
+		key := cutKey{binding: r.SourceBinding, namespace: r.Namespace}
+		if emitted[key] {
+			continue
+		}
+		emitted[key] = true
 		ensureSubjectNode(graph, subject)
 		addEdge(graph, nodeID(subject), sinkNodeEscape, &models.EscalationEdge{
 			Technique:        "KUBE-PRIVESC-002",
@@ -549,7 +560,6 @@ func addPrivilegedPodCreateEdges(graph *models.EscalationGraph, subject models.S
 			SourceRole:       r.SourceRole,
 			BindingNamespace: r.Namespace,
 		})
-		return // one node-escape edge per subject is sufficient
 	}
 }
 
