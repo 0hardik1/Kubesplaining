@@ -80,10 +80,22 @@ every RBAC-derived edge has provenance in scope at construction. Implementation 
 closure at the top of `addEdgesForRule` that stamps the three fields and delegates to `addEdge`,
 so each of the roughly twenty literal call sites inside that function changes by one identifier.
 
-Edges built outside `addEdgesForRule` keep empty provenance by construction: the pod-escape
-edges (`graph.go:491,515,566`), the node-escape continuation (`graph.go:691,697`), the
-namespace-admin token-theft fan-out (`graph.go:428`, which emanates from a sink node rather
-than a subject), and the cloud-identity edges in `cloud_edges.go`.
+Two edge builders outside `addEdgesForRule` also have provenance in scope and **must** carry it:
+
+- **`bound_to_cluster_admin` (`graph.go:99-116`).** This loop walks ClusterRoleBindings directly
+  and already emits one edge per binding, with `binding.Name` in hand (its Description reads
+  "bound to cluster-admin via %s"). This is the single most common privesc path in a real
+  cluster. Without provenance here it would skip the cut-resilient pass entirely, and the
+  parallel-binding case in section 3 could not be expressed at all. `BindingNamespace` is
+  always empty here since these are ClusterRoleBindings.
+- **The confused-deputy edges (`deputy.go`, called at `graph.go:92`).** `addConfusedDeputyEdges`
+  receives `perms.Rules`, so the granting binding is available per rule the same way it is in
+  `addEdgesForRule`.
+
+The remaining edges keep empty provenance by construction, because no single binding grants
+them: the pod-escape edges (`graph.go:491,515,566`), the node-escape continuation
+(`graph.go:691,697`), the namespace-admin token-theft fan-out (`graph.go:428`, which emanates
+from a sink node rather than a subject), and the cloud-identity edges in `cloud_edges.go`.
 
 `models.EscalationHop` (`finding.go:297`) gains the same three fields, copied through in
 `buildPath` (`pathfinder.go:146`) so they survive into the finding, JSON, and report.
@@ -218,15 +230,46 @@ asserting that RBAC edges carry a binding and synthetic edges do not.
 `remediation/rbac` needs a test that a subject in multiple bindings gets the *granting* binding
 cut, which is the regression test for the bug in section 2.
 
-**E2E.** No fixture in the tree has the required shape: both `testdata/snapshots/minimal-risky.json`
-and the e2e cluster produce only routes where the shortest is the only one. A new
-`testdata/e2e/vulnerable/` shard is a prerequisite, not a follow-up. It needs a subject bound
-into a sink two ways (the parallel-binding case is the cheapest to express and the most
-instructive to read). Per the repo's fixture constraint, its pods must actually reach Running on
-kind, so idle sleep containers as in the existing shards.
+**E2E on a local kind cluster.** This is the gate that matters: the `.chain` assertions are the
+only ones that can catch this feature silently regressing, because the rule-ID goldens stay
+identical by design (section 4) and a collapse back to shortest-path-only would keep every other
+gate green. The work runs under the existing `make e2e` (`scripts/kind-e2e.sh`, single-node kind
+cluster, Docker daemon required).
 
-The `.chain` assertion format gains an optional column selecting primary or alternate, so the
-alternate's shape is pinned and not merely its existence.
+New shard `testdata/e2e/vulnerable/18-privesc-cut-resilient.yaml`, covering both alternate
+shapes:
+
+1. **Same-length alternate via a parallel binding.** One ServiceAccount named as a subject in
+   two separate cluster-admin ClusterRoleBindings. `permissions.Aggregate` yields one
+   `EffectiveRule` per binding and `addEdge` does not dedupe (`graph.go:824-831`), so the graph
+   carries two parallel `bound_to_cluster_admin` edges with distinct provenance. Cutting the
+   first leaves the second, and the alternate comes back at the same hop count. This is the
+   case that proves the feature is about remediation rather than chain length.
+2. **Longer alternate via a different route.** One ServiceAccount reaching cluster-admin both
+   directly through its own binding and, after that binding is cut, through the
+   namespace-admin continuation into a co-located cluster-admin-bound SA (the shape shard 17
+   already establishes).
+
+Like shard 17, this fixture is **RBAC-only and needs no pods**, so it takes no `*.rollout` entry
+and sidesteps the rollout-wait constraint entirely. Namespaces and ServiceAccounts prefixed
+`cutres-` to keep it independent of the other shards.
+
+The `.chain` format gains an optional fourth column selecting which chain to assert against:
+
+```
+<finding-id-prefix> <min-hop-count> <ordered,comma,separated,actions> [primary|alternate]
+```
+
+Omitted means `primary`, so every existing line in `deep-chains.chain` keeps working untouched.
+`alternate` asserts against `.alternate_escalation_path` instead of `.escalation_path`, which
+pins the alternate's *shape*, not merely its existence. New `cut-resilient.chain` with one
+assertion per fixture case above, plus one `primary` assertion so a regression cannot satisfy
+the gate by swapping the two chains.
+
+While editing these assertions, replace the `| first` selector at `scripts/kind-e2e.sh:361,375`.
+It silently picks one of potentially several matches, so as the finding set grows the gate can
+retarget a different finding and keep passing. The replacement should require exactly one match
+for the prefix and fail loudly on ambiguity, which is a strictly stronger gate than today's.
 
 **Invariants to assert explicitly.** Neither `full-scan.ruleset` nor `minimal-scan.ruleset`
 should move, since no rule ID is added or removed. If either moves, something fired that should
