@@ -240,6 +240,67 @@ func TestForPrivescPathFallback(t *testing.T) {
 	}
 }
 
+// TestForPrivescPathAdvisorySplitsCorrelationFromWorkload covers the other cause of a
+// chain with no binding to cut. Correlation edges (two RBAC grants dangerous only when
+// held together) reach the advisory branch for the same mechanical reason pod escapes
+// do, and used to get the same copy, which told the operator of a node_drain_migrate
+// chain to remove hostPath / hostPID / hostNetwork or revoke `serviceaccounts/token`
+// create. Neither applies: the enabler is `delete pods` plus node manipulation, both
+// RBAC. The workload advice must stay for genuinely synthetic edges, so both branches
+// are asserted here, each denying the other's copy.
+func TestForPrivescPathAdvisorySplitsCorrelationFromWorkload(t *testing.T) {
+	t.Parallel()
+
+	subject := models.SubjectRef{Kind: "ServiceAccount", Name: "agent", Namespace: "ops"}
+	advisoryFor := func(t *testing.T, hop models.EscalationHop) string {
+		t.Helper()
+		hint := ForPrivescPath(models.Finding{
+			RuleID:         "KUBE-PRIVESC-PATH-NODE-ESCAPE",
+			Subject:        &subject,
+			EscalationPath: []models.EscalationHop{hop},
+		}, models.Snapshot{})
+		if hint == nil {
+			t.Fatalf("ForPrivescPath returned nil for action %q, want the advisory hint", hop.Action)
+		}
+		if hint.Patch != nil {
+			t.Errorf("Patch should be nil for the advisory branch; got %+v", hint.Patch)
+		}
+		return hint.RBACDiff
+	}
+
+	// Every correlation builder in privesc/graph.go that calls cutBreakers. Adding a
+	// fourth there without adding it to correlationRootedActions fails here.
+	for _, hop := range []models.EscalationHop{
+		{Step: 1, Action: "node_drain_migrate", Permission: "delete pods + node scheduling control"},
+		{Step: 1, Action: "secret_mint_token", Permission: "create + get secrets (cluster-wide)"},
+		{Step: 1, Action: "csr_approve", Permission: "create certificatesigningrequests + update certificatesigningrequests/approval"},
+	} {
+		diff := advisoryFor(t, hop)
+		if !strings.Contains(diff, "correlation edge") {
+			t.Errorf("%s: advisory diff should name the correlation edge; got:\n%s", hop.Action, diff)
+		}
+		if !strings.Contains(diff, hop.Permission) {
+			t.Errorf("%s: advisory diff should name both halves (%q); got:\n%s", hop.Action, hop.Permission, diff)
+		}
+		for _, banned := range []string{"hostPath", "workload layer", "synthetic edge"} {
+			if strings.Contains(diff, banned) {
+				t.Errorf("%s: advisory diff still sends an RBAC-rooted chain to the workload layer (%q); got:\n%s",
+					hop.Action, banned, diff)
+			}
+		}
+	}
+
+	// The workload copy is still right for a genuinely synthetic edge, and must not
+	// have been replaced wholesale.
+	escape := advisoryFor(t, models.EscalationHop{Step: 1, Action: "pod_host_escape", Permission: "hostPath:/"})
+	if !strings.Contains(escape, "synthetic edge") || !strings.Contains(escape, "hostPath") {
+		t.Errorf("pod_host_escape lost the workload-layer advisory; got:\n%s", escape)
+	}
+	if strings.Contains(escape, "correlation edge") {
+		t.Errorf("pod_host_escape got the correlation copy; got:\n%s", escape)
+	}
+}
+
 // TestForPrivescPathCutsGrantingBinding proves ForPrivescPath cuts the binding
 // hop 1's own provenance names, not merely some other binding that happens to
 // list the subject. The snapshot lists the subject in two ClusterRoleBindings;

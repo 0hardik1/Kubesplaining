@@ -606,20 +606,55 @@ func renderBindingYAML(b bindingRef, subjects []rbacv1.Subject) string {
 	return sb.String()
 }
 
+// correlationRootedActions are the hop actions emitted by the privesc graph's
+// correlation edges: edges that fire only when a subject holds TWO separate RBAC
+// grants at once, so no single (Cluster)RoleBinding grants the edge and there is
+// nothing for ForPrivescPath to cut. They land in the advisory branch for the same
+// reason pod-escape edges do (no binding provenance) but for a completely different
+// underlying cause, which is why the advisory copy branches on this set.
+//
+// One entry per builder in internal/analyzer/privesc/graph.go: addSecretMintEdge,
+// addNodeMigrateEdge and finalizeCSRApprovals, the three that call cutBreakers. A
+// fourth correlation edge added there needs an entry here, or its advisory copy will
+// send the operator to the workload layer for a purely RBAC problem.
+var correlationRootedActions = map[string]bool{
+	"secret_mint_token":  true,
+	"node_drain_migrate": true,
+	"csr_approve":        true,
+}
+
 // privescPathAdvisoryDiff is the fallback we emit when ForPrivescPath can't
 // pin the chain to a single binding. The "before" block is the subject as the
 // chain represents it; the "after" block is the same with an inline comment
-// saying the operator needs to look at workload security (pod hostPath, host
-// PID, SA-token mint) rather than RBAC because the chain doesn't terminate in
-// a binding. This is rare in practice: most chains pass through a binding
-// somewhere: but we'd rather emit an explanatory comment than nothing.
+// naming where the mitigation lives. This is rare in practice: most chains pass
+// through a binding somewhere: but we'd rather emit an explanatory comment than
+// nothing.
+//
+// Two causes reach here and they need different advice. A synthetic edge (pod
+// escape, IMDS pivot) really is a workload-layer problem: no RBAC change closes
+// it. A correlation edge is pure RBAC, and telling its operator to remove
+// hostPath or revoke `serviceaccounts/token` create is advice that does not apply
+// to their finding: for node_drain_migrate, say, the enabler is `delete pods` plus
+// node manipulation, both RBAC grants.
 func privescPathAdvisoryDiff(subject models.SubjectRef, firstHop models.EscalationHop) string {
-	from := fmt.Sprintf("# Subject\n# kind: %s\n# name: %s\n# namespace: %s\n# first-hop action: %s\n",
+	header := fmt.Sprintf("# Subject\n# kind: %s\n# name: %s\n# namespace: %s\n# first-hop action: %s\n",
 		subject.Kind, subject.Name, subject.Namespace, firstHop.Action)
-	to := fmt.Sprintf("# Subject\n# kind: %s\n# name: %s\n# namespace: %s\n# first-hop action: %s\n# NOTE: this chain starts at a synthetic edge (pod escape, token mint,\n# or similar) that does not map to a single (Cluster)RoleBinding. Mitigation\n# is at the workload layer: remove hostPath / hostPID / hostNetwork on the\n# offending pod or revoke `serviceaccounts/token` create on the role that\n# enables the mint.\n",
-		subject.Kind, subject.Name, subject.Namespace, firstHop.Action)
+
+	note := "# NOTE: this chain starts at a synthetic edge (pod escape, token mint,\n# or similar) that does not map to a single (Cluster)RoleBinding. Mitigation\n# is at the workload layer: remove hostPath / hostPID / hostNetwork on the\n# offending pod or revoke `serviceaccounts/token` create on the role that\n# enables the mint.\n"
+	if correlationRootedActions[firstHop.Action] {
+		// Permission names both halves ("delete pods + node scheduling control").
+		// Every correlation builder sets it, but the copy still has to read as a
+		// sentence if one ever does not.
+		halves := "see the first hop's permission"
+		if firstHop.Permission != "" {
+			halves = firstHop.Permission
+		}
+		note = fmt.Sprintf("# NOTE: this chain starts at a correlation edge: two RBAC grants that are\n# only dangerous held together (%s), so no single\n# (Cluster)RoleBinding grants it and there is nothing here to cut. Mitigation\n# is RBAC, not workload configuration: revoke EITHER half from this subject.\n# One is enough, since the edge needs both.\n",
+			halves)
+	}
+
 	path := "subject-" + sanitisePath(subject.Key())
-	return unifiedDiff(path, path, from, to)
+	return unifiedDiff(path, path, header, header+note)
 }
 
 // buildKubectlEditCommand returns the canonical `kubectl edit <role>` line so
