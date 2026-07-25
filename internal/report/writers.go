@@ -265,8 +265,17 @@ func writeHTMLWithOptions(path string, snapshot models.Snapshot, findings []mode
 		// does not mean the recommended fix is sufficient: it means no surviving route was
 		// found within the search depth. See AlternateEscalationPath's doc comment for the
 		// other causes an empty result can have.
-		"alternatePathHTML": func(hops []models.EscalationHop) template.HTML {
-			return renderEscalationPathVariant(hops, "alternate")
+		//
+		// primary is the finding's own EscalationPath, passed so the lead-in can name the
+		// binding the cut pass actually evaluated. Every call site has it in scope.
+		"alternatePathHTML": func(alt, primary []models.EscalationHop) template.HTML {
+			return renderEscalationPathVariant(alt, "alternate", alternateCutBinding(primary))
+		},
+		// alternateSummaryLabel is the <summary> line for the collapsed alternate block. It
+		// names the evaluated cut instead of asserting that "this fix" fails, because the
+		// fix under Remediation is often broader than the cut that was simulated.
+		"alternateSummaryLabel": func(alt, primary []models.EscalationHop) template.HTML {
+			return alternateSummaryHTML(alt, primary)
 		},
 		// findingEducationHTML returns a "Background" block of glossary/technique
 		// definitions tailored to the finding (subject kind, resource kind, technique).

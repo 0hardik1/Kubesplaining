@@ -571,6 +571,80 @@ func TestHTMLReportHidesEvidenceWhenAllKeysSuppressed(t *testing.T) {
 	}
 }
 
+// TestHTMLReportAlternateCopyNamesTheCutAtBothSites renders a real report and checks
+// the alternate copy where an operator actually reads it. The unit tests in
+// evidence_render_test.go pin the strings; this pins the WIRING, which the unit tests
+// structurally cannot: both call sites are template calls, so an alternate block that
+// renders with a stale argument list fails at execution time and nothing else in the
+// suite executes the template with a finding carrying an alternate.
+//
+// The same finding renders in two places with different surroundings: the Findings tab
+// (`alt-chain` above a Remediation block) and the Privilege-Escalation Paths card (no
+// Remediation on the card at all). Both must name the evaluated cut, which is hop 1 of
+// the PRIMARY chain and not the hop the Remediation prose recommends.
+func TestHTMLReportAlternateCopyNamesTheCutAtBothSites(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	snapshot := models.NewSnapshot()
+	subject := models.SubjectRef{Kind: "ServiceAccount", Name: "src", Namespace: "mh"}
+
+	findings := []models.Finding{
+		{
+			ID:       "KUBE-PRIVESC-PATH-SYSTEM-MASTERS:ServiceAccount/mh/src:system_masters",
+			RuleID:   "KUBE-PRIVESC-PATH-SYSTEM-MASTERS",
+			Severity: models.SeverityCritical,
+			Score:    9.5,
+			Category: models.CategoryPrivilegeEscalation,
+			Title:    "Privesc path to system:masters",
+			Subject:  &models.SubjectRef{Kind: "ServiceAccount", Name: "src", Namespace: "mh"},
+			// The recommended fix targets hop 2, while the evaluated cut is hop 1's
+			// binding. That gap is the whole point of Important 3.
+			Remediation: "Remove every `impersonate` grant on a path to `system:masters`.",
+			EscalationPath: []models.EscalationHop{
+				{Step: 1, Action: "pod_create_token_theft", FromSubject: subject, SourceBinding: "mh-pods-a"},
+				{Step: 2, Action: "impersonate", FromSubject: subject, SourceBinding: "mh-impersonate"},
+			},
+			AlternateEscalationPath: []models.EscalationHop{
+				{Step: 1, Action: "pod_create_token_theft", FromSubject: subject, SourceBinding: "mh-pods-b"},
+				{Step: 2, Action: "impersonate", FromSubject: subject, SourceBinding: "mh-impersonate"},
+			},
+			Tags: []string{"module:privesc", "privesc:survives-first-cut"},
+		},
+	}
+
+	if _, err := Write(tmpDir, []string{"html"}, snapshot, findings); err != nil {
+		t.Fatalf("Write html: %v", err)
+	}
+	htmlBytes, err := os.ReadFile(filepath.Join(tmpDir, "report.html"))
+	if err != nil {
+		t.Fatalf("read report.html: %v", err)
+	}
+	html := string(htmlBytes)
+
+	// Premise: both alternate blocks rendered at all (one per render site). Without
+	// this the assertions below would pass just as happily against a report that
+	// dropped the feature.
+	if got := strings.Count(html, `<details class="alt-chain">`); got != 2 {
+		t.Fatalf("want an alt-chain block at both render sites, got %d (fixture regression, not a pass)", got)
+	}
+	if got := strings.Count(html, "Survives cutting the <code>mh-pods-a</code> binding (2 hops)"); got != 2 {
+		t.Errorf("want the summary naming the evaluated cut at both render sites, got %d occurrence(s)", got)
+	}
+	if got := strings.Count(html, "without the <code>mh-pods-a</code> binding"); got != 2 {
+		t.Errorf("want the lead-in naming the evaluated cut at both render sites, got %d occurrence(s)", got)
+	}
+	// The cut is hop 1's binding, never the mid-chain hop the Remediation recommends.
+	if strings.Contains(html, "Survives cutting the <code>mh-impersonate</code>") {
+		t.Error("alternate copy named the remediation's hop, not the binding the cut pass evaluated")
+	}
+	for _, banned := range []string{"This fix does not close the route", "the fix above removes"} {
+		if strings.Contains(html, banned) {
+			t.Errorf("report still carries the overclaiming copy %q", banned)
+		}
+	}
+}
+
 func TestHTMLReportRendersTruncationBanner(t *testing.T) {
 	t.Parallel()
 

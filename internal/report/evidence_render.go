@@ -207,7 +207,48 @@ func secretTypeLabelDelta(t string) string {
 // renderEscalationPath renders the primary chain. Kept as the default entry point so
 // existing callers and the escalationPathHTML template func read unchanged.
 func renderEscalationPath(hops []models.EscalationHop) template.HTML {
-	return renderEscalationPathVariant(hops, "primary")
+	return renderEscalationPathVariant(hops, "primary", "")
+}
+
+// alternateCutBinding returns the binding whose removal the cut-resilient pass actually
+// simulated for a finding: the one that grants hop 1 of the PRIMARY chain. That is the
+// only cut alternates are ever computed against (privesc/pathfinder.go, alternatesForSource
+// keys every alternate on its own path's first hop), and it is routinely NOT the fix the
+// finding's Remediation prose recommends, since hopsRemediation prefers the highest-priority
+// hop anywhere in the chain. Copy that names this binding is therefore the difference
+// between a claim the code establishes and one it does not.
+//
+// Returns "" when the primary is empty or its first hop names no binding. The pathfinder
+// does not produce that shape today (edgeCut refuses to key a cut on an unstamped edge),
+// but callers must still degrade to copy that stays true rather than naming a binding
+// that is not there.
+func alternateCutBinding(primary []models.EscalationHop) string {
+	if len(primary) == 0 {
+		return ""
+	}
+	return primary[0].SourceBinding
+}
+
+// alternateSummaryHTML is the one-line <summary> for the collapsed alternate-route
+// disclosure, naming the cut that was evaluated. It deliberately does not say "this fix
+// does not close the route": the fix printed under Remediation is often broader than the
+// evaluated cut and may close both routes, and this line renders ABOVE it (and, in the
+// Attack Paths card, with no Remediation on the card at all), so a bare "this fix fails"
+// points at nothing and can contradict the recommendation directly below it.
+//
+// primary is the finding's primary chain, used only to name the cut binding; alt supplies
+// the hop count.
+func alternateSummaryHTML(alt, primary []models.EscalationHop) template.HTML {
+	hops := fmt.Sprintf("%d hops", len(alt))
+	if len(alt) == 1 {
+		hops = "1 hop"
+	}
+	binding := alternateCutBinding(primary)
+	if binding == "" {
+		return template.HTML(fmt.Sprintf("Survives the evaluated cut (%s)", hops))
+	}
+	return template.HTML(fmt.Sprintf("Survives cutting the <code>%s</code> binding (%s)",
+		template.HTMLEscapeString(binding), hops))
 }
 
 // renderEscalationPathVariant emits a numbered ordered list of step cards describing
@@ -224,14 +265,29 @@ func renderEscalationPath(hops []models.EscalationHop) template.HTML {
 // "alternate" for Finding.AlternateEscalationPath (the route that survives cutting
 // the binding the primary chain's fix removes). The alternate gets a distinct list
 // class and a lead-in line naming the operational point before the chain itself.
-func renderEscalationPathVariant(hops []models.EscalationHop, variant string) template.HTML {
+//
+// cutBinding is the binding the cut pass simulated removing this subject from
+// (alternateCutBinding of the PRIMARY chain), used only by the alternate lead-in and
+// ignored for the primary. Naming it is what keeps the lead-in to a claim the code
+// establishes: the evaluated cut leaves this route standing. Whether some other,
+// broader fix would close it is a question the cut pass never asked, so the copy must
+// not answer it. Empty degrades to phrasing that names no binding.
+func renderEscalationPathVariant(hops []models.EscalationHop, variant string, cutBinding string) template.HTML {
 	if len(hops) == 0 {
 		return ""
 	}
 	total := len(hops)
 	var b strings.Builder
 	if variant == "alternate" {
-		b.WriteString(`<p class="attack-chain-alt-lead">This route survives the recommended fix: it reaches the same target without the binding the fix above removes, so applying that fix alone does not close it.</p>`)
+		b.WriteString(`<p class="attack-chain-alt-lead">`)
+		if cutBinding == "" {
+			b.WriteString(`This route reaches the same target without the binding the evaluated cut removes, so that cut alone does not close it.`)
+		} else {
+			b.WriteString(`This route reaches the same target without the <code>`)
+			b.WriteString(template.HTMLEscapeString(cutBinding))
+			b.WriteString(`</code> binding, so removing this subject from that binding alone does not close it.`)
+		}
+		b.WriteString(` The Remediation for this finding may name a broader fix that closes both.</p>`)
 		b.WriteString(`<ol class="attack-chain attack-chain-alt">`)
 	} else {
 		b.WriteString(`<ol class="attack-chain">`)

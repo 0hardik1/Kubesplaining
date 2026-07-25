@@ -320,8 +320,9 @@ func TestRenderEscalationPathEmpty(t *testing.T) {
 }
 
 // TestRenderEscalationPathAlternateVariant proves the alternate renders with framing
-// copy that leads with the operational point (this route survives the fix) rather
-// than with chain length, and that it is visually distinguishable from the primary.
+// copy that leads with the operational point (the evaluated cut leaves this route
+// standing) rather than with chain length, and that it is visually distinguishable
+// from the primary.
 func TestRenderEscalationPathAlternateVariant(t *testing.T) {
 	hops := []models.EscalationHop{{
 		Step:          1,
@@ -330,12 +331,73 @@ func TestRenderEscalationPathAlternateVariant(t *testing.T) {
 		Gains:         "cluster-admin",
 	}}
 
-	out := string(renderEscalationPathVariant(hops, "alternate"))
+	out := string(renderEscalationPathVariant(hops, "alternate", "admin-a"))
 
-	for _, want := range []string{"attack-chain-alt", "survives"} {
+	for _, want := range []string{"attack-chain-alt", "<code>admin-a</code>", "does not close it"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("alternate render missing %q\n---\n%s", want, out)
 		}
+	}
+}
+
+// TestAlternateCopyNamesTheEvaluatedCutNotTheFix is Important 3 of the final review,
+// pinned as a test rather than left to copy review. The cut the pass simulates is
+// always hop 1's binding, while the Remediation prose on the same finding routinely
+// recommends a different and broader fix (hopsRemediation prefers the highest-priority
+// hop anywhere in the chain). Both alternate strings render ABOVE that Remediation, and
+// in the Attack Paths card with no Remediation on the card at all, so copy asserting
+// that "this fix does not close the route" points at nothing and can contradict the
+// recommendation printed directly below it. Reviewer's repro: a two-hop chain whose
+// alternate reuses hop 2, where removing the hop-2 impersonate grant (which is what the
+// finding recommends) closes both routes.
+//
+// Both strings must therefore name the evaluated cut and must not claim that every fix
+// fails. The negative assertions are the load-bearing half.
+func TestAlternateCopyNamesTheEvaluatedCutNotTheFix(t *testing.T) {
+	primary := []models.EscalationHop{
+		{Step: 1, Action: "pod_create_token_theft", SourceBinding: "mh-pods-a"},
+		{Step: 2, Action: "impersonate_system_masters", SourceBinding: "mh-impersonate"},
+	}
+	alternate := []models.EscalationHop{
+		{Step: 1, Action: "pod_create_token_theft", SourceBinding: "mh-pods-b"},
+		{Step: 2, Action: "impersonate_system_masters", SourceBinding: "mh-impersonate"},
+	}
+
+	summary := string(alternateSummaryHTML(alternate, primary))
+	lead := string(renderEscalationPathVariant(alternate, "alternate", alternateCutBinding(primary)))
+
+	for name, out := range map[string]string{"summary": summary, "lead-in": lead} {
+		if !strings.Contains(out, "mh-pods-a") {
+			t.Errorf("%s does not name the evaluated cut binding mh-pods-a: %q", name, out)
+		}
+		if strings.Contains(out, "This fix does not close") || strings.Contains(out, "the fix above") {
+			t.Errorf("%s claims the recommended fix fails, which the cut pass never established: %q", name, out)
+		}
+	}
+	if want := "Survives cutting the <code>mh-pods-a</code> binding (2 hops)"; summary != want {
+		t.Errorf("summary = %q, want %q", summary, want)
+	}
+}
+
+// TestAlternateCopyWithoutABindingStaysTrue covers the degraded case. alternateCutBinding
+// returns "" when the primary's first hop names no binding, which the pathfinder does not
+// produce today (edgeCut refuses to key a cut on an unstamped edge). If it ever does, the
+// copy must drop the binding name rather than fall back to asserting a fix fails, and it
+// must never render an empty <code></code> where a binding should be.
+func TestAlternateCopyWithoutABindingStaysTrue(t *testing.T) {
+	alternate := []models.EscalationHop{{Step: 1, Action: "pod_host_escape"}}
+
+	summary := string(alternateSummaryHTML(alternate, nil))
+	lead := string(renderEscalationPathVariant(alternate, "alternate", ""))
+
+	if want := "Survives the evaluated cut (1 hop)"; summary != want {
+		t.Errorf("summary = %q, want %q", summary, want)
+	}
+	if strings.Contains(lead, "<code></code>") {
+		t.Errorf("lead-in rendered an empty binding placeholder: %q", lead)
+	}
+	if !strings.Contains(lead, "the evaluated cut removes") {
+		t.Errorf("lead-in lost the unnamed-cut phrasing: %q", lead)
 	}
 }
 
@@ -355,7 +417,7 @@ func TestRenderEscalationPathPrimaryUnchanged(t *testing.T) {
 
 // TestRenderEscalationPathAlternateEmpty keeps the template gate working.
 func TestRenderEscalationPathAlternateEmpty(t *testing.T) {
-	if got := string(renderEscalationPathVariant(nil, "alternate")); got != "" {
+	if got := string(renderEscalationPathVariant(nil, "alternate", "some-binding")); got != "" {
 		t.Errorf("want empty string for no hops, got %q", got)
 	}
 }

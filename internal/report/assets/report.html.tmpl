@@ -2224,8 +2224,8 @@
                     {{ escalationPathHTML $f.EscalationPath }}
                     {{ if $f.AlternateEscalationPath }}
                       <details class="alt-chain">
-                        <summary>This fix does not close the route ({{ len $f.AlternateEscalationPath }} hops)</summary>
-                        {{ alternatePathHTML $f.AlternateEscalationPath }}
+                        <summary>{{ alternateSummaryLabel $f.AlternateEscalationPath $f.EscalationPath }}</summary>
+                        {{ alternatePathHTML $f.AlternateEscalationPath $f.EscalationPath }}
                       </details>
                     {{ end }}
                   </div>
@@ -2729,7 +2729,7 @@
               <a class="pp-card-jump" href="#{{ .Anchor }}">View finding &rarr;</a>
             </div>
             <p class="pp-card-summary">{{ .Summary }}</p>
-            {{ if .Hops }}<div class="scenario">{{ escalationPathHTML .Hops }}{{ if .AltHops }}<details class="alt-chain"><summary>This fix does not close the route ({{ .AltHopCount }} hops)</summary>{{ alternatePathHTML .AltHops }}</details>{{ end }}</div>{{ end }}
+            {{ if .Hops }}<div class="scenario">{{ escalationPathHTML .Hops }}{{ if .AltHops }}<details class="alt-chain"><summary>{{ alternateSummaryLabel .AltHops .Hops }}</summary>{{ alternatePathHTML .AltHops .Hops }}</details>{{ end }}</div>{{ end }}
           </article>
           {{ end }}
         </div>

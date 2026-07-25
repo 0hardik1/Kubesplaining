@@ -476,18 +476,17 @@ type PrivescSinkGroup struct {
 // static Findings tab uses, so the per-hop chain cards look identical. Anchor
 // deep-links into the Findings tab's rule card for the full remediation.
 type PrivescPathCard struct {
-	Source      string
-	SinkLabel   string
-	Severity    models.Severity
-	SevClass    string // crit | high | med | low | info
-	Score       float64
-	HopCount    int
-	Summary     string
-	Hops        []models.EscalationHop
-	AltHops     []models.EscalationHop // route surviving the recommended binding cut; empty when the fix suffices
-	AltHopCount int
-	RuleID      string
-	Anchor      string
+	Source    string
+	SinkLabel string
+	Severity  models.Severity
+	SevClass  string // crit | high | med | low | info
+	Score     float64
+	HopCount  int
+	Summary   string
+	Hops      []models.EscalationHop
+	AltHops   []models.EscalationHop // route surviving the recommended binding cut; empty when the fix suffices
+	RuleID    string
+	Anchor    string
 }
 
 // htmlReportData is the template input for the HTML dashboard; assembled by BuildHTMLData.
