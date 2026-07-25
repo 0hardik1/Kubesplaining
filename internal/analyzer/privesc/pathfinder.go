@@ -158,6 +158,7 @@ func buildPath(graph *models.EscalationGraph, source models.SubjectRef, target m
 			Step:        i + 1,
 			Action:      step.edge.Action,
 			Technique:   step.edge.Technique,
+			Difficulty:  step.edge.Difficulty,
 			FromSubject: current,
 			ToSubject:   next,
 			Permission:  step.edge.Permission,

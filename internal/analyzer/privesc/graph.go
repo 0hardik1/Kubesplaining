@@ -766,10 +766,67 @@ func isControlPlaneSubject(ref models.SubjectRef) bool {
 	return false
 }
 
-// addEdge sets the endpoints on edge and appends it to the graph.
+// Difficulty ratings for path scoring. See models.EscalationEdge.Difficulty.
+const (
+	difficultyEasy     = "easy"
+	difficultyModerate = "moderate"
+	difficultyHard     = "hard"
+)
+
+// actionDifficulty rates each edge action by how much has to go right beyond simply
+// holding the grant. Anything absent defaults to moderate, which is the safe middle:
+// a newly added edge never silently scores as trivially exploitable.
+var actionDifficulty = map[string]string{
+	// Pure RBAC: holding the grant is the whole exploit.
+	"wildcard_permission":        difficultyEasy,
+	"bound_to_cluster_admin":     difficultyEasy,
+	"modify_role_binding":        difficultyEasy,
+	"bind_or_escalate":           difficultyEasy,
+	"impersonate":                difficultyEasy,
+	"impersonate_system_masters": difficultyEasy,
+	"impersonate_serviceaccount": difficultyEasy,
+	"read_secrets":               difficultyEasy,
+	"token_request":              difficultyEasy,
+	"mint_arbitrary_token":       difficultyEasy,
+	"secret_mint_token":          difficultyEasy,
+	"csr_approve":                difficultyEasy,
+	"operator_reconcile":         difficultyEasy,
+	"colocated_sa_token_theft":   difficultyEasy,
+
+	// Needs a workload to exist, be created, or land somewhere specific.
+	"pod_create_token_theft":       difficultyModerate,
+	"pod_exec":                     difficultyModerate,
+	"ephemeral_container_inject":   difficultyModerate,
+	"pod_create_privileged_escape": difficultyModerate,
+	"pod_host_escape":              difficultyModerate,
+	"nodes_proxy":                  difficultyModerate,
+	"irsa_assume_role":             difficultyModerate,
+	"aws_auth_admin":               difficultyModerate,
+	"control_plane_pki_theft":      difficultyModerate,
+	"static_pod_admission_bypass":  difficultyModerate,
+
+	// Needs attacker-controlled infrastructure or a timing window.
+	"node_drain_migrate":   difficultyHard,
+	"imds_node_role_pivot": difficultyHard,
+}
+
+// difficultyForAction returns the rating for an action, defaulting to moderate.
+func difficultyForAction(action string) string {
+	if d, ok := actionDifficulty[action]; ok {
+		return d
+	}
+	return difficultyModerate
+}
+
+// addEdge sets the endpoints on edge, rates its difficulty, and appends it to the
+// graph. Rating happens here rather than at each of the two dozen call sites so a
+// new edge cannot be added without one.
 func addEdge(graph *models.EscalationGraph, from, to string, edge *models.EscalationEdge) {
 	edge.From = from
 	edge.To = to
+	if edge.Difficulty == "" {
+		edge.Difficulty = difficultyForAction(edge.Action)
+	}
 	graph.Edges = append(graph.Edges, edge)
 }
 

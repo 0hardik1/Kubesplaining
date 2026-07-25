@@ -52,6 +52,13 @@ type EscalationEdge struct {
 	Permission  string  `json:"permission,omitempty"` // RBAC permission or condition that enables this edge
 	Description string  `json:"description"`          // human-readable one-liner
 	Score       float64 `json:"score,omitempty"`
+	// Difficulty rates how much has to go right for an attacker to walk this edge:
+	// "easy" (holding the RBAC grant is the whole exploit), "moderate" (needs a
+	// workload to exist, be created, or land somewhere specific), "hard" (needs
+	// attacker-controlled infrastructure or a timing window). Path scoring sums
+	// these rather than penalizing raw hop count, so a long chain of trivial grants
+	// outranks a short chain that needs a race.
+	Difficulty string `json:"difficulty,omitempty"`
 }
 
 // EscalationPath is one source → sink chain returned by path search, with each hop annotated.
