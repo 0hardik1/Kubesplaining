@@ -28,3 +28,29 @@ KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/cutres/cutres-parallel 1 wildcard
 # cluster_admin, the same three-hop shape shard 17 already pins for deepchain-binder.
 KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/cutres/cutres-detour 1 wildcard_permission primary
 KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/cutres/cutres-detour 3 modify_role_binding,colocated_sa_token_theft alternate
+#
+# Shape 3: cutres-doublebind, granted `create pods` by two RoleBindings in two
+# different namespaces (cutres-pods-a, cutres-pods-b). Gives Task 8's
+# addPrivilegedPodCreateEdges fix e2e coverage: shapes 1 and 2 above both route
+# through addEdgesForRule, which Task 8 never touched. Cutting the first binding
+# leaves the second, so primary and alternate are both a single hop, through
+# different bindings in different namespaces.
+KUBE-PRIVESC-PATH-NODE-ESCAPE:ServiceAccount/cutres/cutres-doublebind:node_escape 1 pod_create_privileged_escape primary
+KUBE-PRIVESC-PATH-NODE-ESCAPE:ServiceAccount/cutres/cutres-doublebind:node_escape 1 pod_create_privileged_escape alternate
+#
+# Shape 4: cutres-deputy, the confused-deputy version of shape 3. A self-contained
+# tenant writes a catalogued custom resource (cert-manager Certificates) via two
+# RoleBindings to the same Role, steering its own controller SA (cert-manager,
+# bound directly to cluster-admin). This is the single best end-to-end proof that
+# Task 8 (one operator_reconcile edge per granting binding, applied to the deputy
+# bridge rather than the pod-create builder), Task 10 part (b) (deputy findings
+# get a remediation hint at all), and Task 11 (dedupe keeps the four sink-scoped
+# confused-deputy findings this tenant reaches separate, rather than collapsing
+# them into one and discarding whichever carried the alternate) all connect: all
+# FOUR sinks this tenant reaches through cert-manager come back with their own
+# alternate, not just the one asserted below. Two are pinned: cluster-admin (same
+# downstream action as cert-manager's own cluster-admin bind) and node-escape (a
+# different downstream action), to show the alternate is not a fluke of one sink.
+KUBE-CONFUSED-DEPUTY-001:ServiceAccount/cutres-deputy-tenant/cutres-deputy:cluster_admin_equivalent 2 operator_reconcile,wildcard_permission primary
+KUBE-CONFUSED-DEPUTY-001:ServiceAccount/cutres-deputy-tenant/cutres-deputy:cluster_admin_equivalent 2 operator_reconcile,wildcard_permission alternate
+KUBE-CONFUSED-DEPUTY-001:ServiceAccount/cutres-deputy-tenant/cutres-deputy:node_escape 2 operator_reconcile,node_drain_migrate alternate

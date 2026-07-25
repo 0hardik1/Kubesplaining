@@ -1,7 +1,7 @@
 # Cut-resilient privesc fixture. Every other shard proves a path EXISTS; this one
 # proves the recommended fix does not always close it.
 #
-# Two shapes, both RBAC-only:
+# Four shapes, all RBAC-only:
 #
 #   1. cutres-parallel is named in two separate cluster-admin ClusterRoleBindings.
 #      permissions.Aggregate yields one EffectiveRule per binding and addEdge does
@@ -21,6 +21,38 @@
 #      inside its own namespace, which co-hosts cutres-parallel, the
 #      cluster-admin-bound identity from shape 1. Cutting the direct binding
 #      leaves the longer namespace-admin route through cutres-parallel.
+#
+#   3. cutres-doublebind is one ServiceAccount granted `create pods` by TWO
+#      RoleBindings in two DIFFERENT namespaces (mirroring
+#      TestAlternateFoundWhenSecondBindingGrantsPodCreate in pathfinder_test.go, the
+#      unit fixture this gives e2e coverage to). Neither target namespace carries a
+#      pod-security.kubernetes.io/enforce label, so both grants independently reach
+#      node-escape via addPrivilegedPodCreateEdges. Before Task 8, that builder
+#      collapsed to one edge per SUBJECT rather than one per granting binding, so
+#      cutting the first binding wrongly reported the route closed. Post-Task-8 it
+#      emits one pod_create_privileged_escape edge per binding, so the second
+#      namespace's grant survives the cut and the finding gains a same-length
+#      alternate.
+#
+#   4. cutres-deputy is the confused-deputy version of shape 3: one tenant
+#      ServiceAccount granted write on a catalogued custom resource (cert-manager
+#      Certificates) by TWO RoleBindings to the same Role, steering a controller SA
+#      (cert-manager, bound directly to cluster-admin) that this shard installs for
+#      itself. Deliberately self-contained: it does NOT reuse shard 17's
+#      kustomize-controller/flux-system, on purpose, for two reasons. First, shard
+#      17's deepchain-deployer already carries four pinned confused-deputy chain
+#      assertions in deep-chains.chain (one per sink); giving it a second binding
+#      would hand all four an alternate too and force editing pins that belong to a
+#      different task. Second, this shape's own assertions belong in
+#      cut-resilient.chain and should depend only on this file, not reach into
+#      shard 17 - a later edit to deep-chains.yaml should never be able to break an
+#      assertion in this file. The shape proves addConfusedDeputyEdges (deputy.go)
+#      emits one operator_reconcile edge per granting binding (Task 8's fix, applied
+#      to the deputy bridge rather than the pod-create builder), that the deputy
+#      finding carries a remediation hint at all (Task 10 part b), and that dedupe
+#      keeps the four sink-scoped confused-deputy findings this tenant produces
+#      separate rather than collapsing them into one and discarding whichever
+#      carried the alternate (Task 11).
 #
 # Like shard 17 this needs no pods, so it takes no *.rollout entry: every edge
 # here is derived from RBAC alone.
@@ -105,3 +137,151 @@ subjects:
   - kind: ServiceAccount
     name: cutres-detour
     namespace: cutres
+---
+# Shape 3: one subject, granted `create pods` by two RoleBindings in two different
+# namespaces, neither of which carries a PSA enforce label. Gives Task 8's
+# addPrivilegedPodCreateEdges fix (one edge per granting binding, not one per
+# subject) the e2e coverage it never got: shapes 1 and 2 above both route through
+# addEdgesForRule, which Task 8 never touched.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cutres-pods-a
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cutres-pods-b
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cutres-doublebind
+  namespace: cutres
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cutres-pod-creator
+  namespace: cutres-pods-a
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cutres-pod-creator-a
+  namespace: cutres-pods-a
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cutres-pod-creator
+subjects:
+  - kind: ServiceAccount
+    name: cutres-doublebind
+    namespace: cutres
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cutres-pod-creator
+  namespace: cutres-pods-b
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cutres-pod-creator-b
+  namespace: cutres-pods-b
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cutres-pod-creator
+subjects:
+  - kind: ServiceAccount
+    name: cutres-doublebind
+    namespace: cutres
+---
+# Shape 4: the confused-deputy version of shape 3. A self-contained tenant SA writes
+# a catalogued custom resource (cert-manager Certificates) via two RoleBindings to
+# the same Role, steering a controller SA that this shard installs and binds
+# directly to cluster-admin, exactly mirroring how shard 17 wires kustomize-
+# controller. See the shape-4 note at the top of this file for why this does not
+# reuse shard 17's controller.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cutres-deputy-tenant
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cutres-deputy-cm-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: cert-manager
+    namespace: cert-manager
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cutres-deputy
+  namespace: cutres-deputy-tenant
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cutres-deputy-cert
+  namespace: cutres-deputy-tenant
+rules:
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cutres-deputy-cert-a
+  namespace: cutres-deputy-tenant
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cutres-deputy-cert
+subjects:
+  - kind: ServiceAccount
+    name: cutres-deputy
+    namespace: cutres-deputy-tenant
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cutres-deputy-cert-b
+  namespace: cutres-deputy-tenant
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cutres-deputy-cert
+subjects:
+  - kind: ServiceAccount
+    name: cutres-deputy
+    namespace: cutres-deputy-tenant
