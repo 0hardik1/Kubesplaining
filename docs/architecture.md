@@ -95,7 +95,7 @@ score = base × exploitability × blast_radius + chain_modifier
 
 - `exploitability` is higher when the subject is a ServiceAccount *actually mounted by a pod* (the SA's credential is sitting on disk somewhere the attacker can already reach).
 - `blast_radius` is higher for cluster-scoped rules and for subjects in `kube-system` or on a DaemonSet (token replicated to every node).
-- `chain_modifier` comes from the privesc module's hop count — longer chains reduce severity (`base − 0.5 × (hops − 1)`, hops ≥ 3 drop one severity bucket).
+- `chain_modifier` comes from the privesc module's summed per-hop difficulty cost, not hop count: each hop costs `easy` 0.15, `moderate` 0.4, or `hard` 0.9 (`base − Σ cost`), and a chain drops one severity bucket when it contains at least one `hard` hop.
 
 Most analyzers currently emit a hand-picked `Score` directly; the engine's correlation pass adds `ChainModifier` post-hoc. New rules should prefer populating the factor inputs over a fixed score so cross-module ordering stays meaningful.
 

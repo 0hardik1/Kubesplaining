@@ -136,7 +136,7 @@ These appear on `Finding.Tags` (visible in JSON, CSV, and SARIF output) and desc
 
 ### Privilege Escalation Paths ([internal/analyzer/privesc/analyzer.go](../internal/analyzer/privesc/analyzer.go))
 
-These findings are emitted **per `(source subject, sink)` pair** found by BFS on the escalation graph. Severity is attenuated by chain length: hops ≥ 3 drop one bucket, and score is `base − 0.5 × (hops − 1)`, clamped to `[1, 10]`.
+These findings are emitted **per `(source subject, sink)` pair** found by BFS on the escalation graph. Severity is attenuated by summed per-hop difficulty cost, not chain length: each hop costs `easy` 0.15, `moderate` 0.4, or `hard` 0.9, score is `base − Σ cost` (clamped to `[1, 10]`), and a chain drops one bucket when it contains at least one `hard` hop.
 
 | Rule ID | Base Sev | Title template | Sink reached |
 | --- | --- | --- | --- |
