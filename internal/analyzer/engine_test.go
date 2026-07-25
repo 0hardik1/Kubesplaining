@@ -172,6 +172,34 @@ func TestEngineSurfacesFirstModuleError(t *testing.T) {
 	}
 }
 
+// TestEngineFirstErrIsPositionalNotArrivalOrder pins the deliberate behavior change
+// in runModulesInParallel made alongside Task 15's ordering fix: firstErr now means
+// "the first error by module position" (fixed by the modules slice the Engine was
+// built with), not "the first error to arrive", which was a goroutine-completion
+// race before. With two modules that both fail, the lower-indexed module's error
+// must win regardless of which module's goroutine happens to finish first.
+//
+// Asserted in both registration orders so the test cannot pass by accident of
+// which module a race happens to favor, and run repeatedly so an implementation
+// that is still race-dependent doesn't get lucky on a single call.
+func TestEngineFirstErrIsPositionalNotArrivalOrder(t *testing.T) {
+	a := &stubModule{name: "a", err: errors.New("a-broke")}
+	b := &stubModule{name: "b", err: errors.New("b-broke")}
+
+	for i := 0; i < 50; i++ {
+		_, err := analyze(t, engineWith(a, b), Options{})
+		if err == nil || !strings.Contains(err.Error(), "a-broke") {
+			t.Fatalf("run %d: modules registered [a, b]: want a's error (lowest index) to win, got %v", i, err)
+		}
+	}
+	for i := 0; i < 50; i++ {
+		_, err := analyze(t, engineWith(b, a), Options{})
+		if err == nil || !strings.Contains(err.Error(), "b-broke") {
+			t.Fatalf("run %d: modules registered [b, a]: want b's error (lowest index) to win, got %v", i, err)
+		}
+	}
+}
+
 func TestEngineDedupesAcrossModulesAndKeepsHigherScore(t *testing.T) {
 	t.Parallel()
 
