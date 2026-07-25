@@ -21,6 +21,85 @@
 - Before any commit: `make lint` AND `./bin/golangci-lint run ./...` (the latter is a CI gate `make lint` does not cover).
 - Conventional Commits enforced by the `commit-msg` hook. PR title must be 72 characters or fewer.
 
+## What we researched
+
+This plan is the output of a three-way parallel audit run on 2026-07-24, not a reading of
+`docs/privesc-research.md` alone. That document was written 2026-07-12 and commits had landed
+since, so every claim it makes was re-verified against the tree before being planned against.
+Recording the findings here so the plan's choices are traceable to evidence.
+
+### Audit 1: current graph state, verified against code
+
+Read `graph.go`, `pathfinder.go`, `analyzer.go`, `cloud_edges.go`, `content.go`, the `models`
+escalation types, `permissions/aggregate.go`, and `collector.go`. Established the baseline:
+**26 edge builders, 7 sinks, 23 technique action slugs, 74 rule IDs in the e2e golden.**
+
+Status of the research doc's six structural gaps, each with file:line evidence:
+
+| Gap | Status | Note |
+| --- | --- | --- |
+| A1 `namespace_admin` is a dead-end sink | **still open** | `IsSink: true` at `graph.go:589`; appears only as an edge `to`, never a `from` |
+| A2 `node_escape` is terminal | **still open** | Across all 26 `addEdge` call sites it appears only as `to` |
+| A3 no confused-deputy edge type | **still open** | `addEdgesForRule` matches only the built-in resources in the `resourceAPIGroup` table |
+| A4 no traffic-intercept sink | **still open** | Only 7 `EscalationTarget` values exist; none is MITM |
+| A5(a) GKE/AKS unmodeled | **still open** | `CloudIdentityKind` has only `aws_iam_role` / `aws_iam_user` |
+| A5(b) external IAM nodes are terminal | **INACCURATE** | See correction below |
+| A6 impersonation ignores `resourceName` | **still open** | Also never matches `uids` / `userextras/*` |
+
+**Correction to A5(b).** The claim is wrong and was wrong when published. `addAWSAuthEdges`
+emits `external:aws-iam:<ARN>` to `sink:system_masters` (`cloud_edges.go:170`) and to
+`sink:cluster_admin` (`cloud_edges.go:182`), and the pathfinder deliberately re-enqueues external
+sinks (`pathfinder.go:117-125`). Only A5(a) is genuinely open. This is recorded in
+`docs/privesc-research.md` §O2 so the error does not propagate.
+
+### The finding that shaped this plan
+
+**`--max-privesc-depth` is not what bounds chain length.** Verified empirically during the audit:
+building the graph over `testdata/snapshots/minimal-risky.json` and
+`testdata/snapshots/leastprivilege-demo.json` and running `FindPaths` at depth 5 and at depth 10
+produces byte-identical output. Raising the cap changes nothing. Four properties bound it instead:
+
+1. **Edge topology.** Only 5 of 26 builders emit subject-to-subject edges, so path length is
+   `1 + (consecutive SA-hop edges)`. Every intermediate is drawn from the ServiceAccount indexes,
+   so a chain can never route through a User or Group.
+2. **`IsSystem` drops hops silently.** Reaching a kube-system controller SA yields no path *and*
+   no onward traversal, removing the highest-value intermediates in any real cluster.
+3. **Sinks are terminal**, external cloud nodes excepted. This is A1 and A2 in force.
+4. **Shortest-path-only per (source, sink).** Once a subject has any 1-hop edge to a sink, every
+   richer route to that sink is invisible.
+
+Tasks 1 through 5 of this plan address (1), (2) and (3). **(4) is deliberately not addressed**,
+which is why this work is expected to produce 4-hop chains rather than 5-plus. That limit is
+recorded as a follow-up in `docs/privesc-research.md` §O3 rather than silently expanded into.
+
+### Audit 2: public technique sweep, 2025-2026
+
+Web research for privilege-escalation techniques disclosed since the research doc. Found **16
+items not covered by its sections A-N**, catalogued in full in `docs/privesc-research.md` §O4.
+Only one is acted on in this plan: the `monitoring.coreos.com/servicemonitors` catalog entry,
+which covers GHSA-cxh2-4639-vmc5 (`bearerTokenFile` ServiceAccount-token exfiltration).
+
+The rest are explicitly out of scope here and sequenced afterward. The three most consequential:
+
+- **DRA prefixed verbs** (`resourceclaims/binding`, `associated-node:update`, GA in 1.36). This is
+  a **latent correctness bug**, not merely a gap: the verb-prefix syntax will silently fail to
+  match in `permissions.Aggregate` for any future DRA rule.
+- **Copy Fail (CVE-2026-31431)**, page-cache corruption across shared overlayfs image layers.
+  Defeats every securityContext-based check in the tool and needs a detection shape that has no
+  analog today: does an unprivileged pod share an image layer with a privileged one?
+- **`hostUsers: false` GA**, an inverse signal that should *attenuate* every escape rule rather
+  than add one.
+
+### Audit 3: e2e harness baseline
+
+Mapped `scripts/kind-e2e.sh`, every fixture shard, and `internal/corpus`. Established that the
+harness already produces chains deeper than two hops (7 at 3 hops, 1 at 4 hops, all originating
+from `16-privesc-rbac.yaml`), so depth is expressible today and the graph simply rarely generates
+it. Critically: the harness asserts rule-ID recall (`*.expect`), rule-ID set equality
+(`*.ruleset`), and instance-level negatives (`*.deny`), but **nothing asserts chain shape**. A
+regression flattening every path to a single hop would keep the rule-ID set identical and pass
+every existing gate. Task 8 adds the missing assertion type.
+
 ## File Structure
 
 | File | Responsibility | Change |
