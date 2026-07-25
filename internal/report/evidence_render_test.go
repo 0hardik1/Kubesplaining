@@ -66,6 +66,75 @@ func TestRenderEvidencePodSecHostNetwork(t *testing.T) {
 	}
 }
 
+func TestRenderEvidencePodSecRunAsNonRootPolarity(t *testing.T) {
+	// runAsNonRoot inverts the host*/privileged polarity: false is the violation
+	// (KUBE-PODSEC-ROOT-001), true is the remediated state. The danger chip and the
+	// hint must follow the risky value, not the literal `true`.
+	risky := string(renderEvidence(mustEvidence(t, map[string]any{"runAsNonRoot": false})))
+	if !strings.Contains(risky, "ev-chip danger") {
+		t.Errorf("runAsNonRoot=false is the violation and should render a danger chip, got:\n%s", risky)
+	}
+	if !strings.Contains(risky, "the container can run as UID 0") {
+		t.Errorf("runAsNonRoot=false should surface the UID 0 hint, got:\n%s", risky)
+	}
+	if !strings.Contains(risky, `>false<`) {
+		t.Errorf("chip should still print the literal value, got:\n%s", risky)
+	}
+
+	safe := string(renderEvidence(mustEvidence(t, map[string]any{"runAsNonRoot": true})))
+	if strings.Contains(safe, "danger") {
+		t.Errorf("runAsNonRoot=true is the hardened state and must not render as danger, got:\n%s", safe)
+	}
+	if strings.Contains(safe, "UID 0") {
+		t.Errorf("runAsNonRoot=true should suppress the false-case hint, got:\n%s", safe)
+	}
+}
+
+func TestRenderEvidenceScopeUsesModelLabel(t *testing.T) {
+	// The evidence grid and the finding card must agree on how a ScopeLevel reads,
+	// so both go through models.ScopeLevel.Label() — including its "Unknown" arm.
+	cases := map[string]string{
+		string(models.ScopeCluster):   models.ScopeCluster.Label(),
+		string(models.ScopeNamespace): models.ScopeNamespace.Label(),
+		string(models.ScopeWorkload):  models.ScopeWorkload.Label(),
+		string(models.ScopeObject):    models.ScopeObject.Label(),
+		"workload-group":              "Unknown", // level outside the four constants
+	}
+	for level, want := range cases {
+		out := string(renderEvidence(mustEvidence(t, map[string]any{"scope": level})))
+		if !strings.Contains(out, ">"+want+"<") {
+			t.Errorf("scope %q should render as %q, got:\n%s", level, want, out)
+		}
+	}
+}
+
+func TestRenderEvidenceEscapesAnalyzerStrings(t *testing.T) {
+	// Container images (and every other analyzer-supplied string) are attacker-
+	// controlled: anyone who can create a pod picks the image reference. They must
+	// never reach the report as raw HTML, since renderEvidence returns template.HTML
+	// and nothing downstream re-escapes it.
+	const payload = `nginx<img src=x onerror=alert(1)>`
+	out := string(renderEvidence(mustEvidence(t, map[string]any{
+		"container": "app",
+		"image":     payload,
+	})))
+	if strings.Contains(out, "<img src=x") {
+		t.Errorf("hostile image string was injected as raw HTML:\n%s", out)
+	}
+	if !strings.Contains(out, "nginx&lt;img src=x onerror=alert(1)&gt;") {
+		t.Errorf("expected escaped image string, got:\n%s", out)
+	}
+}
+
+func mustEvidence(t *testing.T, obj map[string]any) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(obj)
+	if err != nil {
+		t.Fatalf("marshal evidence: %v", err)
+	}
+	return raw
+}
+
 func TestRenderEvidencePodSecMutableImage(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"container": "app",
