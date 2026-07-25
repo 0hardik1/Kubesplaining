@@ -330,3 +330,56 @@ func TestNamespaceAdminReachesColocatedServiceAccounts(t *testing.T) {
 		t.Fatalf("want attacker -> namespace_admin -> colocated SA -> cluster_admin; paths: %+v", paths)
 	}
 }
+
+// TestControlPlaneNodeEscapeContinuation proves node-root continues to system:masters
+// only when a schedulable control-plane node exists in the snapshot. On a properly
+// tainted multi-node cluster an escaping tenant pod lands on a worker, where no
+// cluster PKI lives, so continuing would be a false positive.
+func TestControlPlaneNodeEscapeContinuation(t *testing.T) {
+	t.Parallel()
+
+	cpNode := func(taints []corev1.Taint) corev1.Node {
+		meta := objectMeta("cp-0", "")
+		meta.Labels = map[string]string{"node-role.kubernetes.io/control-plane": ""}
+		return corev1.Node{ObjectMeta: meta, Spec: corev1.NodeSpec{Taints: taints}}
+	}
+
+	tests := []struct {
+		name  string
+		nodes []corev1.Node
+		want  bool
+	}{
+		{"schedulable control plane", []corev1.Node{cpNode(nil)}, true},
+		{"tainted control plane", []corev1.Node{cpNode([]corev1.Taint{{
+			Key: "node-role.kubernetes.io/control-plane", Effect: corev1.TaintEffectNoSchedule,
+		}})}, false},
+		{"workers only", []corev1.Node{{ObjectMeta: objectMeta("w-0", "")}}, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			snapshot := models.Snapshot{}
+			snapshot.Resources.Nodes = tc.nodes
+			snapshot.Resources.Pods = []corev1.Pod{{
+				ObjectMeta: objectMeta("escaper", "app"),
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "escaper-sa",
+					HostPID:            true,
+				},
+			}}
+
+			graph := BuildGraph(snapshot)
+			paths := FindPaths(graph, 5)
+
+			var reachedMasters bool
+			for _, p := range paths {
+				if p.Target == models.TargetSystemMasters {
+					reachedMasters = true
+				}
+			}
+			if reachedMasters != tc.want {
+				t.Fatalf("system:masters reachable = %v, want %v", reachedMasters, tc.want)
+			}
+		})
+	}
+}
