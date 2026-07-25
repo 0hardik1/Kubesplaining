@@ -220,8 +220,11 @@ fraction of paths, a scoring axis becomes more defensible than it is today.
 
 ## Testing
 
-**Unit.** `pathfinder_test.go:11-37` currently asserts `len(paths) != 2` and will need updating.
-New cases: a graph where the source reaches a sink via two distinct bindings (expect a
+**Unit.** `pathfinder_test.go:11-37` asserts `len(paths) != 2` and must keep passing
+**unchanged**: its edges carry no `SourceBinding`, so the cut pass skips them and the path count
+is unaffected. Alternates attach as a field rather than as extra returned paths, so no existing
+pathfinder test moves. New cases: a graph where the source reaches a sink via two distinct
+bindings (expect a
 same-length alternate); one where the only alternate is longer (expect the longer chain); one
 where no alternate exists (expect an empty field); one with a synthetic-rooted first hop (expect
 the pass to be skipped, not to crash). Provenance stamping gets a test in the graph builder
