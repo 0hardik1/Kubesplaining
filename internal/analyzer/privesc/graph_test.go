@@ -895,3 +895,93 @@ func TestSecretMintEdgeRecordsSoleGrantorAsCutBreaker(t *testing.T) {
 		t.Fatal("no secret_mint_token edge emitted; fixture is wrong")
 	}
 }
+
+// TestPodCreateTargetsClusterScopeOrderIsDeterministic guards podCreateTargets'
+// cluster-scope branch (graph.go): it used to flatten subjectsByNs by ranging the
+// map directly, and Go re-randomizes map iteration order on every range. That order
+// becomes the order edges are appended to graph.Edges; buildAdjacency preserves
+// insertion order into adj, and BFS walks adj[node] in it, so the flatten order
+// silently decided which of several equal-length chains a finding reports, on a
+// scan-by-scan basis, with no finding or rule ID changing.
+//
+// The fixture needs at least two namespaces, each holding at least two
+// ServiceAccounts, plus a subject with a cluster-scoped `create pods` grant: with
+// fewer keys than that, subjectsByNs has too few entries for map iteration to ever
+// reorder them in practice, and the test would pass vacuously even against the
+// unfixed code.
+func TestPodCreateTargetsClusterScopeOrderIsDeterministic(t *testing.T) {
+	build := func() *models.EscalationGraph {
+		snapshot := models.Snapshot{}
+		snapshot.Resources.Namespaces = []corev1.Namespace{
+			{ObjectMeta: objectMeta("ns-a", "")},
+			{ObjectMeta: objectMeta("ns-b", "")},
+			{ObjectMeta: objectMeta("ns-c", "")},
+			{ObjectMeta: objectMeta("attacker-ns", "")},
+		}
+		snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+			{ObjectMeta: objectMeta("sa-a1", "ns-a")},
+			{ObjectMeta: objectMeta("sa-a2", "ns-a")},
+			{ObjectMeta: objectMeta("sa-b1", "ns-b")},
+			{ObjectMeta: objectMeta("sa-b2", "ns-b")},
+			{ObjectMeta: objectMeta("sa-c1", "ns-c")},
+			{ObjectMeta: objectMeta("sa-c2", "ns-c")},
+			{ObjectMeta: objectMeta("attacker", "attacker-ns")},
+		}
+		snapshot.Resources.ClusterRoles = []rbacv1.ClusterRole{
+			{
+				ObjectMeta: objectMeta("pod-creator-cluster", ""),
+				Rules: []rbacv1.PolicyRule{{
+					APIGroups: []string{""},
+					Resources: []string{"pods"},
+					Verbs:     []string{"create"},
+				}},
+			},
+		}
+		snapshot.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{
+			{
+				ObjectMeta: objectMeta("pod-creator-binding", ""),
+				RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "pod-creator-cluster"},
+				Subjects: []rbacv1.Subject{
+					{Kind: "ServiceAccount", Name: "attacker", Namespace: "attacker-ns"},
+				},
+			},
+		}
+		return BuildGraph(snapshot)
+	}
+
+	// projection isolates the pod_create_token_theft edges leaving "attacker", as
+	// "from|to|action" per edge in graph.Edges order, joined. This is the exact
+	// projection that flapped before the fix: the same set of targets, in a
+	// different order.
+	attackerID := nodeID(models.SubjectRef{Kind: "ServiceAccount", Name: "attacker", Namespace: "attacker-ns"})
+	projection := func(graph *models.EscalationGraph) []string {
+		var out []string
+		for _, edge := range graph.Edges {
+			if edge.From != attackerID || edge.Action != "pod_create_token_theft" {
+				continue
+			}
+			out = append(out, edge.From+"|"+edge.To+"|"+edge.Action)
+		}
+		return out
+	}
+
+	baseline := projection(build())
+	// 6 explicit SAs across 3 namespaces, each namespace also gaining an implicit
+	// "default" SA: enough distinct map keys that map iteration reorders them in
+	// practice across repeated builds.
+	if len(baseline) < 6 {
+		t.Fatalf("fixture too small to exercise reordering: got %d targets, want >= 6 (%v)", len(baseline), baseline)
+	}
+
+	for i := 0; i < 20; i++ {
+		got := projection(build())
+		if len(got) != len(baseline) {
+			t.Fatalf("run %d: target count changed, got %d want %d", i, len(got), len(baseline))
+		}
+		for j := range baseline {
+			if got[j] != baseline[j] {
+				t.Fatalf("run %d: edge order diverged at index %d\n got:  %v\n want: %v", i, j, got, baseline)
+			}
+		}
+	}
+}

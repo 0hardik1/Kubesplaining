@@ -909,12 +909,27 @@ func addEdge(graph *models.EscalationGraph, from, to string, edge *models.Escala
 	graph.Edges = append(graph.Edges, edge)
 }
 
-// podCreateTargets returns the candidate service accounts a subject can mount by creating pods: all SAs when cluster-scoped, or namespace-local otherwise.
+// podCreateTargets returns the candidate service accounts a subject can mount by
+// creating pods: all SAs when cluster-scoped, or namespace-local otherwise.
+//
+// The cluster-scope branch flattens subjectsByNs in namespace-key sorted order,
+// not by ranging the map directly. BFS walks graph.Edges in the order edges were
+// appended (buildAdjacency preserves insertion order, and bfsToSinks walks
+// adj[node] in it), so this order decides which of several equal-length chains a
+// finding reports whenever two candidate targets tie. The values inside each
+// namespace slice already come from iterating snapshot.Resources.ServiceAccounts,
+// itself a stable slice, so sorting only the outer namespace keys is enough to make
+// the whole flattened order deterministic.
 func podCreateTargets(clusterScope bool, namespace string, subjectsByNs map[string][]models.SubjectRef) []models.SubjectRef {
 	if clusterScope {
+		namespaces := make([]string, 0, len(subjectsByNs))
+		for ns := range subjectsByNs {
+			namespaces = append(namespaces, ns)
+		}
+		sort.Strings(namespaces)
 		var all []models.SubjectRef
-		for _, refs := range subjectsByNs {
-			all = append(all, refs...)
+		for _, ns := range namespaces {
+			all = append(all, subjectsByNs[ns]...)
 		}
 		return all
 	}
