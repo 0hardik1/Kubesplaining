@@ -1324,7 +1324,9 @@ diff /tmp/actual-full.ruleset testdata/e2e/expectations/full-scan.ruleset && ech
 
 Expected: no diff. This work introduces no rule ID, so any movement means the new fixture fired a rule that was not intended, which is a false positive to investigate rather than a golden to regenerate.
 
-If the new shard legitimately makes an existing rule fire that did not before (for example `KUBE-RBAC-OVERBROAD-001` on the new cluster-admin bindings), that is expected and the goldens **do** need regenerating. Regenerate both and state in the commit message which rule IDs were added and why:
+**Expected outcome: no diff.** Verified before execution: the goldens are set-equality over rule *IDs*, not instances, and every rule this shard can plausibly fire is already in `full-scan.ruleset` (`KUBE-RBAC-OVERBROAD-001` line 61, `KUBE-PRIVESC-PATH-CLUSTER-ADMIN` line 53, `KUBE-NETPOL-COVERAGE-*` lines 24-26, `KUBE-PSA-LABELS-001` line 59). Additional *instances* of an already-listed rule ID cannot move the set. Shard 17 is the precedent: it also adds bare namespaces with no NetworkPolicy and did not move the goldens.
+
+So a diff here means the change fired a rule ID the fixture was not designed to trigger. Investigate it as a candidate false positive before touching the golden. Only if you determine the new rule ID is legitimately expected should you regenerate, and then state in the commit message which rule IDs were added and why:
 
 ```bash
 LC_ALL=C jq -r '.[].rule_id' .tmp/e2e-report-full/findings.json | LC_ALL=C sort -u \
