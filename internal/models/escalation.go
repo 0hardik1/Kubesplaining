@@ -25,8 +25,14 @@ type EscalationNode struct {
 	Subject  SubjectRef `json:"subject,omitempty"`
 	IsSystem bool       `json:"is_system,omitempty"` // built-in control-plane subjects; not traversed during path search
 	// external (non-Kubernetes) subject such as a cloud IAM role; not seeded as a BFS source this slot
-	IsExternal      bool             `json:"is_external,omitempty"`
-	IsSink          bool             `json:"is_sink,omitempty"`
+	IsExternal bool `json:"is_external,omitempty"`
+	IsSink     bool `json:"is_sink,omitempty"`
+	// Traversable marks a sink that path search should keep walking past rather
+	// than halting on. A traversable sink still produces its own path finding; it
+	// additionally lets longer chains run through it (namespace-admin implying
+	// token theft in that namespace, node-root implying control-plane PKI theft,
+	// an external cloud identity implying a return route into the cluster).
+	Traversable     bool             `json:"traversable,omitempty"`
 	Target          EscalationTarget `json:"target,omitempty"`           // set only when IsSink is true
 	TargetNamespace string           `json:"target_namespace,omitempty"` // populated only when Target == TargetNamespaceAdmin to identify which namespace the sink represents
 }
