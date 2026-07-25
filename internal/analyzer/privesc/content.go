@@ -209,6 +209,24 @@ func hopsRemediation(hops []models.EscalationHop) string {
 	return fmt.Sprintf("remove the permission `%s` that enables the first hop (`%s` → `%s`)", hop.Permission, hop.FromSubject.Key(), hop.ToSubject.Key())
 }
 
+// alternateCutNote returns a trailer sentence for Remediation naming the specific
+// cut the cut-resilient pass evaluated: removing the subject from hop 1's binding.
+// It exists because CSV and SARIF consumers only ever see the Remediation prose
+// plus the "privesc:survives-first-cut" tag, with no other copy saying which cut
+// the tag is about; hopsRemediation above often recommends a different, cheaper
+// mid-chain hop, and a reader could otherwise misread the tag as being about that
+// hop instead. The HTML report already renders AlternateEscalationPath in its own
+// section, so this sentence is redundant there but harmless.
+//
+// Callers only invoke this when hops has a non-empty alternate, which the
+// cut-resilient pass only ever computes for chains whose first hop names a
+// binding (see pathfinder.go's edgeCut), so hop 1's SourceBinding is always
+// populated here.
+func alternateCutNote(hops []models.EscalationHop) string {
+	hop := hops[0]
+	return fmt.Sprintf(" Evaluated cut: removing this subject from the `%s` binding that grants hop 1. A route to the same sink survives that cut.", hop.SourceBinding)
+}
+
 func contentClusterAdminPath(source models.SubjectRef, hops []models.EscalationHop) ruleContent {
 	hopCount := len(hops)
 	steps := make([]string, 0, hopCount+2)

@@ -3,6 +3,7 @@ package privesc
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
@@ -673,5 +674,51 @@ func TestFindingWithoutAlternateIsUntagged(t *testing.T) {
 		if tag == "privesc:survives-first-cut" {
 			t.Errorf("finding without an alternate must not carry the tag: %v", finding.Tags)
 		}
+	}
+}
+
+// TestFindingRemediationNamesEvaluatedCutWhenAlternateExists is the regression
+// test for defect (c): CSV and SARIF consumers see only Finding.Remediation and
+// Finding.Tags, with nothing saying which cut "privesc:survives-first-cut" is
+// about. hopsRemediation often recommends a different, cheaper mid-chain hop, so
+// without this sentence a reader can misattribute the tag to that hop instead of
+// to the hop-1 binding cut the alternate pass actually evaluated.
+func TestFindingRemediationNamesEvaluatedCutWhenAlternateExists(t *testing.T) {
+	path := models.EscalationPath{
+		Source: models.SubjectRef{Kind: "ServiceAccount", Name: "twice", Namespace: "app"},
+		Target: models.TargetClusterAdmin,
+		Hops: []models.EscalationHop{
+			{Step: 1, Action: "bound_to_cluster_admin", SourceBinding: "admin-a", Permission: "cluster-admin"},
+		},
+		AlternateHops: []models.EscalationHop{
+			{Step: 1, Action: "bound_to_cluster_admin", SourceBinding: "admin-b", Permission: "cluster-admin"},
+		},
+	}
+
+	finding := findingFromPath(path)
+
+	if !strings.Contains(finding.Remediation, "admin-a") {
+		t.Errorf("Remediation should name hop 1's binding (admin-a), the one the alternate pass actually cut: %q", finding.Remediation)
+	}
+	if !strings.Contains(finding.Remediation, "survives") {
+		t.Errorf("Remediation should note that a route survives the evaluated cut: %q", finding.Remediation)
+	}
+}
+
+// TestFindingRemediationUnchangedWithoutAlternate proves the common case (no
+// alternate) keeps today's Remediation prose byte-for-byte, per the brief's
+// smallest-fix constraint.
+func TestFindingRemediationUnchangedWithoutAlternate(t *testing.T) {
+	hops := []models.EscalationHop{{Step: 1, Action: "bound_to_cluster_admin", SourceBinding: "only", Permission: "cluster-admin"}}
+	path := models.EscalationPath{
+		Source: models.SubjectRef{Kind: "ServiceAccount", Name: "once", Namespace: "app"},
+		Target: models.TargetClusterAdmin,
+		Hops:   hops,
+	}
+
+	finding := findingFromPath(path)
+	want := contentClusterAdminPath(path.Source, hops).Remediation
+	if finding.Remediation != want {
+		t.Errorf("Remediation changed for a finding without an alternate:\ngot:  %q\nwant: %q", finding.Remediation, want)
 	}
 }
