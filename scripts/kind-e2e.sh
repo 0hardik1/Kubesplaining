@@ -443,8 +443,7 @@ step "Verifying an alternate never starts with the binding its own fix cuts"
 #
 # This is deliberately not a *.chain line. The chain gate above names one finding
 # prefix and pins its shape; this walks the whole findings.json and would catch a
-# regression in a finding nobody thought to write a *.chain assertion for. A gate that
-# only ever sees zero alternates would pass vacuously, so ALT_CHECKED must be nonzero.
+# regression in a finding nobody thought to write a *.chain assertion for.
 #
 # A.source_binding can legitimately be empty (Task 9's CutBreakers-only correlation
 # edges carry no SourceBinding by design), which is not a violation, just the unstamped
@@ -452,9 +451,22 @@ step "Verifying an alternate never starts with the binding its own fix cuts"
 # `omitempty` in the JSON, so an absent field round-trips as jq `null`; the filter
 # below requires BOTH sides' source_binding to be non-null before comparing them, so
 # two absent bindings are never mistaken for a match.
-ALT_CHECKED="$(jq -r '[.[] | select(((.alternate_escalation_path // []) | length) > 0)] | length' "${ROOT_DIR}/.tmp/e2e-report-full/findings.json")"
+#
+# ALT_CHECKED therefore counts the COMPARABLE population, not every alternate-bearing
+# finding, and the two are deliberately different numbers. An alternate whose first hop
+# names no binding cannot be compared against the primary's cut binding at all: there is
+# nothing to equal it and nothing to differ from it, so counting it would credit this
+# gate with coverage it does not have. Counting all alternate-bearing findings instead
+# lets a regression that removes every comparable alternate still leave a nonzero count
+# from unstamped ones, pass the guard, compare nothing, and print success. That is
+# precisely the regression this gate exists to catch, so the count must track the
+# comparison.
+ALT_CHECKED="$(jq -r '[.[]
+  | select(((.alternate_escalation_path // []) | length) > 0)
+  | select((.escalation_path[0].source_binding // null) != null
+       and (.alternate_escalation_path[0].source_binding // null) != null)] | length' "${ROOT_DIR}/.tmp/e2e-report-full/findings.json")"
 if [[ "${ALT_CHECKED}" == "0" ]]; then
-  echo "no findings carried an alternate_escalation_path: this gate would pass vacuously, which is worse than not gating at all" >&2
+  echo "no finding carried an alternate_escalation_path comparable against its primary's cut binding: this gate would pass vacuously, which is worse than not gating at all" >&2
   exit 1
 fi
 ALT_VIOLATIONS="$(jq -r '
@@ -473,7 +485,7 @@ if [[ -n "${ALT_VIOLATIONS}" ]]; then
   echo "${ALT_VIOLATIONS}" | sed 's/^/  - /' >&2
   exit 1
 fi
-ok "no alternate reuses its primary's cut binding (${ALT_CHECKED} alternate-bearing findings checked)"
+ok "no alternate reuses its primary's cut binding (${ALT_CHECKED} comparable alternate-bearing findings checked)"
 
 # NOTE: the issue-#48 cluster-admin false-positive guard and the
 # KUBE-ADMISSION-NO-POLICY-ENGINE-001 absence guard now live in
