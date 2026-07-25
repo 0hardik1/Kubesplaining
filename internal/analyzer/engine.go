@@ -235,6 +235,12 @@ func stripRemediationHints(findings []models.Finding) []models.Finding {
 // differing in Resource, and dedupe's key covers both), so the tiebreak alone is not
 // sufficient; positional collection is what covers that residue.
 func sortFindings(findings []models.Finding) {
+	// Do not simplify this to sort.Slice. Determinism across runs comes from
+	// runModulesInParallel's positional collection, not from this call; what
+	// SliceStable buys instead is tie order that follows predictably from that
+	// input rather than from sort.Slice's undocumented, no-forward-compatibility-
+	// guaranteed pivot choices. It is also what this function's own doc comment,
+	// CLAUDE.md, and docs/architecture.md already promise.
 	sort.SliceStable(findings, func(i, j int) bool {
 		if findings[i].Severity.Rank() != findings[j].Severity.Rank() {
 			return findings[i].Severity.Rank() > findings[j].Severity.Rank()
