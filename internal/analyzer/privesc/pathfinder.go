@@ -167,6 +167,25 @@ func edgeCut(edge *models.EscalationEdge) (cutKey, bool) {
 	return cutKey{binding: edge.SourceBinding, namespace: edge.BindingNamespace}, true
 }
 
+// edgeBrokenBy reports whether removing the subject from the binding named by key
+// would break edge. That is true either when key is the single binding that
+// granted the edge (edgeCut), or when key appears in the edge's CutBreakers: a
+// two-rule correlation edge (see addSecretMintEdge, addNodeMigrateEdge) that
+// carries no single granting binding but whose key IS the sole grantor of one of
+// the two required halves, so cutting it un-grants that half and the correlation
+// no longer holds.
+func edgeBrokenBy(edge *models.EscalationEdge, key cutKey) bool {
+	if k, ok := edgeCut(edge); ok && k == key {
+		return true
+	}
+	for _, breaker := range edge.CutBreakers {
+		if (cutKey{binding: breaker.Name, namespace: breaker.Namespace}) == key {
+			return true
+		}
+	}
+	return false
+}
+
 // alternatesForSource returns, per reachable sink, a chain that survives cutting the
 // binding named by that sink's own first hop.
 //
@@ -205,8 +224,7 @@ func alternatesForSource(
 			if edge.From != sourceID {
 				return false
 			}
-			k, ok := edgeCut(edge)
-			return ok && k == key
+			return edgeBrokenBy(edge, key)
 		}
 		surviving := bfsToSinks(graph, adj, sourceID, maxDepth, banned)
 		for _, targetID := range targetIDs {

@@ -324,3 +324,35 @@ func TestAlternateFoundWhenSecondBindingGrantsPodCreate(t *testing.T) {
 		t.Errorf("alternate reuses the cut binding %q", p.Hops[0].SourceBinding)
 	}
 }
+
+// TestCorrelationEdgeIsCutWhenOneBindingGrantsBothHalves builds the audit's exact
+// shape: a stamped edge (nodes_proxy) and an unstamped correlation edge
+// (node_drain_migrate) both reach the SAME sink, and the binding that grants the
+// stamped edge is also the sole grantor of both halves behind the correlation edge.
+// Cutting it must leave NO alternate, because removing the subject from that one
+// binding genuinely closes both routes. Before the fix this produced a 1-hop
+// alternate via node_drain_migrate, wrongly telling the operator their correct and
+// sufficient fix was insufficient.
+func TestCorrelationEdgeIsCutWhenOneBindingGrantsBothHalves(t *testing.T) {
+	graph := &models.EscalationGraph{Nodes: map[string]*models.EscalationNode{}}
+	src := models.SubjectRef{Kind: "ServiceAccount", Name: "agent", Namespace: "ops"}
+	ensureSubjectNode(graph, src)
+	graph.Nodes[sinkNodeEscape] = &models.EscalationNode{
+		ID: sinkNodeEscape, IsSink: true, Target: models.TargetNodeEscape,
+	}
+
+	addEdge(graph, nodeID(src), sinkNodeEscape, bindingEdge("nodes_proxy", "node-ops-crb"))
+	addEdge(graph, nodeID(src), sinkNodeEscape, &models.EscalationEdge{
+		Action:      "node_drain_migrate",
+		CutBreakers: []models.BindingRef{{Name: "node-ops-crb"}},
+	})
+
+	paths := FindPaths(graph, 5)
+	if len(paths) != 1 {
+		t.Fatalf("want 1 path, got %d", len(paths))
+	}
+	if len(paths[0].AlternateHops) != 0 {
+		t.Fatalf("want no alternate: node-ops-crb is the sole grantor behind both edges, got %d hops (%+v)",
+			len(paths[0].AlternateHops), paths[0].AlternateHops)
+	}
+}

@@ -43,6 +43,13 @@ type EscalationNode struct {
 	TargetNamespace string           `json:"target_namespace,omitempty"` // populated only when Target == TargetNamespaceAdmin to identify which namespace the sink represents
 }
 
+// BindingRef names a (Cluster)RoleBinding. Namespace is empty for ClusterRoleBindings,
+// matching how permissions.Aggregate records it.
+type BindingRef struct {
+	Name      string
+	Namespace string
+}
+
 // EscalationEdge is a directed labeled edge describing how one subject can obtain another subject's identity or reach a sink.
 type EscalationEdge struct {
 	From        string  `json:"from"`
@@ -72,6 +79,13 @@ type EscalationEdge struct {
 	SourceBinding    string `json:"source_binding,omitempty"`
 	SourceRole       string `json:"source_role,omitempty"`
 	BindingNamespace string `json:"binding_namespace,omitempty"`
+	// CutBreakers lists the bindings whose removal from this subject would break this
+	// edge. For an edge derived from one RBAC rule the granting binding is already in
+	// SourceBinding and this stays empty. It is populated for correlation edges that
+	// require two capabilities, where no single binding "granted" the edge but one may
+	// still be the sole grantor of a half, so cutting it closes the route. Graph-internal:
+	// excluded from JSON so no output surface changes.
+	CutBreakers []BindingRef `json:"-"`
 }
 
 // EscalationPath is one source → sink chain returned by path search, with each hop annotated.

@@ -459,24 +459,31 @@ func addNamespaceAdminTokenTheftEdges(graph *models.EscalationGraph, subjectsByN
 // case in the graph (-> sinkTokenMint); narrower namespaced create+get still
 // surfaces as the standalone KUBE-PRIVESC-007 rbac finding.
 //
-// This edge deliberately carries no provenance: the two halves (create, get) can
-// come from two different bindings, so no single binding name would be correct.
-// Naming one anyway would let the cut-resilient pass ban that binding's edges and
-// wrongly report the route as closed when the other binding alone still grants it.
+// This edge deliberately carries no SourceBinding: the two halves (create, get) can
+// come from two different bindings, so no single binding name would be correct as
+// "the" grantor of the whole edge. That is a different question from what a cut
+// would BREAK, though: whenever a half has exactly one grantor, cutting that one
+// binding un-grants the half, and the correlation no longer holds no matter what
+// the other half still has. CutBreakers records that binding for each half with a
+// sole grantor, so the cut-resilient pass can correctly ban this edge when the cut
+// removes a capability it depends on. A half held by two or more bindings
+// contributes nothing, because cutting one of them leaves the others granting it
+// and the half survives.
 func addSecretMintEdge(graph *models.EscalationGraph, subject models.SubjectRef, rules []permissions.EffectiveRule) {
-	hasCreate, hasGet := false, false
+	createBy, getBy := map[cutKey]bool{}, map[cutKey]bool{}
 	for _, r := range rules {
 		if r.Namespace != "" {
 			continue
 		}
+		key := cutKey{binding: r.SourceBinding, namespace: r.Namespace}
 		if matchesResourceVerb(r, []string{"secrets"}, []string{"create"}) {
-			hasCreate = true
+			createBy[key] = true
 		}
 		if matchesResourceVerb(r, []string{"secrets"}, []string{"get"}) {
-			hasGet = true
+			getBy[key] = true
 		}
 	}
-	if !hasCreate || !hasGet {
+	if len(createBy) == 0 || len(getBy) == 0 {
 		return
 	}
 	ensureSubjectNode(graph, subject)
@@ -485,6 +492,7 @@ func addSecretMintEdge(graph *models.EscalationGraph, subject models.SubjectRef,
 		Action:      "secret_mint_token",
 		Permission:  "create + get secrets (cluster-wide)",
 		Description: "can create a legacy ServiceAccount-token Secret and read the minted token for any ServiceAccount",
+		CutBreakers: cutBreakers(createBy, getBy),
 	})
 }
 
@@ -493,26 +501,31 @@ func addSecretMintEdge(graph *models.EscalationGraph, subject models.SubjectRef,
 // on nodes/status, or `delete nodes`) can evict sensitive pods and steer their
 // reschedule onto an attacker-controlled node, then steal their tokens.
 //
-// This edge deliberately carries no provenance: the two halves (delete pods,
+// This edge deliberately carries no SourceBinding: the two halves (delete pods,
 // node manipulation) can come from two different bindings, so no single binding
-// name would be correct. Naming one anyway would let the cut-resilient pass ban
-// that binding's edges and wrongly report the route as closed when the other
-// binding alone still grants it.
+// name would be correct as "the" grantor of the whole edge. That is a different
+// question from what a cut would BREAK, though: whenever a half has exactly one
+// grantor, cutting that one binding un-grants the half, and the correlation no
+// longer holds no matter what the other half still has. CutBreakers records that
+// binding for each half with a sole grantor, so the cut-resilient pass can
+// correctly ban this edge when the cut removes a capability it depends on. A half
+// held by two or more bindings contributes nothing, because cutting one of them
+// leaves the others granting it and the half survives.
 func addNodeMigrateEdge(graph *models.EscalationGraph, subject models.SubjectRef, rules []permissions.EffectiveRule) {
-	hasDeletePods, hasNodeManip := false, false
+	deleteBy, manipBy := map[cutKey]bool{}, map[cutKey]bool{}
 	for _, r := range rules {
 		if matchesResourceVerb(r, []string{"pods"}, []string{"delete"}) {
-			hasDeletePods = true
+			deleteBy[cutKey{binding: r.SourceBinding, namespace: r.Namespace}] = true
 		}
 		if r.Namespace != "" {
 			continue
 		}
 		if matchesResourceVerb(r, []string{"nodes/status"}, []string{"update", "patch"}) ||
 			matchesResourceVerb(r, []string{"nodes"}, []string{"delete"}) {
-			hasNodeManip = true
+			manipBy[cutKey{binding: r.SourceBinding, namespace: r.Namespace}] = true
 		}
 	}
-	if !hasDeletePods || !hasNodeManip {
+	if len(deleteBy) == 0 || len(manipBy) == 0 {
 		return
 	}
 	ensureSubjectNode(graph, subject)
@@ -521,7 +534,32 @@ func addNodeMigrateEdge(graph *models.EscalationGraph, subject models.SubjectRef
 		Action:      "node_drain_migrate",
 		Permission:  "delete pods + node scheduling control",
 		Description: "can migrate sensitive pods onto an attacker-controlled node via eviction + node manipulation",
+		CutBreakers: cutBreakers(deleteBy, manipBy),
 	})
+}
+
+// cutBreakers computes, for each half of a two-rule correlation edge, the binding
+// that would break it if the subject were cut from it: the half's SOLE grantor. A
+// half granted by zero or several distinct bindings contributes nothing, because
+// cutting one of several still leaves the others granting it and the correlation
+// still holds. Shared by addSecretMintEdge and addNodeMigrateEdge, the two builders
+// that correlate two RBAC rules rather than deriving from a single one.
+func cutBreakers(halves ...map[cutKey]bool) []models.BindingRef {
+	var breakers []models.BindingRef
+	seen := map[cutKey]bool{}
+	for _, half := range halves {
+		if len(half) != 1 {
+			continue
+		}
+		for key := range half {
+			if key.binding == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			breakers = append(breakers, models.BindingRef{Name: key.binding, Namespace: key.namespace})
+		}
+	}
+	return breakers
 }
 
 // addPrivilegedPodCreateEdges emits the KUBE-PRIVESC-002 edge: a subject that

@@ -685,3 +685,213 @@ func TestPrivilegedPodCreateDedupesWithinOneBinding(t *testing.T) {
 		t.Fatalf("want 1 pod_create_privileged_escape edge (two rules, one binding), got %d (edges=%+v)", count, graph.Edges)
 	}
 }
+
+// TestNodeMigrateEdgeRecordsSoleGrantorAsCutBreaker covers the audit's reproduction:
+// one ClusterRole grants both halves of the node_drain_migrate correlation (delete
+// pods, node manipulation), bound by ONE ClusterRoleBinding. The edge still carries
+// no SourceBinding, because no single binding "granted" the correlation, but that one
+// binding is the sole grantor of both halves, so removing the subject from it would
+// break the edge. CutBreakers must name it.
+func TestNodeMigrateEdgeRecordsSoleGrantorAsCutBreaker(t *testing.T) {
+	snapshot := models.Snapshot{}
+	snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+		{ObjectMeta: objectMeta("agent", "ops")},
+	}
+	snapshot.Resources.ClusterRoles = []rbacv1.ClusterRole{
+		{
+			ObjectMeta: objectMeta("node-ops", ""),
+			Rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"delete"}},
+				{APIGroups: []string{""}, Resources: []string{"nodes/status"}, Verbs: []string{"update"}},
+			},
+		},
+	}
+	snapshot.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{
+		{
+			ObjectMeta: objectMeta("node-ops-crb", ""),
+			RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "node-ops"},
+			Subjects: []rbacv1.Subject{
+				{Kind: "ServiceAccount", Name: "agent", Namespace: "ops"},
+			},
+		},
+	}
+
+	graph := BuildGraph(snapshot)
+
+	var found bool
+	for _, edge := range graph.Edges {
+		if edge.Action != "node_drain_migrate" {
+			continue
+		}
+		found = true
+		if edge.SourceBinding != "" {
+			t.Errorf("SourceBinding = %q, want empty: no single binding grants the correlation", edge.SourceBinding)
+		}
+		if len(edge.CutBreakers) != 1 {
+			t.Fatalf("want 1 CutBreaker, got %d (%+v)", len(edge.CutBreakers), edge.CutBreakers)
+		}
+		if edge.CutBreakers[0].Name != "node-ops-crb" || edge.CutBreakers[0].Namespace != "" {
+			t.Errorf("CutBreakers[0] = %+v, want {Name: node-ops-crb, Namespace: \"\"}", edge.CutBreakers[0])
+		}
+	}
+	if !found {
+		t.Fatal("no node_drain_migrate edge emitted; fixture is wrong")
+	}
+}
+
+// TestNodeMigrateEdgeHasNoCutBreakerWhenEachHalfHasTwoGrantors is the guard rail
+// against over-banning: when EACH half is granted redundantly by two different
+// bindings, cutting either one alone leaves the other binding still granting BOTH
+// halves, so the correlation survives and CutBreakers must stay empty. (An earlier
+// version of this test used a fixture where the two halves were partitioned across
+// the two bindings instead of duplicated on both; that fixture actually proves the
+// opposite property. See TestNodeMigrateEdgeRecordsBothSoleGrantorsWhenHalvesArePartitioned.)
+func TestNodeMigrateEdgeHasNoCutBreakerWhenEachHalfHasTwoGrantors(t *testing.T) {
+	snapshot := models.Snapshot{}
+	snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+		{ObjectMeta: objectMeta("agent", "ops")},
+	}
+	bothHalves := []rbacv1.PolicyRule{
+		{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"delete"}},
+		{APIGroups: []string{""}, Resources: []string{"nodes/status"}, Verbs: []string{"update"}},
+	}
+	snapshot.Resources.ClusterRoles = []rbacv1.ClusterRole{
+		{ObjectMeta: objectMeta("node-ops-a", ""), Rules: bothHalves},
+		{ObjectMeta: objectMeta("node-ops-b", ""), Rules: bothHalves},
+	}
+	snapshot.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{
+		{
+			ObjectMeta: objectMeta("node-ops-a-crb", ""),
+			RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "node-ops-a"},
+			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "agent", Namespace: "ops"}},
+		},
+		{
+			ObjectMeta: objectMeta("node-ops-b-crb", ""),
+			RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "node-ops-b"},
+			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "agent", Namespace: "ops"}},
+		},
+	}
+
+	graph := BuildGraph(snapshot)
+
+	var found bool
+	for _, edge := range graph.Edges {
+		if edge.Action != "node_drain_migrate" {
+			continue
+		}
+		found = true
+		if len(edge.CutBreakers) != 0 {
+			t.Errorf("want no CutBreakers when each half has two grantors, got %+v", edge.CutBreakers)
+		}
+	}
+	if !found {
+		t.Fatal("no node_drain_migrate edge emitted; fixture is wrong")
+	}
+}
+
+// TestNodeMigrateEdgeRecordsBothSoleGrantorsWhenHalvesArePartitioned covers the
+// shape a correlation edge actually needs to guard: the two halves are partitioned
+// across two DIFFERENT single-grantor bindings (delete pods solely via one, node
+// manipulation solely via the other). Cutting EITHER binding un-grants its half,
+// and the correlation (which needs both) no longer holds no matter what the other
+// half still has, so BOTH bindings must appear in CutBreakers, not neither.
+func TestNodeMigrateEdgeRecordsBothSoleGrantorsWhenHalvesArePartitioned(t *testing.T) {
+	snapshot := models.Snapshot{}
+	snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+		{ObjectMeta: objectMeta("agent", "ops")},
+	}
+	snapshot.Resources.ClusterRoles = []rbacv1.ClusterRole{
+		{
+			ObjectMeta: objectMeta("pod-deleter", ""),
+			Rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"delete"}},
+			},
+		},
+		{
+			ObjectMeta: objectMeta("node-manipulator", ""),
+			Rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{""}, Resources: []string{"nodes/status"}, Verbs: []string{"update"}},
+			},
+		},
+	}
+	snapshot.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{
+		{
+			ObjectMeta: objectMeta("pod-deleter-crb", ""),
+			RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "pod-deleter"},
+			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "agent", Namespace: "ops"}},
+		},
+		{
+			ObjectMeta: objectMeta("node-manipulator-crb", ""),
+			RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "node-manipulator"},
+			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "agent", Namespace: "ops"}},
+		},
+	}
+
+	graph := BuildGraph(snapshot)
+
+	var found bool
+	for _, edge := range graph.Edges {
+		if edge.Action != "node_drain_migrate" {
+			continue
+		}
+		found = true
+		got := map[string]bool{}
+		for _, b := range edge.CutBreakers {
+			got[b.Name] = true
+		}
+		if len(edge.CutBreakers) != 2 || !got["pod-deleter-crb"] || !got["node-manipulator-crb"] {
+			t.Errorf("want CutBreakers = [pod-deleter-crb, node-manipulator-crb], got %+v", edge.CutBreakers)
+		}
+	}
+	if !found {
+		t.Fatal("no node_drain_migrate edge emitted; fixture is wrong")
+	}
+}
+
+// TestSecretMintEdgeRecordsSoleGrantorAsCutBreaker mirrors
+// TestNodeMigrateEdgeRecordsSoleGrantorAsCutBreaker for the secret_mint_token
+// correlation (create secrets, get secrets, both cluster-scoped).
+func TestSecretMintEdgeRecordsSoleGrantorAsCutBreaker(t *testing.T) {
+	snapshot := models.Snapshot{}
+	snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+		{ObjectMeta: objectMeta("agent", "ops")},
+	}
+	snapshot.Resources.ClusterRoles = []rbacv1.ClusterRole{
+		{
+			ObjectMeta: objectMeta("secret-minter", ""),
+			Rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"create"}},
+				{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get"}},
+			},
+		},
+	}
+	snapshot.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{
+		{
+			ObjectMeta: objectMeta("secret-minter-crb", ""),
+			RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "secret-minter"},
+			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "agent", Namespace: "ops"}},
+		},
+	}
+
+	graph := BuildGraph(snapshot)
+
+	var found bool
+	for _, edge := range graph.Edges {
+		if edge.Action != "secret_mint_token" {
+			continue
+		}
+		found = true
+		if edge.SourceBinding != "" {
+			t.Errorf("SourceBinding = %q, want empty: no single binding grants the correlation", edge.SourceBinding)
+		}
+		if len(edge.CutBreakers) != 1 {
+			t.Fatalf("want 1 CutBreaker, got %d (%+v)", len(edge.CutBreakers), edge.CutBreakers)
+		}
+		if edge.CutBreakers[0].Name != "secret-minter-crb" || edge.CutBreakers[0].Namespace != "" {
+			t.Errorf("CutBreakers[0] = %+v, want {Name: secret-minter-crb, Namespace: \"\"}", edge.CutBreakers[0])
+		}
+	}
+	if !found {
+		t.Fatal("no secret_mint_token edge emitted; fixture is wrong")
+	}
+}
