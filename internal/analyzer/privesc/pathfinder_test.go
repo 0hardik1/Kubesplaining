@@ -1,6 +1,7 @@
 package privesc
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
@@ -148,5 +149,100 @@ func TestSyntheticRootedPathSkipsCutPass(t *testing.T) {
 	}
 	if len(paths[0].AlternateHops) != 0 {
 		t.Fatalf("want no alternate for a synthetic-rooted chain, got %d hops", len(paths[0].AlternateHops))
+	}
+}
+
+// TestAlternatesDeterministicWhenCutKeyCoversTwoSinks guards the one property that
+// makes alternatesForSource safe to write with a map.
+//
+// targetsByCut is a Go map, so `range` visits its cut keys in a random order that
+// differs run to run. That is safe only because the buckets partition the target
+// set: each targetID is filed under exactly one cutKey, the one named by its OWN
+// first hop, so no banned run can overwrite the answer another run produced. If
+// that one-to-one property ever breaks, two runs start competing to write the same
+// targetID and the output becomes order-dependent, which surfaces downstream as
+// e2e goldens flapping intermittently: an expensive failure to trace back here.
+//
+// The fixture below is the case where such a mistake actually shows up. Cut key
+// "bind-a" covers TWO sinks that must receive DIFFERENT answers (cluster-admin gets
+// a same-length alternate via the parallel binding "bind-a2"; kube-system-secrets
+// gets a longer detour through mid), alongside a sink whose route dies with its cut
+// and a synthetic-rooted chain that skips the pass. Tests with a single sink per
+// source cannot catch it.
+//
+// If this test ever flakes, the property has been broken. Restore it. Do NOT add a
+// sort to paper over the symptom: needing one means the structure changed.
+func TestAlternatesDeterministicWhenCutKeyCoversTwoSinks(t *testing.T) {
+	build := func() *models.EscalationGraph {
+		graph := &models.EscalationGraph{Nodes: map[string]*models.EscalationNode{}}
+		src := models.SubjectRef{Kind: "ServiceAccount", Name: "src", Namespace: "app"}
+		mid := models.SubjectRef{Kind: "ServiceAccount", Name: "mid", Namespace: "app"}
+		other := models.SubjectRef{Kind: "ServiceAccount", Name: "other", Namespace: "app"}
+		ensureSubjectNode(graph, src)
+		ensureSubjectNode(graph, mid)
+		ensureSubjectNode(graph, other)
+		for _, sink := range []struct {
+			id     string
+			target models.EscalationTarget
+		}{
+			{sinkClusterAdmin, models.TargetClusterAdmin},
+			{sinkKubeSystemSecrets, models.TargetKubeSystemSecrets},
+			{sinkTokenMint, models.TargetTokenMint},
+			{sinkNodeEscape, models.TargetNodeEscape},
+		} {
+			graph.Nodes[sink.id] = &models.EscalationNode{ID: sink.id, IsSink: true, Target: sink.target}
+		}
+
+		// Cut key "bind-a" covers two sinks with different answers.
+		addEdge(graph, nodeID(src), sinkClusterAdmin, bindingEdge("bound_to_cluster_admin", "bind-a"))
+		addEdge(graph, nodeID(src), sinkClusterAdmin, bindingEdge("bound_to_cluster_admin", "bind-a2"))
+		addEdge(graph, nodeID(src), sinkKubeSystemSecrets, bindingEdge("read_secrets", "bind-a"))
+		addEdge(graph, nodeID(src), nodeID(mid), bindingEdge("impersonate", "bind-c"))
+		addEdge(graph, nodeID(mid), sinkKubeSystemSecrets, bindingEdge("read_secrets", "mid-secrets"))
+
+		// Cut key "bind-b": the cut closes this route outright.
+		addEdge(graph, nodeID(src), sinkTokenMint, bindingEdge("token_mint", "bind-b"))
+
+		// No SourceBinding: the cut pass must skip this chain entirely.
+		addEdge(graph, nodeID(other), sinkNodeEscape, &models.EscalationEdge{Action: "pod_host_escape"})
+		return graph
+	}
+
+	baseline := FindPaths(build(), 5)
+
+	// Pin the fixture's premise before pinning its stability. Without this, the
+	// comparison below would pass just as happily against an implementation that
+	// populates no alternates at all: stable emptiness is still stable.
+	altHops := func(target models.EscalationTarget) int {
+		for _, p := range baseline {
+			if p.Source.Name == "src" && p.Target == target {
+				return len(p.AlternateHops)
+			}
+		}
+		t.Fatalf("no path from src to %s in the fixture", target)
+		return 0
+	}
+	if n := altHops(models.TargetClusterAdmin); n != 1 {
+		t.Fatalf("cluster-admin should keep a 1-hop alternate via bind-a2, got %d hops", n)
+	}
+	if n := altHops(models.TargetKubeSystemSecrets); n != 2 {
+		t.Fatalf("kube-system-secrets should get a 2-hop detour through mid, got %d hops", n)
+	}
+	if n := altHops(models.TargetTokenMint); n != 0 {
+		t.Fatalf("token-mint's cut closes its only route, want no alternate, got %d hops", n)
+	}
+
+	want, err := json.Marshal(baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 20; i++ {
+		got, err := json.Marshal(FindPaths(build(), 5))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(want) {
+			t.Fatalf("run %d diverged, so a targetID is reachable from two cut keys\n want %s\n  got %s", i, want, got)
+		}
 	}
 }
