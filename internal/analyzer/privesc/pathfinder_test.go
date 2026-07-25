@@ -507,6 +507,77 @@ func TestCorrelationEdgeIsCutWhenOneBindingGrantsBothHalves(t *testing.T) {
 	}
 }
 
+// TestCSREdgeIsCutWhenOneBindingGrantsBothHalves is the same shape as
+// TestCorrelationEdgeIsCutWhenOneBindingGrantsBothHalves, one sink over, and it runs
+// through the real BuildGraph rather than a hand-wired graph because the defect it
+// guards was in provenance collection, not in the ban predicate: the csr_approve edge
+// used to record only THAT a subject held each CSR half, discarding WHICH binding
+// granted it, so it reached the cut pass with no CutBreakers and could never be banned.
+//
+// One ClusterRole grants `impersonate users/groups` (the stamped edge that becomes the
+// primary route to system:masters) plus both CSR halves, and exactly one
+// ClusterRoleBinding grants it. Cutting that binding removes all three grants, so the
+// csr_approve route dies with the primary and there must be NO alternate. Before the
+// fix this reported a 1-hop csr_approve alternate, telling the operator their correct
+// and sufficient fix was insufficient and offering, as proof, a route the fix closes.
+func TestCSREdgeIsCutWhenOneBindingGrantsBothHalves(t *testing.T) {
+	snapshot := models.Snapshot{}
+	snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+		{ObjectMeta: objectMeta("csr-both", "csrgap")},
+	}
+	snapshot.Resources.ClusterRoles = []rbacv1.ClusterRole{
+		{
+			ObjectMeta: objectMeta("csr-and-impersonate", ""),
+			Rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{""}, Resources: []string{"users", "groups"}, Verbs: []string{"impersonate"}},
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests"}, Verbs: []string{"create"}},
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests/approval"}, Verbs: []string{"update"}},
+			},
+		},
+	}
+	snapshot.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{
+		{
+			ObjectMeta: objectMeta("csr-gap-only-binding", ""),
+			RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "csr-and-impersonate"},
+			Subjects: []rbacv1.Subject{
+				{Kind: "ServiceAccount", Name: "csr-both", Namespace: "csrgap"},
+			},
+		},
+	}
+
+	paths := FindPaths(BuildGraph(snapshot), 5)
+	src := models.SubjectRef{Kind: "ServiceAccount", Name: "csr-both", Namespace: "csrgap"}
+	var p models.EscalationPath
+	var found int
+	for _, candidate := range paths {
+		if candidate.Source.Key() == src.Key() && candidate.Target == models.TargetSystemMasters {
+			p = candidate
+			found++
+		}
+	}
+	if found != 1 {
+		t.Fatalf("want exactly 1 csr-both -> system_masters path, got %d (of %d total)", found, len(paths))
+	}
+	// Pin the premise: without a csr_approve edge in the graph at all, the assertion
+	// below would pass for the wrong reason.
+	var sawCSREdge bool
+	for _, edge := range BuildGraph(snapshot).Edges {
+		if edge.Action == "csr_approve" {
+			sawCSREdge = true
+			if len(edge.CutBreakers) == 0 {
+				t.Errorf("csr_approve edge carries no CutBreakers, so no cut can ever ban it: %+v", *edge)
+			}
+		}
+	}
+	if !sawCSREdge {
+		t.Fatal("fixture built no csr_approve edge; the cut pass has nothing to skip (fixture regression, not a pass)")
+	}
+	if len(p.AlternateHops) != 0 {
+		t.Fatalf("want no alternate: csr-gap-only-binding is the sole grantor behind both routes, got %d hops (%+v)",
+			len(p.AlternateHops), p.AlternateHops)
+	}
+}
+
 // buildUnstampedAlternateGraph gives TestAlternateHopNeverSharesPrimarysCutBinding the
 // case the task brief's second note warns about: an alternate whose own first hop
 // carries NO SourceBinding at all. src reaches node_escape two ways: a stamped edge
