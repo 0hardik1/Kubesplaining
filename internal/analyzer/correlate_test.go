@@ -360,15 +360,24 @@ func TestDedupeKeepsDistinctEscalationChainsToDifferentSinks(t *testing.T) {
 }
 
 // TestDedupeStillCollapsesGenuineCrossModuleDuplicates is the companion to the test
-// above: two findings with no EscalationPath, sharing RuleID, Subject, and ID, are a
-// genuine cross-module duplicate and must still collapse to one. Without this test,
-// keying every finding on its ID unconditionally would also satisfy the test above,
-// but would break dedupe for the non-privesc modules that rely on the composite key.
+// above: two findings with no EscalationPath, sharing RuleID, Subject, and Resource but
+// carrying genuinely different IDs, are a genuine cross-module duplicate and must still
+// collapse via the composite (RuleID, Subject, Resource) key.
+//
+// The two IDs are shaped after the real formats internal/analyzer/rbac (analyzer.go:712,
+// "ruleID:subjectKey:namespace:resourcesCSV", both empty for an OVERBROAD-001-style
+// finding, so it renders with a trailing "::") and internal/analyzer/serviceaccount
+// (analyzer.go:317, "ruleID:subjectKey") actually emit. An earlier version of this
+// fixture gave both findings the identical literal ID, so a mutation that keys every
+// finding on its ID unconditionally - dropping the len(EscalationPath) > 0 guard
+// entirely - merged them too, by coincidence rather than by exercising the composite
+// key, and passed undetected. Distinct, realistically-shaped IDs make that mutation
+// fail here (want 1, got 2) while the intended composite-key path still collapses them.
 func TestDedupeStillCollapsesGenuineCrossModuleDuplicates(t *testing.T) {
 	subject := &models.SubjectRef{Kind: "ServiceAccount", Namespace: "app", Name: "sa"}
 	findings := []models.Finding{
-		{ID: "KUBE-RBAC-OVERBROAD-001:app/sa", RuleID: "KUBE-RBAC-OVERBROAD-001", Score: 6.0, Subject: subject, Tags: []string{"module:rbac"}},
-		{ID: "KUBE-RBAC-OVERBROAD-001:app/sa", RuleID: "KUBE-RBAC-OVERBROAD-001", Score: 6.5, Subject: subject, Tags: []string{"module:serviceaccount"}},
+		{ID: "KUBE-RBAC-OVERBROAD-001:ServiceAccount/app/sa::", RuleID: "KUBE-RBAC-OVERBROAD-001", Score: 6.0, Subject: subject, Tags: []string{"module:rbac"}},
+		{ID: "KUBE-RBAC-OVERBROAD-001:ServiceAccount/app/sa", RuleID: "KUBE-RBAC-OVERBROAD-001", Score: 6.5, Subject: subject, Tags: []string{"module:serviceaccount"}},
 	}
 
 	got := dedupe(findings)
