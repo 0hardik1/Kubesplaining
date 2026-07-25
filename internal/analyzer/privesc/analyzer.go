@@ -104,10 +104,12 @@ func findingFromPath(path models.EscalationPath) models.Finding {
 	if len(path.AlternateHops) > 0 {
 		// The recommended fix cuts hop 1's binding, and this path reaches the same
 		// sink without it. Tagged so report, exclusions, and CI consumers can filter
-		// on it without parsing the chain. CSV and SARIF only ever surface the tag
-		// alongside Remediation prose, so name the evaluated cut here too: without
-		// it, a reader can misattribute the tag to whichever hop hopsRemediation
-		// happened to recommend instead.
+		// on it without parsing the chain. SARIF surfaces this tag next to
+		// Remediation prose in the same Properties object, so without naming the
+		// evaluated cut here too, a reader can misattribute the tag to whichever
+		// hop hopsRemediation happened to recommend instead. CSV carries no tag
+		// column at all, so this sentence is the only signal a CSV reader has
+		// that an alternate route exists in the first place.
 		tags = append(tags, "privesc:survives-first-cut")
 		remediation += alternateCutNote(path.Hops)
 	}
