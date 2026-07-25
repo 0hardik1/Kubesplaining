@@ -59,6 +59,19 @@ type EscalationEdge struct {
 	// these rather than penalizing raw hop count, so a long chain of trivial grants
 	// outranks a short chain that needs a race.
 	Difficulty string `json:"difficulty,omitempty"`
+	// SourceBinding, SourceRole, and BindingNamespace record which (Cluster)RoleBinding
+	// and (Cluster)Role granted the RBAC rule that justified this edge. Remediation uses
+	// them to cut the binding that actually enabled the hop rather than the first binding
+	// listing the subject, and path search uses them to model what removing that binding
+	// would do (see pathfinder.go's cut-resilient pass).
+	//
+	// All three are empty for synthetic edges that no single binding grants: pod escapes,
+	// the node-escape continuation, the namespace-admin token-theft fan-out, and cloud
+	// identity edges. An empty BindingNamespace on a populated SourceBinding means a
+	// ClusterRoleBinding, matching how permissions.Aggregate builds the rule.
+	SourceBinding    string `json:"source_binding,omitempty"`
+	SourceRole       string `json:"source_role,omitempty"`
+	BindingNamespace string `json:"binding_namespace,omitempty"`
 }
 
 // EscalationPath is one source → sink chain returned by path search, with each hop annotated.
@@ -67,4 +80,9 @@ type EscalationPath struct {
 	Target          EscalationTarget `json:"target"`
 	TargetNamespace string           `json:"target_namespace,omitempty"` // populated only when Target == TargetNamespaceAdmin
 	Hops            []EscalationHop  `json:"hops"`
+	// AlternateHops is a route to the same Target that survives cutting the binding
+	// named by Hops[0]. Non-empty means the obvious remediation is not sufficient on
+	// its own. Empty means either that no such route exists, or that Hops[0] is a
+	// synthetic edge with no binding to model cutting.
+	AlternateHops []EscalationHop `json:"alternate_hops,omitempty"`
 }

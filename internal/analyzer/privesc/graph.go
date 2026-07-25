@@ -111,6 +111,12 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 				Action:      "bound_to_cluster_admin",
 				Permission:  "cluster-admin",
 				Description: fmt.Sprintf("bound to cluster-admin via %s", binding.Name),
+				// This loop walks ClusterRoleBindings directly and already emits one
+				// edge per binding, so two bindings to cluster-admin produce two
+				// parallel edges. That is exactly the shape the cut-resilient pass
+				// needs to prove that cutting one binding changes nothing.
+				SourceBinding: binding.Name,
+				SourceRole:    binding.RoleRef.Name,
 			})
 		}
 	}
@@ -174,8 +180,19 @@ func addEdgesForRule(
 	from := nodeID(subject)
 	clusterScope := rule.Namespace == ""
 
+	// add stamps binding provenance from the rule that justified the edge before
+	// delegating to addEdge. Every edge in this function derives from exactly one
+	// aggregated RBAC rule, so provenance is unambiguous here; builders outside this
+	// function stamp it themselves or deliberately leave it empty.
+	add := func(to string, edge *models.EscalationEdge) {
+		edge.SourceBinding = rule.SourceBinding
+		edge.SourceRole = rule.SourceRole
+		edge.BindingNamespace = rule.Namespace
+		addEdge(graph, from, to, edge)
+	}
+
 	if hasAll(rule.Verbs, "*") && hasAll(rule.Resources, "*") && hasAll(rule.APIGroups, "*") {
-		addEdge(graph, from, sinkClusterAdmin, &models.EscalationEdge{
+		add(sinkClusterAdmin, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-017",
 			Action:      "wildcard_permission",
 			Permission:  "*:*:*",
@@ -190,7 +207,7 @@ func addEdgesForRule(
 	// Namespace-scoped grants on `clusterrolebindings` are dead RBAC (clusterrolebindings is a
 	// cluster-scoped resource and the authorizer never allows the verb to succeed via a RoleBinding).
 	if clusterScope && matchesResourceVerb(rule, []string{"rolebindings", "clusterrolebindings"}, []string{"create", "update", "patch"}) {
-		addEdge(graph, from, sinkClusterAdmin, &models.EscalationEdge{
+		add(sinkClusterAdmin, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-010",
 			Action:      "modify_role_binding",
 			Permission:  verbResource(rule, "rolebindings|clusterrolebindings"),
@@ -199,7 +216,7 @@ func addEdgesForRule(
 	}
 	if !clusterScope && matchesResourceVerb(rule, []string{"rolebindings"}, []string{"create", "update", "patch"}) {
 		sink := ensureNamespaceAdminSink(graph, rule.Namespace)
-		addEdge(graph, from, sink, &models.EscalationEdge{
+		add(sink, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-010",
 			Action:      "modify_role_binding",
 			Permission:  verbResource(rule, "rolebindings"),
@@ -211,7 +228,7 @@ func addEdgesForRule(
 	// grants on `roles` let the subject bind any ClusterRole inside the binding's namespace; on
 	// `clusterroles` they're dead RBAC.
 	if clusterScope && matchesResourceVerb(rule, []string{"roles", "clusterroles"}, []string{"bind", "escalate"}) {
-		addEdge(graph, from, sinkClusterAdmin, &models.EscalationEdge{
+		add(sinkClusterAdmin, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-009",
 			Action:      "bind_or_escalate",
 			Permission:  verbResource(rule, "roles|clusterroles"),
@@ -220,7 +237,7 @@ func addEdgesForRule(
 	}
 	if !clusterScope && matchesResourceVerb(rule, []string{"roles"}, []string{"bind", "escalate"}) {
 		sink := ensureNamespaceAdminSink(graph, rule.Namespace)
-		addEdge(graph, from, sink, &models.EscalationEdge{
+		add(sink, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-009",
 			Action:      "bind_or_escalate",
 			Permission:  verbResource(rule, "roles"),
@@ -232,7 +249,7 @@ func addEdgesForRule(
 	// granting these verbs is dead RBAC (the authorizer never lets it succeed). Only emit the
 	// cluster-admin edge for cluster-scoped grants.
 	if clusterScope && matchesResourceVerb(rule, []string{"users", "groups"}, []string{"impersonate"}) {
-		addEdge(graph, from, sinkClusterAdmin, &models.EscalationEdge{
+		add(sinkClusterAdmin, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-008",
 			Action:      "impersonate",
 			Permission:  verbResource(rule, "users|groups"),
@@ -241,7 +258,7 @@ func addEdgesForRule(
 	}
 
 	if clusterScope && matchesResourceVerb(rule, []string{"groups"}, []string{"impersonate"}) {
-		addEdge(graph, from, sinkSystemMasters, &models.EscalationEdge{
+		add(sinkSystemMasters, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-008",
 			Action:      "impersonate_system_masters",
 			Permission:  verbResource(rule, "groups"),
@@ -255,7 +272,7 @@ func addEdgesForRule(
 	// can still surface a real path if one of those SAs reaches a sink.
 	if matchesResourceVerb(rule, []string{"serviceaccounts"}, []string{"impersonate"}) {
 		if clusterScope {
-			addEdge(graph, from, sinkClusterAdmin, &models.EscalationEdge{
+			add(sinkClusterAdmin, &models.EscalationEdge{
 				Technique:   "KUBE-PRIVESC-008",
 				Action:      "impersonate",
 				Permission:  verbResource(rule, "serviceaccounts"),
@@ -267,7 +284,7 @@ func addEdgesForRule(
 					continue
 				}
 				ensureSubjectNode(graph, target)
-				addEdge(graph, from, nodeID(target), &models.EscalationEdge{
+				add(nodeID(target), &models.EscalationEdge{
 					Technique:   "KUBE-PRIVESC-008",
 					Action:      "impersonate_serviceaccount",
 					Permission:  verbResource(rule, "serviceaccounts"),
@@ -295,7 +312,7 @@ func addEdgesForRule(
 			if matchesResourceVerb(rule, []string{"secrets"}, []string{"list", "watch"}) {
 				technique = "KUBE-PRIVESC-005"
 			}
-			addEdge(graph, from, sinkKubeSystemSecrets, &models.EscalationEdge{
+			add(sinkKubeSystemSecrets, &models.EscalationEdge{
 				Technique:   technique,
 				Action:      "read_secrets",
 				Permission:  verbResource(rule, "secrets"),
@@ -305,7 +322,7 @@ func addEdgesForRule(
 	}
 
 	if matchesResourceVerb(rule, []string{"nodes/proxy"}, []string{"get"}) {
-		addEdge(graph, from, sinkNodeEscape, &models.EscalationEdge{
+		add(sinkNodeEscape, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-012",
 			Action:      "nodes_proxy",
 			Permission:  "get nodes/proxy",
@@ -320,7 +337,7 @@ func addEdgesForRule(
 				continue
 			}
 			ensureSubjectNode(graph, target)
-			addEdge(graph, from, nodeID(target), &models.EscalationEdge{
+			add(nodeID(target), &models.EscalationEdge{
 				Technique:   "KUBE-PRIVESC-001",
 				Action:      "pod_create_token_theft",
 				Permission:  "create pods",
@@ -336,7 +353,7 @@ func addEdgesForRule(
 				continue
 			}
 			ensureSubjectNode(graph, target)
-			addEdge(graph, from, nodeID(target), &models.EscalationEdge{
+			add(nodeID(target), &models.EscalationEdge{
 				Technique:   "KUBE-PRIVESC-004",
 				Action:      "pod_exec",
 				Permission:  verbResource(rule, "pods/exec|pods/attach"),
@@ -352,7 +369,7 @@ func addEdgesForRule(
 				continue
 			}
 			ensureSubjectNode(graph, target)
-			addEdge(graph, from, nodeID(target), &models.EscalationEdge{
+			add(nodeID(target), &models.EscalationEdge{
 				Technique:   "KUBE-PRIVESC-013",
 				Action:      "ephemeral_container_inject",
 				Permission:  verbResource(rule, "pods/ephemeralcontainers"),
@@ -368,7 +385,7 @@ func addEdgesForRule(
 				continue
 			}
 			ensureSubjectNode(graph, target)
-			addEdge(graph, from, nodeID(target), &models.EscalationEdge{
+			add(nodeID(target), &models.EscalationEdge{
 				Technique:   "KUBE-PRIVESC-014",
 				Action:      "token_request",
 				Permission:  "create serviceaccounts/token",
@@ -378,7 +395,7 @@ func addEdgesForRule(
 	}
 
 	if clusterScope && matchesResourceVerb(rule, []string{"serviceaccounts/token"}, []string{"create"}) {
-		addEdge(graph, from, sinkTokenMint, &models.EscalationEdge{
+		add(sinkTokenMint, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-014",
 			Action:      "mint_arbitrary_token",
 			Permission:  "create serviceaccounts/token (cluster-wide)",

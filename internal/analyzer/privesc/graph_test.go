@@ -7,6 +7,7 @@ import (
 	"github.com/0hardik1/kubesplaining/internal/models"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // TestCSRApproveEdgeRequiresBothHalves checks the post-pass: a subject must
@@ -381,5 +382,123 @@ func TestControlPlaneNodeEscapeContinuation(t *testing.T) {
 				t.Fatalf("system:masters reachable = %v, want %v", reachedMasters, tc.want)
 			}
 		})
+	}
+}
+
+// TestBuildGraphStampsEdgeProvenance proves RBAC-derived edges record the binding
+// that granted them, and that synthetic edges (pod escape) record nothing. The
+// cut-resilient pass keys entirely off this, so an unstamped edge silently opts a
+// path out of the alternate-route check.
+func TestBuildGraphStampsEdgeProvenance(t *testing.T) {
+	snapshot := models.Snapshot{}
+	snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+		{ObjectMeta: metav1.ObjectMeta{Name: "prov-sa", Namespace: "prov"}},
+	}
+	snapshot.Resources.ClusterRoles = []rbacv1.ClusterRole{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "prov-impersonator"},
+			Rules: []rbacv1.PolicyRule{{
+				APIGroups: []string{""},
+				Resources: []string{"users"},
+				Verbs:     []string{"impersonate"},
+			}},
+		},
+	}
+	snapshot.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "prov-binding"},
+			RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "prov-impersonator"},
+			Subjects: []rbacv1.Subject{
+				{Kind: "ServiceAccount", Name: "prov-sa", Namespace: "prov"},
+			},
+		},
+	}
+
+	graph := BuildGraph(snapshot)
+
+	var stamped int
+	for _, edge := range graph.Edges {
+		if edge.From != "subject:ServiceAccount/prov/prov-sa" {
+			continue
+		}
+		stamped++
+		if edge.SourceBinding != "prov-binding" {
+			t.Errorf("edge %q SourceBinding = %q, want %q", edge.Action, edge.SourceBinding, "prov-binding")
+		}
+		if edge.SourceRole != "prov-impersonator" {
+			t.Errorf("edge %q SourceRole = %q, want %q", edge.Action, edge.SourceRole, "prov-impersonator")
+		}
+		if edge.BindingNamespace != "" {
+			t.Errorf("edge %q BindingNamespace = %q, want empty for a ClusterRoleBinding", edge.Action, edge.BindingNamespace)
+		}
+	}
+	if stamped == 0 {
+		t.Fatal("no edges emitted for the impersonating subject; fixture is wrong")
+	}
+}
+
+// TestBuildGraphStampsClusterAdminBindingProvenance covers the single most common
+// privesc path. Two ClusterRoleBindings to cluster-admin for one subject must
+// produce two parallel edges carrying different binding names, which is what makes
+// a same-length alternate route expressible.
+func TestBuildGraphStampsClusterAdminBindingProvenance(t *testing.T) {
+	snapshot := models.Snapshot{}
+	snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+		{ObjectMeta: metav1.ObjectMeta{Name: "twice", Namespace: "prov"}},
+	}
+	subject := []rbacv1.Subject{{Kind: "ServiceAccount", Name: "twice", Namespace: "prov"}}
+	adminRef := rbacv1.RoleRef{Kind: "ClusterRole", Name: "cluster-admin"}
+	snapshot.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{
+		{ObjectMeta: metav1.ObjectMeta{Name: "admin-a"}, RoleRef: adminRef, Subjects: subject},
+		{ObjectMeta: metav1.ObjectMeta{Name: "admin-b"}, RoleRef: adminRef, Subjects: subject},
+	}
+
+	graph := BuildGraph(snapshot)
+
+	got := map[string]bool{}
+	for _, edge := range graph.Edges {
+		if edge.Action == "bound_to_cluster_admin" {
+			got[edge.SourceBinding] = true
+		}
+	}
+	for _, want := range []string{"admin-a", "admin-b"} {
+		if !got[want] {
+			t.Errorf("no bound_to_cluster_admin edge stamped with binding %q; got %v", want, got)
+		}
+	}
+}
+
+// TestPodEscapeEdgesCarryNoProvenance pins the negative case: a pod-escape edge
+// comes from a workload spec, not a binding, so there is no binding to model
+// cutting and the cut-resilient pass must skip it.
+func TestPodEscapeEdgesCarryNoProvenance(t *testing.T) {
+	privileged := true
+	snapshot := models.Snapshot{}
+	snapshot.Resources.Pods = []corev1.Pod{{
+		ObjectMeta: metav1.ObjectMeta{Name: "escaper", Namespace: "prov"},
+		Spec: corev1.PodSpec{
+			ServiceAccountName: "prov-sa",
+			Containers: []corev1.Container{{
+				Name:            "c",
+				SecurityContext: &corev1.SecurityContext{Privileged: &privileged},
+			}},
+		},
+	}}
+
+	graph := BuildGraph(snapshot)
+
+	var checked int
+	for _, edge := range graph.Edges {
+		if edge.To != sinkNodeEscape {
+			continue
+		}
+		checked++
+		if edge.SourceBinding != "" || edge.SourceRole != "" {
+			t.Errorf("pod-escape edge %q carries provenance %q/%q, want none",
+				edge.Action, edge.SourceBinding, edge.SourceRole)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no node-escape edge emitted; fixture is wrong")
 	}
 }

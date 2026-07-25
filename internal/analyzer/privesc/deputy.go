@@ -84,10 +84,13 @@ func addConfusedDeputyEdges(graph *models.EscalationGraph, subject models.Subjec
 				continue
 			}
 			addEdge(graph, nodeID(subject), nodeID(controller), &models.EscalationEdge{
-				Technique:   "KUBE-CONFUSED-DEPUTY-001",
-				Action:      "operator_reconcile",
-				Permission:  fmt.Sprintf("write %s.%s", entry.resources[0], entry.group),
-				Description: fmt.Sprintf("can steer %s/%s, which %s", entry.saNamespace, entry.saName, entry.gains),
+				Technique:        "KUBE-CONFUSED-DEPUTY-001",
+				Action:           "operator_reconcile",
+				Permission:       fmt.Sprintf("write %s.%s", entry.resources[0], entry.group),
+				Description:      fmt.Sprintf("can steer %s/%s, which %s", entry.saNamespace, entry.saName, entry.gains),
+				SourceBinding:    rule.SourceBinding,
+				SourceRole:       rule.SourceRole,
+				BindingNamespace: rule.Namespace,
 			})
 			break // one bridge per (subject, controller) is enough
 		}

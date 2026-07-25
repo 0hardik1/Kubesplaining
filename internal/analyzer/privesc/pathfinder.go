@@ -155,14 +155,17 @@ func buildPath(graph *models.EscalationGraph, source models.SubjectRef, target m
 			next = node.Subject
 		}
 		hops = append(hops, models.EscalationHop{
-			Step:        i + 1,
-			Action:      step.edge.Action,
-			Technique:   step.edge.Technique,
-			Difficulty:  step.edge.Difficulty,
-			FromSubject: current,
-			ToSubject:   next,
-			Permission:  step.edge.Permission,
-			Gains:       step.edge.Description,
+			Step:             i + 1,
+			Action:           step.edge.Action,
+			Technique:        step.edge.Technique,
+			Difficulty:       step.edge.Difficulty,
+			FromSubject:      current,
+			ToSubject:        next,
+			Permission:       step.edge.Permission,
+			Gains:            step.edge.Description,
+			SourceBinding:    step.edge.SourceBinding,
+			SourceRole:       step.edge.SourceRole,
+			BindingNamespace: step.edge.BindingNamespace,
 		})
 		if next.Name != "" {
 			current = next

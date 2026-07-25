@@ -310,4 +310,10 @@ type EscalationHop struct {
 	ToSubject   SubjectRef `json:"to_subject"`
 	Permission  string     `json:"permission"` // RBAC permission or condition that enables the hop
 	Gains       string     `json:"gains"`      // human-readable description of what the attacker obtained
+	// SourceBinding, SourceRole, and BindingNamespace are carried through from the
+	// enabling edge so remediation can cut the right binding without re-walking the
+	// graph. See EscalationEdge for the semantics, including what an empty value means.
+	SourceBinding    string `json:"source_binding,omitempty"`
+	SourceRole       string `json:"source_role,omitempty"`
+	BindingNamespace string `json:"binding_namespace,omitempty"`
 }
