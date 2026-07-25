@@ -66,16 +66,18 @@ func buildPrivescPaths(findings []models.Finding) PrivescPathsSection {
 		cards := make([]PrivescPathCard, 0, len(group))
 		for _, f := range group {
 			cards = append(cards, PrivescPathCard{
-				Source:    subjectDisplay(f.Subject),
-				SinkLabel: heroSinkLabel(sink),
-				Severity:  f.Severity,
-				SevClass:  severityClass(f.Severity),
-				Score:     f.Score,
-				HopCount:  len(f.EscalationPath),
-				Summary:   heroChainSummary(f, sink),
-				Hops:      f.EscalationPath,
-				RuleID:    f.RuleID,
-				Anchor:    "finding-" + f.RuleID,
+				Source:      subjectDisplay(f.Subject),
+				SinkLabel:   heroSinkLabel(sink),
+				Severity:    f.Severity,
+				SevClass:    severityClass(f.Severity),
+				Score:       f.Score,
+				HopCount:    len(f.EscalationPath),
+				Summary:     heroChainSummary(f, sink),
+				Hops:        f.EscalationPath,
+				AltHops:     f.AlternateEscalationPath,
+				AltHopCount: len(f.AlternateEscalationPath),
+				RuleID:      f.RuleID,
+				Anchor:      "finding-" + f.RuleID,
 			})
 		}
 

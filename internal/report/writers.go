@@ -259,6 +259,13 @@ func writeHTMLWithOptions(path string, snapshot models.Snapshot, findings []mode
 		"escalationPathHTML": func(hops []models.EscalationHop) template.HTML {
 			return renderEscalationPath(hops)
 		},
+		// alternatePathHTML renders Finding.AlternateEscalationPath: a route to the same
+		// sink that survives cutting the binding the remediation hint recommends removing.
+		// Returns "" for empty input so the template gate suppresses the whole block on
+		// the common case where the recommended fix is sufficient.
+		"alternatePathHTML": func(hops []models.EscalationHop) template.HTML {
+			return renderEscalationPathVariant(hops, "alternate")
+		},
 		// findingEducationHTML returns a "Background" block of glossary/technique
 		// definitions tailored to the finding (subject kind, resource kind, technique).
 		// Returns "" when no entries apply, gating the wrapper.

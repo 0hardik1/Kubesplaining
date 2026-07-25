@@ -204,22 +204,38 @@ func secretTypeLabelDelta(t string) string {
 	return label
 }
 
-// renderEscalationPath emits a numbered ordered list of step cards describing the
-// per-hop chain from the source subject to the privesc sink. Each card surfaces the
-// human-readable technique title and a one-paragraph explainer from the Techniques
-// glossary so a reader who has never seen the slug (`impersonate`, `wildcard_permission`)
-// learns what it means in place. Returns "" for empty input so the template
-// `{{ if … }}` gate can suppress the whole section.
+// renderEscalationPath renders the primary chain. Kept as the default entry point so
+// existing callers and the escalationPathHTML template func read unchanged.
+func renderEscalationPath(hops []models.EscalationHop) template.HTML {
+	return renderEscalationPathVariant(hops, "primary")
+}
+
+// renderEscalationPathVariant emits a numbered ordered list of step cards describing
+// the per-hop chain from the source subject to the privesc sink. Each card surfaces
+// the human-readable technique title and a one-paragraph explainer from the
+// Techniques glossary so a reader who has never seen the slug (`impersonate`,
+// `wildcard_permission`) learns what it means in place. Returns "" for empty input
+// so the template `{{ if … }}` gate can suppress the whole section.
 //
 // The "Step N of M" prefix is omitted for single-hop chains — there is no chain to
 // follow, so numbering reads as ceremony.
-func renderEscalationPath(hops []models.EscalationHop) template.HTML {
+//
+// variant is "primary" for Finding.EscalationPath (the recommended-fix chain) or
+// "alternate" for Finding.AlternateEscalationPath (the route that survives cutting
+// the binding the primary chain's fix removes). The alternate gets a distinct list
+// class and a lead-in line naming the operational point before the chain itself.
+func renderEscalationPathVariant(hops []models.EscalationHop, variant string) template.HTML {
 	if len(hops) == 0 {
 		return ""
 	}
 	total := len(hops)
 	var b strings.Builder
-	b.WriteString(`<ol class="attack-chain">`)
+	if variant == "alternate" {
+		b.WriteString(`<p class="attack-chain-alt-lead">This route survives the recommended fix: it reaches the same target without the binding the fix above removes, so applying that fix alone does not close it.</p>`)
+		b.WriteString(`<ol class="attack-chain attack-chain-alt">`)
+	} else {
+		b.WriteString(`<ol class="attack-chain">`)
+	}
 	for _, hop := range hops {
 		b.WriteString(`<li class="attack-step">`)
 

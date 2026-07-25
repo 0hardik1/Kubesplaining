@@ -1437,6 +1437,20 @@
     .finding .scenario .step-meta .k { display: inline; color: var(--text-dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 6px; }
     .finding .scenario .step-meta code { background: rgba(255,255,255,0.10); padding: 1px 2px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; }
 
+    /* Alternate escalation path: the route that survives cutting the binding the
+       primary chain's fix removes. Rendered inside a collapsed <details> under the
+       primary chain, so it reads as subordinate: same step-card geometry, muted
+       rail and border colors, no critical-red terminal marker. The alternate never
+       changes a finding's score or severity, and the styling says so at a glance. */
+    .finding .scenario details.alt-chain { margin-top: 10px; }
+    .finding .scenario details.alt-chain summary { color: var(--text-mut); }
+    .finding .scenario .attack-chain-alt-lead { margin: 10px 0 4px; color: var(--text-mut); font-size: 12.5px; line-height: 1.5; }
+    .finding .scenario ol.attack-chain-alt { margin-top: 0; }
+    .finding .scenario ol.attack-chain-alt::before { background: var(--border-strong); opacity: 0.4; }
+    .finding .scenario ol.attack-chain-alt li.attack-step { border-color: var(--border); background: rgba(255,255,255,0.01); }
+    .finding .scenario ol.attack-chain-alt li.attack-step::before { border-color: var(--text-dim); color: var(--text-dim); }
+    .finding .scenario ol.attack-chain-alt li.attack-step:last-child::before { border-color: var(--text-mut); color: var(--text-mut); }
+
     /* Humanized Evidence section */
     .finding .evidence { margin-top: 12px; padding: 10px 12px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 10px; }
     .finding .evidence > .k { color: var(--text-mut); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 8px; display: block; }
@@ -2208,6 +2222,12 @@
                   {{ if $f.EscalationPath }}
                   <div class="attack-chain-wrap">
                     {{ escalationPathHTML $f.EscalationPath }}
+                    {{ if $f.AlternateEscalationPath }}
+                      <details class="alt-chain">
+                        <summary>This fix does not close the route ({{ len $f.AlternateEscalationPath }} hops)</summary>
+                        {{ alternatePathHTML $f.AlternateEscalationPath }}
+                      </details>
+                    {{ end }}
                   </div>
                   {{ end }}
                 </div>
@@ -2706,7 +2726,7 @@
               <a class="pp-card-jump" href="#{{ .Anchor }}">View finding &rarr;</a>
             </div>
             <p class="pp-card-summary">{{ .Summary }}</p>
-            {{ if .Hops }}<div class="scenario">{{ escalationPathHTML .Hops }}</div>{{ end }}
+            {{ if .Hops }}<div class="scenario">{{ escalationPathHTML .Hops }}{{ if .AltHops }}<details class="alt-chain"><summary>This fix does not close the route ({{ .AltHopCount }} hops)</summary>{{ alternatePathHTML .AltHops }}</details>{{ end }}</div>{{ end }}
           </article>
           {{ end }}
         </div>

@@ -319,6 +319,46 @@ func TestRenderEscalationPathEmpty(t *testing.T) {
 	}
 }
 
+// TestRenderEscalationPathAlternateVariant proves the alternate renders with framing
+// copy that leads with the operational point (this route survives the fix) rather
+// than with chain length, and that it is visually distinguishable from the primary.
+func TestRenderEscalationPathAlternateVariant(t *testing.T) {
+	hops := []models.EscalationHop{{
+		Step:          1,
+		Action:        "bound_to_cluster_admin",
+		SourceBinding: "admin-b",
+		Gains:         "cluster-admin",
+	}}
+
+	out := string(renderEscalationPathVariant(hops, "alternate"))
+
+	for _, want := range []string{"attack-chain-alt", "survives"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("alternate render missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+// TestRenderEscalationPathPrimaryUnchanged pins that the default variant still
+// produces exactly what the existing renderer did, so no Findings-tab output moves.
+func TestRenderEscalationPathPrimaryUnchanged(t *testing.T) {
+	hops := []models.EscalationHop{{Step: 1, Action: "impersonate", Gains: "became admin"}}
+
+	if got, want := string(renderEscalationPath(hops)), string(renderEscalationPathVariant(hops, "primary")); got != want {
+		t.Errorf("renderEscalationPath diverged from the primary variant\ngot:  %s\nwant: %s", got, want)
+	}
+	if strings.Contains(string(renderEscalationPath(hops)), "attack-chain-alt") {
+		t.Error("primary render must not carry the alternate class")
+	}
+}
+
+// TestRenderEscalationPathAlternateEmpty keeps the template gate working.
+func TestRenderEscalationPathAlternateEmpty(t *testing.T) {
+	if got := string(renderEscalationPathVariant(nil, "alternate")); got != "" {
+		t.Errorf("want empty string for no hops, got %q", got)
+	}
+}
+
 func TestHostPathHintWalksParents(t *testing.T) {
 	if got := hostPathHint("/var/run/docker.sock"); !strings.Contains(got, "container engine takeover") {
 		t.Errorf("exact match failed: %q", got)
