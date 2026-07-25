@@ -240,10 +240,12 @@ func TestForPrivescPathFallback(t *testing.T) {
 	}
 }
 
-// TestForPrivescPathCutsGrantingBinding is the regression test for a real defect:
-// findBindingForSubject returns the FIRST binding listing the subject, which need
-// not be the binding that granted the dangerous verb. Editing that binding closes
-// nothing. With hop provenance we cut the binding that actually enabled hop 1.
+// TestForPrivescPathCutsGrantingBinding proves ForPrivescPath cuts the binding
+// hop 1's own provenance names, not merely some other binding that happens to
+// list the subject. The snapshot lists the subject in two ClusterRoleBindings;
+// only the one the hop's SourceBinding names (zzz-dangerous-admin) may appear
+// in the diff, even though it sorts after the harmless one and would have been
+// picked first by a scan over collectBindings.
 func TestForPrivescPathCutsGrantingBinding(t *testing.T) {
 	subject := models.SubjectRef{Kind: "ServiceAccount", Name: "app", Namespace: "team"}
 	rbacSubject := []rbacv1.Subject{{Kind: "ServiceAccount", Name: "app", Namespace: "team"}}
