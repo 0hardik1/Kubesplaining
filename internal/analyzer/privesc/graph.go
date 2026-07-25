@@ -3,6 +3,7 @@ package privesc
 import (
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
@@ -75,6 +76,22 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 
 	finalizeCSRApprovals(graph, csrCapabilities)
 
+	// Runs after the per-subject loop so every namespace-admin sink that any
+	// subject reaches already exists as a node.
+	addNamespaceAdminTokenTheftEdges(graph, subjectsByNs)
+
+	// Confused-deputy bridges need every controller SA node to already exist, and a
+	// controller holding no RBAC of its own never appears in permissions.Aggregate.
+	// Materialize every known ServiceAccount first, then bridge in a second pass.
+	for _, refs := range subjectsByNs {
+		for _, ref := range refs {
+			ensureSubjectNode(graph, ref)
+		}
+	}
+	for _, perms := range effective {
+		addConfusedDeputyEdges(graph, perms.Subject, perms.Rules)
+	}
+
 	for _, pod := range snapshot.Resources.Pods {
 		addPodEscapeEdges(graph, pod)
 	}
@@ -97,6 +114,8 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 			})
 		}
 	}
+
+	addControlPlaneEscapeEdges(graph, snapshot)
 
 	addCloudEdges(graph, snapshot)
 
@@ -386,6 +405,36 @@ func addEdgesForRule(
 	}
 }
 
+// addNamespaceAdminTokenTheftEdges links each namespace-admin sink onward to every
+// ServiceAccount living in that namespace. Namespace-admin over X means the holder
+// can create a pod as any SA in X, exec into its pods, or read its token Secret, so
+// every co-located identity is effectively theirs. This is what turns a bounded
+// namespace grant into a cluster-wide path when X co-hosts a privileged controller.
+//
+// Iteration runs over a sorted key list so edge order stays deterministic across runs.
+func addNamespaceAdminTokenTheftEdges(graph *models.EscalationGraph, subjectsByNs map[string][]models.SubjectRef) {
+	sinkIDs := make([]string, 0, len(graph.Nodes))
+	for id, node := range graph.Nodes {
+		if node.IsSink && node.Target == models.TargetNamespaceAdmin {
+			sinkIDs = append(sinkIDs, id)
+		}
+	}
+	sort.Strings(sinkIDs)
+
+	for _, sinkID := range sinkIDs {
+		namespace := graph.Nodes[sinkID].TargetNamespace
+		for _, target := range subjectsByNs[namespace] {
+			ensureSubjectNode(graph, target)
+			addEdge(graph, sinkID, nodeID(target), &models.EscalationEdge{
+				Technique:   "KUBE-PRIVESC-010",
+				Action:      "colocated_sa_token_theft",
+				Permission:  "namespace-admin in " + namespace,
+				Description: fmt.Sprintf("can steal the token of co-located ServiceAccount %s/%s", target.Namespace, target.Name),
+			})
+		}
+	}
+}
+
 // addSecretMintEdge emits the KUBE-PRIVESC-007 edge: a subject that holds BOTH
 // cluster-scoped `create secrets` and `get secrets` can create a legacy
 // ServiceAccount-token Secret and read the controller-populated token, minting
@@ -572,6 +621,87 @@ func isSensitiveHostPath(path string) bool {
 	return false
 }
 
+// controlPlaneRoleLabels are the node labels that mark a control-plane node. The
+// legacy "master" label is still present on clusters upgraded from pre-1.24.
+var controlPlaneRoleLabels = []string{
+	"node-role.kubernetes.io/control-plane",
+	"node-role.kubernetes.io/master",
+}
+
+// clusterHasSchedulableControlPlaneNode reports whether the snapshot contains a
+// control-plane node that ordinary workloads can land on, meaning it carries no
+// NoSchedule taint for its control-plane role. This gates the node-escape
+// continuation: on a properly tainted multi-node cluster an escaping tenant pod
+// reaches a worker node, where no cluster PKI lives, so continuing to
+// system:masters would be a false positive. Single-node clusters (kind, k3s,
+// minikube, many dev clusters) leave the control-plane node schedulable, and
+// there node root really is cluster-admin.
+func clusterHasSchedulableControlPlaneNode(snapshot models.Snapshot) bool {
+	for _, node := range snapshot.Resources.Nodes {
+		if !isControlPlaneNode(node) {
+			continue
+		}
+		if !hasControlPlaneNoScheduleTaint(node) {
+			return true
+		}
+	}
+	return false
+}
+
+// isControlPlaneNode reports whether a node carries a control-plane role label.
+func isControlPlaneNode(node corev1.Node) bool {
+	for _, label := range controlPlaneRoleLabels {
+		if _, ok := node.Labels[label]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// hasControlPlaneNoScheduleTaint reports whether a node repels ordinary workloads
+// via a NoSchedule (or NoExecute) taint on its control-plane role key.
+func hasControlPlaneNoScheduleTaint(node corev1.Node) bool {
+	for _, taint := range node.Spec.Taints {
+		if !slices.Contains(controlPlaneRoleLabels, taint.Key) {
+			continue
+		}
+		if taint.Effect == corev1.TaintEffectNoSchedule || taint.Effect == corev1.TaintEffectNoExecute {
+			return true
+		}
+	}
+	return false
+}
+
+// addControlPlaneEscapeEdges makes the node_escape sink traversable and links it
+// onward, but only when a schedulable control-plane node exists. Root on such a
+// node reads /etc/kubernetes/pki/ca.key (forge an O=system:masters client cert
+// offline) and sa.key (forge a token for any ServiceAccount), and can drop a file
+// into /etc/kubernetes/manifests to run a static pod that no admission controller
+// ever sees.
+func addControlPlaneEscapeEdges(graph *models.EscalationGraph, snapshot models.Snapshot) {
+	if !clusterHasSchedulableControlPlaneNode(snapshot) {
+		return
+	}
+	node, ok := graph.Nodes[sinkNodeEscape]
+	if !ok {
+		return
+	}
+	node.Traversable = true
+
+	addEdge(graph, sinkNodeEscape, sinkSystemMasters, &models.EscalationEdge{
+		Technique:   "KUBE-ESCAPE-CONTROLPLANE-001",
+		Action:      "control_plane_pki_theft",
+		Permission:  "root on a schedulable control-plane node",
+		Description: "can read /etc/kubernetes/pki/ca.key and forge an O=system:masters client certificate offline",
+	})
+	addEdge(graph, sinkNodeEscape, sinkTokenMint, &models.EscalationEdge{
+		Technique:   "KUBE-ESCAPE-CONTROLPLANE-001",
+		Action:      "static_pod_admission_bypass",
+		Permission:  "write access to /etc/kubernetes/manifests",
+		Description: "can read sa.key to forge any ServiceAccount token, and drop static pods that bypass all admission control",
+	})
+}
+
 // addSink registers a terminal target node in the graph.
 func addSink(graph *models.EscalationGraph, id string, target models.EscalationTarget) {
 	graph.Nodes[id] = &models.EscalationNode{ID: id, IsSink: true, Target: target}
@@ -584,8 +714,11 @@ func ensureNamespaceAdminSink(graph *models.EscalationGraph, namespace string) s
 	id := sinkNamespaceAdminPrefix + namespace
 	if _, ok := graph.Nodes[id]; !ok {
 		graph.Nodes[id] = &models.EscalationNode{
-			ID:              id,
-			IsSink:          true,
+			ID:     id,
+			IsSink: true,
+			// Namespace-admin is not a dead end: it implies control over every
+			// identity co-located in the namespace. See addNamespaceAdminTokenTheftEdges.
+			Traversable:     true,
 			Target:          models.TargetNamespaceAdmin,
 			TargetNamespace: namespace,
 		}
@@ -600,31 +733,100 @@ func ensureSubjectNode(graph *models.EscalationGraph, ref models.SubjectRef) {
 		return
 	}
 	graph.Nodes[id] = &models.EscalationNode{
-		ID:       id,
-		Subject:  ref,
-		IsSystem: isSystemSubject(ref),
+		ID:             id,
+		Subject:        ref,
+		IsSystem:       isSystemSubject(ref),
+		IsControlPlane: isControlPlaneSubject(ref),
 	}
 }
 
-// isSystemSubject flags built-in control-plane subjects so path search does not traverse them.
+// isSystemSubject flags built-in control-plane identities by name prefix. These are
+// neither traversed nor seeded: laundering a chain through the control plane's own
+// built-in identities is a modeling artifact rather than an attack.
+//
 // Note: external cloud-IAM nodes carry IDs prefixed "external:aws-iam:" (see
 // cloud_edges.go) and never flow through ensureSubjectNode, so isSystemSubject
 // is never asked about them. The "external:" prefix is therefore non-system by
 // construction; the pathfinder skips them by checking node.IsExternal directly.
 func isSystemSubject(ref models.SubjectRef) bool {
-	if strings.HasPrefix(ref.Name, "system:") {
-		return true
+	return strings.HasPrefix(ref.Name, "system:")
+}
+
+// isControlPlaneSubject flags a non-built-in ServiceAccount in a control-plane
+// namespace. These are traversable intermediates but not path-search sources; see
+// the IsControlPlane doc comment on models.EscalationNode for the reasoning.
+func isControlPlaneSubject(ref models.SubjectRef) bool {
+	if isSystemSubject(ref) || ref.Kind != "ServiceAccount" {
+		return false
 	}
-	if ref.Kind == "ServiceAccount" && (ref.Namespace == "kube-system" || ref.Namespace == "kube-public" || ref.Namespace == "kube-node-lease") {
+	switch ref.Namespace {
+	case "kube-system", "kube-public", "kube-node-lease":
 		return true
 	}
 	return false
 }
 
-// addEdge sets the endpoints on edge and appends it to the graph.
+// Difficulty ratings for path scoring. See models.EscalationEdge.Difficulty.
+const (
+	difficultyEasy     = "easy"
+	difficultyModerate = "moderate"
+	difficultyHard     = "hard"
+)
+
+// actionDifficulty rates each edge action by how much has to go right beyond simply
+// holding the grant. Anything absent defaults to moderate, which is the safe middle:
+// a newly added edge never silently scores as trivially exploitable.
+var actionDifficulty = map[string]string{
+	// Pure RBAC: holding the grant is the whole exploit.
+	"wildcard_permission":        difficultyEasy,
+	"bound_to_cluster_admin":     difficultyEasy,
+	"modify_role_binding":        difficultyEasy,
+	"bind_or_escalate":           difficultyEasy,
+	"impersonate":                difficultyEasy,
+	"impersonate_system_masters": difficultyEasy,
+	"impersonate_serviceaccount": difficultyEasy,
+	"read_secrets":               difficultyEasy,
+	"token_request":              difficultyEasy,
+	"mint_arbitrary_token":       difficultyEasy,
+	"secret_mint_token":          difficultyEasy,
+	"csr_approve":                difficultyEasy,
+	"operator_reconcile":         difficultyEasy,
+	"colocated_sa_token_theft":   difficultyEasy,
+
+	// Needs a workload to exist, be created, or land somewhere specific.
+	"pod_create_token_theft":       difficultyModerate,
+	"pod_exec":                     difficultyModerate,
+	"ephemeral_container_inject":   difficultyModerate,
+	"pod_create_privileged_escape": difficultyModerate,
+	"pod_host_escape":              difficultyModerate,
+	"nodes_proxy":                  difficultyModerate,
+	"irsa_assume_role":             difficultyModerate,
+	"aws_auth_admin":               difficultyModerate,
+	"control_plane_pki_theft":      difficultyModerate,
+	"static_pod_admission_bypass":  difficultyModerate,
+
+	// Needs attacker-controlled infrastructure or a timing window.
+	"node_drain_migrate":   difficultyHard,
+	"imds_node_role_pivot": difficultyHard,
+}
+
+// difficultyForAction returns the rating for an action, defaulting to moderate.
+func difficultyForAction(action string) string {
+	if d, ok := actionDifficulty[action]; ok {
+		return d
+	}
+	return difficultyModerate
+}
+
+// addEdge sets the endpoints on edge, rates its difficulty, and appends it to the
+// graph. Rating happens here rather than at each of the two dozen call sites so a
+// new edge cannot be added without one.
 func addEdge(graph *models.EscalationGraph, from, to string, edge *models.EscalationEdge) {
 	edge.From = from
 	edge.To = to
+	if edge.Difficulty == "" {
+		edge.Difficulty = difficultyForAction(edge.Action)
+	}
 	graph.Edges = append(graph.Edges, edge)
 }
 

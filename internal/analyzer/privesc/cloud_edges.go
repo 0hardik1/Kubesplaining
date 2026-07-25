@@ -114,15 +114,16 @@ func ensureExternalAWSIAMNode(graph *models.EscalationGraph, arn string, setTarg
 		return id
 	}
 	// External IAM nodes are marked IsSink=true so the BFS captures any path
-	// that reaches them (the "SA can assume this role" terminal). The pathfinder
-	// special-cases IsExternal sinks to also continue traversal, so chains that
-	// pass THROUGH an external IAM node (e.g. SA -> IRSA -> aws-auth -> system:masters)
-	// still surface as separate, longer paths to their downstream cluster sinks.
+	// that reaches them (the "SA can assume this role" terminal), and Traversable
+	// so it also continues past them. Chains that pass THROUGH an external IAM
+	// node (e.g. SA -> IRSA -> aws-auth -> system:masters) therefore still surface
+	// as separate, longer paths to their downstream cluster sinks.
 	node := &models.EscalationNode{
-		ID:         id,
-		Subject:    models.SubjectRef{Kind: "User", Name: arn},
-		IsExternal: true,
-		IsSink:     true,
+		ID:          id,
+		Subject:     models.SubjectRef{Kind: "User", Name: arn},
+		IsExternal:  true,
+		IsSink:      true,
+		Traversable: true,
 	}
 	if setTarget {
 		node.Target = models.TargetAWSIAMRole

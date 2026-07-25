@@ -301,7 +301,11 @@ type EscalationHop struct {
 	// (e.g. "KUBE-PRIVESC-008", or the "KUBE-ESCAPE" family for pod host escapes).
 	// It lets the correlation pass amplify only the findings that are the actual
 	// edges of a chain, rather than every finding that merely shares the subject.
-	Technique   string     `json:"technique,omitempty"`
+	Technique string `json:"technique,omitempty"`
+	// Difficulty is carried through from the enabling edge so report consumers and
+	// the path scorer can reason about the weakest link without re-walking the graph.
+	// See EscalationEdge.Difficulty for the rating scale.
+	Difficulty  string     `json:"difficulty,omitempty"`
 	FromSubject SubjectRef `json:"from_subject"`
 	ToSubject   SubjectRef `json:"to_subject"`
 	Permission  string     `json:"permission"` // RBAC permission or condition that enables the hop

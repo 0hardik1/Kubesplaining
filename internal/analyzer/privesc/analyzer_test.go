@@ -582,3 +582,40 @@ func TestEphemeralContainerEdge(t *testing.T) {
 		t.Fatalf("expected ephemeral_container_inject edge to the victim pod's SA, edges=%v", graph.Edges)
 	}
 }
+
+// TestDifficultyScoringPrefersEasyLongChains proves a long chain of trivial hops
+// outranks a short chain that needs attacker-controlled infrastructure. Under the
+// old length-only attenuation this ordering was backwards.
+func TestDifficultyScoringPrefersEasyLongChains(t *testing.T) {
+	t.Parallel()
+
+	easyHop := models.EscalationHop{Action: "impersonate", Difficulty: "easy"}
+	hardHop := models.EscalationHop{Action: "node_drain_migrate", Difficulty: "hard"}
+
+	longEasy := []models.EscalationHop{easyHop, easyHop, easyHop, easyHop, easyHop}
+	shortHard := []models.EscalationHop{hardHop, hardHop}
+
+	_, longScore, _ := targetScoring(models.TargetClusterAdmin, longEasy)
+	shortSeverity, shortScore, _ := targetScoring(models.TargetClusterAdmin, shortHard)
+
+	if longScore <= shortScore {
+		t.Fatalf("5 easy hops (%.2f) should outrank 2 hard hops (%.2f)", longScore, shortScore)
+	}
+	if shortSeverity != models.SeverityHigh {
+		t.Fatalf("a chain containing a hard hop should downgrade from critical to high, got %s", shortSeverity)
+	}
+}
+
+// TestDifficultyScoringKeepsEasyChainsCritical proves length alone no longer
+// downgrades severity: a deep chain of ordinary RBAC grants is still critical.
+func TestDifficultyScoringKeepsEasyChainsCritical(t *testing.T) {
+	t.Parallel()
+
+	easyHop := models.EscalationHop{Action: "impersonate", Difficulty: "easy"}
+	hops := []models.EscalationHop{easyHop, easyHop, easyHop, easyHop}
+
+	severity, _, _ := targetScoring(models.TargetClusterAdmin, hops)
+	if severity != models.SeverityCritical {
+		t.Fatalf("a 4-hop all-easy chain to cluster-admin should stay critical, got %s", severity)
+	}
+}

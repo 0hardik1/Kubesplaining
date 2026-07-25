@@ -32,6 +32,12 @@ func FindPaths(graph *models.EscalationGraph, maxDepth int) []models.EscalationP
 		if node.IsExternal {
 			continue
 		}
+		// Control-plane controller SAs are traversable intermediates (see
+		// models.EscalationNode.IsControlPlane) but seeding them as sources would
+		// report the control plane escalating to itself on every cluster.
+		if node.IsControlPlane {
+			continue
+		}
 		sources = append(sources, id)
 	}
 	sort.Strings(sources)
@@ -114,13 +120,13 @@ func bfsToSinks(
 				if existing, ok := sinks[edge.To]; !ok || len(nextPath) < len(existing) {
 					sinks[edge.To] = nextPath
 				}
-				// External sinks (cloud IAM nodes) can also carry outbound edges
-				// from aws-auth mappings (external IAM -> sinkSystemMasters or
-				// sinkClusterAdmin). Continue traversal so the deeper chain is
-				// also captured as a separate, longer path. Non-external sinks
-				// have no outbound edges in this graph, so the enqueue below is
-				// a no-op for them.
-				if !neighbor.IsExternal {
+				// A traversable sink records its own path and is then walked past,
+				// so richer chains routed through it are captured as separate,
+				// longer paths. External cloud-IAM nodes carry outbound aws-auth
+				// edges; namespace-admin implies token theft in that namespace;
+				// node-root on a control-plane node implies PKI theft. Sinks that
+				// are not traversable have no outbound edges by construction.
+				if !neighbor.Traversable {
 					continue
 				}
 			}
@@ -152,6 +158,7 @@ func buildPath(graph *models.EscalationGraph, source models.SubjectRef, target m
 			Step:        i + 1,
 			Action:      step.edge.Action,
 			Technique:   step.edge.Technique,
+			Difficulty:  step.edge.Difficulty,
 			FromSubject: current,
 			ToSubject:   next,
 			Permission:  step.edge.Permission,

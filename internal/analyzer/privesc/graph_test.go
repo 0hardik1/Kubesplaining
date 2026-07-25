@@ -240,3 +240,146 @@ func TestCSRApprovePathReachesSystemMasters(t *testing.T) {
 		t.Fatalf("expected KUBE-PRIVESC-PATH-SYSTEM-MASTERS finding for csr-attacker, got %d findings", len(findings))
 	}
 }
+
+// TestControlPlaneSAIsTraversableButNotASource proves a non-system kube-system
+// ServiceAccount can serve as a chain intermediate while never seeding a search.
+func TestControlPlaneSAIsTraversableButNotASource(t *testing.T) {
+	t.Parallel()
+
+	graph := &models.EscalationGraph{Nodes: map[string]*models.EscalationNode{}}
+	addSink(graph, sinkClusterAdmin, models.TargetClusterAdmin)
+
+	tenant := models.SubjectRef{Kind: "ServiceAccount", Name: "tenant", Namespace: "app"}
+	controller := models.SubjectRef{Kind: "ServiceAccount", Name: "some-controller", Namespace: "kube-system"}
+	builtin := models.SubjectRef{Kind: "ServiceAccount", Name: "system:kube-scheduler", Namespace: "kube-system"}
+	ensureSubjectNode(graph, tenant)
+	ensureSubjectNode(graph, controller)
+	ensureSubjectNode(graph, builtin)
+
+	if graph.Nodes[nodeID(controller)].IsSystem {
+		t.Fatal("a non-system kube-system SA must not be flagged IsSystem")
+	}
+	if !graph.Nodes[nodeID(controller)].IsControlPlane {
+		t.Fatal("a non-system kube-system SA must be flagged IsControlPlane")
+	}
+	if !graph.Nodes[nodeID(builtin)].IsSystem {
+		t.Fatal("a system: prefixed subject must stay IsSystem")
+	}
+
+	addEdge(graph, nodeID(tenant), nodeID(controller), &models.EscalationEdge{Action: "pod_create_token_theft"})
+	addEdge(graph, nodeID(controller), sinkClusterAdmin, &models.EscalationEdge{Action: "bound_to_cluster_admin"})
+
+	paths := FindPaths(graph, 5)
+	if len(paths) != 1 {
+		t.Fatalf("want exactly 1 path (tenant only; the controller must not seed), got %d", len(paths))
+	}
+	if paths[0].Source.Name != "tenant" {
+		t.Fatalf("want source tenant, got %s", paths[0].Source.Name)
+	}
+	if len(paths[0].Hops) != 2 {
+		t.Fatalf("want a 2-hop chain through the controller, got %d", len(paths[0].Hops))
+	}
+}
+
+// TestNamespaceAdminReachesColocatedServiceAccounts proves the namespace-admin
+// sink is walked past into the ServiceAccounts that live in that namespace, so a
+// subject bounded to one namespace still surfaces the cluster-admin-bound identity
+// co-hosted there.
+func TestNamespaceAdminReachesColocatedServiceAccounts(t *testing.T) {
+	t.Parallel()
+
+	snapshot := models.Snapshot{}
+	snapshot.Resources.Namespaces = []corev1.Namespace{
+		{ObjectMeta: objectMeta("tenant", "")},
+	}
+	snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+		{ObjectMeta: objectMeta("powerful", "tenant")},
+	}
+	snapshot.Resources.Roles = []rbacv1.Role{{
+		ObjectMeta: objectMeta("binder", "tenant"),
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups: []string{"rbac.authorization.k8s.io"},
+			Resources: []string{"rolebindings"},
+			Verbs:     []string{"create"},
+		}},
+	}}
+	snapshot.Resources.RoleBindings = []rbacv1.RoleBinding{{
+		ObjectMeta: objectMeta("binder-rb", "tenant"),
+		RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "binder"},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "attacker", Namespace: "tenant"}},
+	}}
+	snapshot.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{{
+		ObjectMeta: objectMeta("powerful-crb", ""),
+		RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "cluster-admin"},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "powerful", Namespace: "tenant"}},
+	}}
+
+	graph := BuildGraph(snapshot)
+	paths := FindPaths(graph, 5)
+
+	var found bool
+	for _, p := range paths {
+		if p.Source.Name != "attacker" || p.Target != models.TargetClusterAdmin {
+			continue
+		}
+		if len(p.Hops) >= 3 && p.Hops[1].Action == "colocated_sa_token_theft" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want attacker -> namespace_admin -> colocated SA -> cluster_admin; paths: %+v", paths)
+	}
+}
+
+// TestControlPlaneNodeEscapeContinuation proves node-root continues to system:masters
+// only when a schedulable control-plane node exists in the snapshot. On a properly
+// tainted multi-node cluster an escaping tenant pod lands on a worker, where no
+// cluster PKI lives, so continuing would be a false positive.
+func TestControlPlaneNodeEscapeContinuation(t *testing.T) {
+	t.Parallel()
+
+	cpNode := func(taints []corev1.Taint) corev1.Node {
+		meta := objectMeta("cp-0", "")
+		meta.Labels = map[string]string{"node-role.kubernetes.io/control-plane": ""}
+		return corev1.Node{ObjectMeta: meta, Spec: corev1.NodeSpec{Taints: taints}}
+	}
+
+	tests := []struct {
+		name  string
+		nodes []corev1.Node
+		want  bool
+	}{
+		{"schedulable control plane", []corev1.Node{cpNode(nil)}, true},
+		{"tainted control plane", []corev1.Node{cpNode([]corev1.Taint{{
+			Key: "node-role.kubernetes.io/control-plane", Effect: corev1.TaintEffectNoSchedule,
+		}})}, false},
+		{"workers only", []corev1.Node{{ObjectMeta: objectMeta("w-0", "")}}, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			snapshot := models.Snapshot{}
+			snapshot.Resources.Nodes = tc.nodes
+			snapshot.Resources.Pods = []corev1.Pod{{
+				ObjectMeta: objectMeta("escaper", "app"),
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "escaper-sa",
+					HostPID:            true,
+				},
+			}}
+
+			graph := BuildGraph(snapshot)
+			paths := FindPaths(graph, 5)
+
+			var reachedMasters bool
+			for _, p := range paths {
+				if p.Target == models.TargetSystemMasters {
+					reachedMasters = true
+				}
+			}
+			if reachedMasters != tc.want {
+				t.Fatalf("system:masters reachable = %v, want %v", reachedMasters, tc.want)
+			}
+		})
+	}
+}

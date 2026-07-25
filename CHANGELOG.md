@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Deep escalation chains.** The privesc graph now expresses multi-hop paths that were previously invisible. `namespace_admin` is no longer a dead-end sink: reaching it now continues into every ServiceAccount co-located in that namespace (`colocated_sa_token_theft`), which is what turns a namespace-bounded grant into a cluster-wide path when that namespace also hosts a privileged controller. Node escape continues into control-plane PKI theft (`control_plane_pki_theft` to `system:masters`, `static_pod_admission_bypass` to token mint), gated on the snapshot actually containing a control-plane node with no `NoSchedule` taint, so worker-only clusters are unaffected. Non-built-in ServiceAccounts in `kube-system` are now traversable as chain intermediates while still never being seeded as path-search sources.
+
+- **`KUBE-CONFUSED-DEPUTY-001`.** Flags a subject that cannot escalate directly but can write a custom resource that a privileged operator then reconciles on its behalf. Catalog covers Flux, Argo CD, Argo Workflows, cert-manager, external-secrets, Velero, Tekton, and prometheus-operator `ServiceMonitor` (the `bearerTokenFile` token-exfiltration vector, GHSA-cxh2-4639-vmc5). Detection is RBAC-only and requires the operator's controller ServiceAccount to exist in the cluster, so a stray grant on an uninstalled CRD produces nothing.
+
+### Changed
+
+- **Escalation paths are now scored by their weakest hop rather than their length.** Each graph edge carries a difficulty rating, and a path's score is attenuated by the sum of its hops' difficulties instead of a flat penalty per hop. Severity now downgrades when a chain contains a genuinely hard step (one needing attacker-controlled infrastructure or a timing window), not merely because the chain is long. Previously a five-hop chain of trivial RBAC grants was ranked below a two-hop chain that required a race condition. `EscalationEdge` and `EscalationHop` gained a `difficulty` field, visible in JSON output.
+
 ## [1.2.0] - 2026-07-15
 
 This release takes kubesplaining's privilege-escalation graph across the cloud boundary and sharpens the RBAC matching engine. The headline additions are a first-class EKS cloud-provider module (IRSA admin-role detection, aws-auth IAM-to-RBAC mapping, and IMDS pivot edges) so an escalation chain can now cross from a Kubernetes ServiceAccount into an AWS IAM role; completion of the 17-entry `KUBE-PRIVESC` technique taxonomy with a dedicated Escalation Paths report tab; structured remediation hints across all eight analyzer modules; and `(apiGroup, resource, verb)`-aware RBAC matching that honors `resourceNames` to cut false positives across the rbac, secrets, serviceaccount, and privesc modules.

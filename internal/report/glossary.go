@@ -470,6 +470,45 @@ var Techniques = map[string]TechniqueExplainer{
 			{Note: "Read every Secret cluster-wide", Cmd: "kubectl get secrets -A"},
 		},
 	},
+	"colocated_sa_token_theft": {
+		Title: "Co-located ServiceAccount token theft",
+		Plain: template.HTML(`<p>Administrative control over a namespace implies control over every identity inside it. Someone who can create RoleBindings in a namespace can create a pod that mounts any ServiceAccount there, exec into a pod already running as it, or read its token Secret directly.</p><p>This matters when a namespace hosts an identity more powerful than the namespace itself, for example a controller whose ClusterRoleBinding grants cluster-wide permissions. Namespace-admin then becomes a stepping stone rather than a boundary.</p>`),
+		Mitre: "T1528 — Steal Application Access Token",
+		AttackerSteps: []AttackerStep{
+			{Note: "List the ServiceAccounts available in the compromised namespace", Cmd: "kubectl get serviceaccounts -n <ns>"},
+			{Note: "Find which of them hold cluster-wide permissions", Cmd: "kubectl get clusterrolebindings -o json | jq '.items[] | select(.subjects[]?.namespace==\"<ns>\")'"},
+			{Note: "Mint a token for the most powerful one", Cmd: "kubectl create token <sa> -n <ns>"},
+		},
+	},
+	"control_plane_pki_theft": {
+		Title: "Control-plane PKI theft",
+		Plain: template.HTML(`<p>Root on a node is serious anywhere, but root on a <em>control-plane</em> node is game over. The cluster's certificate authority private key sits at <code>/etc/kubernetes/pki/ca.key</code>. With it an attacker signs a client certificate carrying <code>O=system:masters</code> entirely offline, and the API server accepts it because that group short-circuits authorization.</p><p>No RBAC object changes, so no audit event records the grant. Recovery means rotating the cluster CA, not merely deleting a binding.</p>`),
+		Mitre: "T1552.004 — Unsecured Credentials: Private Keys",
+		AttackerSteps: []AttackerStep{
+			{Note: "Confirm the node you landed on is a control-plane node", Cmd: "ls /etc/kubernetes/pki/ca.key"},
+			{Note: "Sign a client certificate as the system:masters group", Cmd: "openssl x509 -req -in attacker.csr -CA /etc/kubernetes/pki/ca.crt -CAkey /etc/kubernetes/pki/ca.key -out attacker.crt"},
+			{Note: "Use the forged certificate against the API server", Cmd: "kubectl --client-certificate attacker.crt --client-key attacker.key get secrets -A"},
+		},
+	},
+	"static_pod_admission_bypass": {
+		Title: "Static pod and SA signing-key abuse",
+		Plain: template.HTML(`<p>The kubelet on a control-plane node runs any manifest dropped into <code>/etc/kubernetes/manifests</code> as a static pod. Static pods never traverse the API server, so no admission webhook, Pod Security Admission label, or policy engine can see or block them.</p><p>The same node holds <code>/etc/kubernetes/pki/sa.key</code>, the key that signs every ServiceAccount token in the cluster. An attacker with it forges a valid token for any ServiceAccount without touching the API at all.</p>`),
+		Mitre: "T1610 — Deploy Container",
+		AttackerSteps: []AttackerStep{
+			{Note: "Drop a privileged static pod that no admission controller sees", Cmd: "cp attacker-pod.yaml /etc/kubernetes/manifests/"},
+			{Note: "Steal the ServiceAccount token signing key", Cmd: "cat /etc/kubernetes/pki/sa.key"},
+		},
+	},
+	"operator_reconcile": {
+		Title: "Confused deputy: operator reconciliation",
+		Plain: template.HTML(`<p>Operators work by watching custom resources and acting on them with their own, usually cluster-wide, permissions. A tenant who can write one of those custom resources needs no permissions of their own: they write the instruction, and the controller carries it out as itself.</p><p>A GitOps controller pointed at an attacker-controlled repository applies whatever manifests it finds there, including a ClusterRoleBinding. A monitoring operator told to scrape a chosen <code>bearerTokenFile</code> reads and ships its own mounted token. The permission that matters belongs to the deputy, not the requester.</p>`),
+		Mitre: "T1078 — Valid Accounts",
+		AttackerSteps: []AttackerStep{
+			{Note: "Check which operator custom resources you can write", Cmd: "kubectl auth can-i --list | grep -Ei 'fluxcd|argoproj|cert-manager|external-secrets|velero|tekton|monitoring.coreos'"},
+			{Note: "Confirm the reconciling controller is more privileged than you are", Cmd: "kubectl auth can-i --list --as=system:serviceaccount:<controller-ns>:<controller-sa>"},
+			{Note: "Point the custom resource at an attacker-controlled source and let the controller apply it", Cmd: "kubectl apply -f attacker-kustomization.yaml"},
+		},
+	},
 }
 
 // Categories maps a RiskCategory to plain-language explainer copy used on the impact-lane nodes.

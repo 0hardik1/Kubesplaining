@@ -63,7 +63,14 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 // findingFromPath converts an EscalationPath into a Finding describing the chain, its target, and scoring.
 func findingFromPath(path models.EscalationPath) models.Finding {
 	target := path.Target
-	severity, score, ruleID := targetScoring(target, len(path.Hops))
+	severity, score, ruleID := targetScoring(target, path.Hops)
+	// Confused-deputy chains get their own rule ID so operators can triage the
+	// "a controller acted on my behalf" class separately from direct RBAC paths.
+	// This is a technique overlay on the first hop, not a distinct sink: the chain
+	// still terminates at whatever the controller itself reaches.
+	if firstAction(path.Hops) == "operator_reconcile" {
+		ruleID = "KUBE-CONFUSED-DEPUTY-001"
+	}
 	category := models.CategoryPrivilegeEscalation
 	if target == models.TargetKubeSystemSecrets {
 		category = models.CategoryDataExfiltration
@@ -144,8 +151,28 @@ func contentForTarget(source models.SubjectRef, target models.EscalationTarget, 
 	}
 }
 
-// targetScoring returns the base severity, score, and rule ID for a target, attenuating by hop distance so shorter paths score higher.
-func targetScoring(target models.EscalationTarget, hops int) (models.Severity, float64, string) {
+// difficultyCost is the score penalty each hop contributes, by difficulty rating.
+// See models.EscalationEdge.Difficulty for what each rating means.
+var difficultyCost = map[string]float64{
+	"easy":     0.15,
+	"moderate": 0.4,
+	"hard":     0.9,
+}
+
+// targetScoring returns the base severity, score, and rule ID for a target,
+// attenuated by how hard the chain is to walk rather than by how long it is.
+//
+// Each hop costs according to its difficulty, so a five-hop chain of ordinary RBAC
+// grants (0.75 total) outranks a two-hop chain that needs a race window (1.8). A
+// chain is downgraded one severity bucket when it contains at least one hard hop,
+// because that is the step an operator can most realistically bet against. Length
+// still matters, but through the summed cost rather than as the primary signal.
+//
+// This replaced a flat "0.5 per hop, downgrade at 3+ hops" model, which ranked a
+// long chain of trivial grants below a short chain needing attacker-controlled
+// infrastructure. Scores stay in [1, 10] so even a deeply attenuated path is still
+// reported rather than disappearing under the threshold.
+func targetScoring(target models.EscalationTarget, hops []models.EscalationHop) (models.Severity, float64, string) {
 	var base float64
 	var severity models.Severity
 	var ruleID string
@@ -170,23 +197,27 @@ func targetScoring(target models.EscalationTarget, hops int) (models.Severity, f
 	default:
 		base, severity, ruleID = 7.0, models.SeverityHigh, "KUBE-PRIVESC-PATH-GENERIC"
 	}
-	// Attenuate by chain length so shorter, more directly-exploitable paths outrank
-	// longer ones to the same sink. Each extra hop costs 0.5 score points, and chains
-	// of 3+ hops drop one severity bucket - long chains usually require operator
-	// missteps at every step, so they're real but lower-priority than a 1- or 2-hop
-	// path. Scores stay in [1, 10] so even a deeply attenuated path is still
-	// flagged rather than disappearing under the threshold.
-	score := base
-	if hops > 1 {
-		score -= 0.5 * float64(hops-1)
+	penalty := 0.0
+	hasHardHop := false
+	for _, hop := range hops {
+		cost, ok := difficultyCost[hop.Difficulty]
+		if !ok {
+			cost = difficultyCost[difficultyModerate]
+		}
+		penalty += cost
+		if hop.Difficulty == difficultyHard {
+			hasHardHop = true
+		}
 	}
+
+	score := base - penalty
 	if score < 1 {
 		score = 1
 	}
 	if score > 10 {
 		score = 10
 	}
-	if hops >= 3 {
+	if hasHardHop {
 		severity = downgrade(severity)
 	}
 	return severity, score, ruleID
