@@ -13,7 +13,8 @@ import (
 // Options bundles CLI-supplied render-time settings. Zero value = legacy behavior:
 // DefaultTab "" preserves the report's existing initial tab (attack); UsageInfo nil hides
 // the audit-log header on the Least Privilege tab; LeastPrivilegeOnly false leaves all
-// four tab buttons visible.
+// four tab buttons visible; MaxPrivescDepth 0 omits the search-depth line from the
+// escalation-paths tab.
 type Options struct {
 	// DefaultTab is the data-active-tab value the HTML report initializes to. Empty
 	// preserves the existing default ("attack"). Currently the only non-empty caller is
@@ -30,6 +31,16 @@ type Options struct {
 	// the report layer. nil means no audit data was supplied; the tab's empty-state
 	// shows a help block instead of a window summary.
 	UsageInfo *UsageInfo
+
+	// MaxPrivescDepth is the --max-privesc-depth value the privesc module searched
+	// with, set by scan.go from the same variable that feeds analyzer.Config. Zero
+	// (the zero value) renders nothing, so a caller that does not set it (or an older
+	// caller that predates this field) gets today's output unchanged. Non-zero prints
+	// one line alongside the escalation paths so an operator can tell how far both the
+	// primary and cut-resilient alternate search went: see the AlternateHops doc
+	// comment on models.EscalationPath for why that number matters to reading an empty
+	// alternate correctly.
+	MaxPrivescDepth int
 }
 
 // UsageInfo carries the audit-log window summary into the report layer. We don't pass

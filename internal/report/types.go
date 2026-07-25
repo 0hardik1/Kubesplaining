@@ -515,6 +515,11 @@ type htmlReportData struct {
 	// UsageInfo carries the audit-log window summary rendered into the Least
 	// Privilege tab header. nil when no --audit-log was supplied.
 	UsageInfo *UsageInfo
+	// MaxPrivescDepth is the --max-privesc-depth the scan ran with, from
+	// Options.MaxPrivescDepth. Zero hides the search-depth line on the
+	// Privilege-Escalation Paths tab, matching how the field's zero value is a no-op
+	// everywhere upstream of it.
+	MaxPrivescDepth int
 
 	// Modern-dashboard fields — all derived from Findings so any cluster renders.
 	RiskIndex   int

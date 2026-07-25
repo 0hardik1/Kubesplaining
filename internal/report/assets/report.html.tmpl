@@ -2675,6 +2675,9 @@
           escape. This is the exhaustive list. The Attack Paths tab draws the same chains as an
           interactive graph but caps how many it renders, and the hero panel up top highlights only
           the worst few. Each card links to its full finding (with remediation) in the Findings tab.
+          {{ if .MaxPrivescDepth }}Both this search and its cut-resilient alternate check went up
+          to {{ .MaxPrivescDepth }} hops deep (<code>--max-privesc-depth</code>); a route that
+          survives a recommended cut but sits past that depth will not appear here.{{ end }}
         </p>
         <div class="pp-kpis">
           <div class="pp-kpi">
