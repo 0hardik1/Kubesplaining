@@ -36,10 +36,16 @@ type Finding struct {
 	LearnMore        []Reference      `json:"learn_more,omitempty"`       // structured references (Title + URL)
 	MitreTechniques  []MitreTechnique `json:"mitre_techniques,omitempty"` // ATT&CK technique IDs for Containers / Kubernetes
 	EscalationPath   []EscalationHop  `json:"escalation_path,omitempty"`  // populated by the privesc module
-	Frameworks       []FrameworkRef   `json:"frameworks,omitempty"`       // compliance/hardening controls this rule maps to (CIS, NSA, …); populated post-analysis from the static mapping table
-	Excluded         bool             `json:"excluded"`                   // set post-analysis by the exclusions matcher
-	ExclusionReason  string           `json:"exclusion_reason,omitempty"`
-	Tags             []string         `json:"tags,omitempty"` // free-form labels like "module:rbac", "check:wildcardVerbs"
+	// AlternateEscalationPath is a route to the same sink that survives the binding cut
+	// this finding's RemediationHint recommends. Non-empty means the printed fix is not
+	// sufficient on its own, and the finding also carries the tag
+	// "privesc:survives-first-cut". Empty (the common case) means either that no such
+	// route exists, or that the chain is synthetic-rooted so no binding cut was modeled.
+	AlternateEscalationPath []EscalationHop `json:"alternate_escalation_path,omitempty"`
+	Frameworks              []FrameworkRef  `json:"frameworks,omitempty"` // compliance/hardening controls this rule maps to (CIS, NSA, …); populated post-analysis from the static mapping table
+	Excluded                bool            `json:"excluded"`             // set post-analysis by the exclusions matcher
+	ExclusionReason         string          `json:"exclusion_reason,omitempty"`
+	Tags                    []string        `json:"tags,omitempty"` // free-form labels like "module:rbac", "check:wildcardVerbs"
 	// RemediationHint is the structured fix payload: a kubectl patch and / or equivalent
 	// Kyverno / Gatekeeper policies and / or a minimal RBAC diff. Optional and additive —
 	// nil means the analyzer hasn't supplied a structured fix yet, in which case JSON

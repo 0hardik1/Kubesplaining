@@ -100,26 +100,33 @@ func findingFromPath(path models.EscalationPath) models.Finding {
 
 	subject := path.Source
 	tags := []string{"module:privesc", "target:" + string(target)}
+	if len(path.AlternateHops) > 0 {
+		// The recommended fix cuts hop 1's binding, and this path reaches the same
+		// sink without it. Tagged so report, exclusions, and CI consumers can filter
+		// on it without parsing the chain.
+		tags = append(tags, "privesc:survives-first-cut")
+	}
 	finding := models.Finding{
-		ID:               id,
-		RuleID:           ruleID,
-		Severity:         severity,
-		Score:            score,
-		Category:         category,
-		Title:            content.Title,
-		Description:      content.Description,
-		Subject:          &subject,
-		Scope:            content.Scope,
-		Impact:           content.Impact,
-		AttackScenario:   content.AttackScenario,
-		Evidence:         evidence,
-		Remediation:      content.Remediation,
-		RemediationSteps: content.RemediationSteps,
-		References:       references,
-		LearnMore:        content.LearnMore,
-		MitreTechniques:  content.MitreTechniques,
-		EscalationPath:   path.Hops,
-		Tags:             tags,
+		ID:                      id,
+		RuleID:                  ruleID,
+		Severity:                severity,
+		Score:                   score,
+		Category:                category,
+		Title:                   content.Title,
+		Description:             content.Description,
+		Subject:                 &subject,
+		Scope:                   content.Scope,
+		Impact:                  content.Impact,
+		AttackScenario:          content.AttackScenario,
+		Evidence:                evidence,
+		Remediation:             content.Remediation,
+		RemediationSteps:        content.RemediationSteps,
+		References:              references,
+		LearnMore:               content.LearnMore,
+		MitreTechniques:         content.MitreTechniques,
+		EscalationPath:          path.Hops,
+		AlternateEscalationPath: path.AlternateHops,
+		Tags:                    tags,
 	}
 	if target == models.TargetNamespaceAdmin && path.TargetNamespace != "" {
 		// Anchor the finding to the namespace it compromises so the report's resource column,

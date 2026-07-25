@@ -619,3 +619,59 @@ func TestDifficultyScoringKeepsEasyChainsCritical(t *testing.T) {
 		t.Fatalf("a 4-hop all-easy chain to cluster-admin should stay critical, got %s", severity)
 	}
 }
+
+// TestFindingCarriesAlternateAndTag proves the alternate reaches the Finding as an
+// additive field plus a filterable tag, rather than as a second Finding. A second
+// Finding would collide on the engine dedupe key (RuleID, Subject, Resource) and be
+// silently swallowed, since privesc paths to non-namespace sinks carry no Resource.
+func TestFindingCarriesAlternateAndTag(t *testing.T) {
+	path := models.EscalationPath{
+		Source: models.SubjectRef{Kind: "ServiceAccount", Name: "twice", Namespace: "app"},
+		Target: models.TargetClusterAdmin,
+		Hops: []models.EscalationHop{
+			{Step: 1, Action: "bound_to_cluster_admin", SourceBinding: "admin-a"},
+		},
+		AlternateHops: []models.EscalationHop{
+			{Step: 1, Action: "bound_to_cluster_admin", SourceBinding: "admin-b"},
+		},
+	}
+
+	finding := findingFromPath(path)
+
+	if len(finding.AlternateEscalationPath) != 1 {
+		t.Fatalf("want 1 alternate hop on the finding, got %d", len(finding.AlternateEscalationPath))
+	}
+	if finding.AlternateEscalationPath[0].SourceBinding != "admin-b" {
+		t.Errorf("alternate binding = %q, want admin-b", finding.AlternateEscalationPath[0].SourceBinding)
+	}
+	var tagged bool
+	for _, tag := range finding.Tags {
+		if tag == "privesc:survives-first-cut" {
+			tagged = true
+		}
+	}
+	if !tagged {
+		t.Errorf("want the privesc:survives-first-cut tag, got %v", finding.Tags)
+	}
+}
+
+// TestFindingWithoutAlternateIsUntagged keeps the common case clean: no alternate
+// means no field and no tag, so existing JSON output is byte-identical.
+func TestFindingWithoutAlternateIsUntagged(t *testing.T) {
+	path := models.EscalationPath{
+		Source: models.SubjectRef{Kind: "ServiceAccount", Name: "once", Namespace: "app"},
+		Target: models.TargetClusterAdmin,
+		Hops:   []models.EscalationHop{{Step: 1, Action: "bound_to_cluster_admin", SourceBinding: "only"}},
+	}
+
+	finding := findingFromPath(path)
+
+	if len(finding.AlternateEscalationPath) != 0 {
+		t.Errorf("want no alternate, got %d hops", len(finding.AlternateEscalationPath))
+	}
+	for _, tag := range finding.Tags {
+		if tag == "privesc:survives-first-cut" {
+			t.Errorf("finding without an alternate must not carry the tag: %v", finding.Tags)
+		}
+	}
+}
