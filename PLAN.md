@@ -1,6 +1,6 @@
 # Kubesplaining Implementation Plan
 
-Implementation roadmap. Status reflects code in-tree as of 2026-05-17.
+Implementation roadmap. Status reflects code in-tree as of 2026-07-25.
 
 Legend: `[x]` done · `[~]` partial · `[ ]` not started. Partial items list what's missing.
 
@@ -84,6 +84,7 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started. Partial items list wha
 - [x] Cloud identity edges (IRSA + aws-auth + IMDS-pivot for EKS), implemented in [internal/analyzer/privesc/cloud_edges.go](internal/analyzer/privesc/cloud_edges.go). Adds three edge shapes: (1) IRSA edges from SA to an external `aws-iam` node; (2) aws-auth edges from the external node onward to `system_masters` / `cluster_admin` sinks; (3) IMDS-pivot edges from SA to `node_escape` when the pod can reach 169.254.169.254 and lacks an IRSA binding. External nodes carry `IsExternal=true`, are skipped as BFS sources, and are treated as terminal sinks (so `KUBE-PRIVESC-PATH-AWS-IAM-ROLE` fires for every IRSA-annotated SA). The pathfinder continues traversal THROUGH external sinks when they carry aws-auth outbound edges, so longer `KUBE-PRIVESC-PATH-SYSTEM-MASTERS` / `KUBE-PRIVESC-PATH-CLUSTER-ADMIN` chains surface as separate paths.
 - [x] CSR-based cluster-admin edge (KUBE-PRIVESC-011) — added to `internal/analyzer/privesc/graph.go` as the `csr_approve` action targeting the `system_masters` sink. Subject must hold both `create csr` and `update csr/approval` cluster-scoped; correlated across rules by `finalizeCSRApprovals`.
 - [x] `system:masters` impersonation edge — emitted by `internal/analyzer/privesc/graph.go` when a subject holds cluster-scoped `impersonate groups` (which subsumes `system:masters`). Action `impersonate_system_masters` → `sinkSystemMasters`.
+- [x] Cut-resilient escalation paths: every path finding now states whether its own recommended fix actually closes the route. See **Completed** below for the full description and the fix batch that came with it.
 - [ ] Graph visualization page in HTML report
 
 ### Cloud Provider Integration ([internal/analyzer/cloud/](internal/analyzer/cloud/analyzer.go))
@@ -175,10 +176,70 @@ All four present: HTML, JSON, CSV, SARIF.
 
 ## Next Goal
 
-**Cloud Provider Integration: GKE Workload Identity.** EKS just landed (aws-auth + IRSA + IMDS-pivot + privesc cloud-identity edges), so the natural sequel is GKE. The shape of the work is symmetrical: detect the provider from node labels (`cloud.google.com/gke-nodepool`), parse the per-ServiceAccount `iam.gke.io/gcp-service-account` annotation as the GKE analog of IRSA, and emit a `KUBE-CLOUD-GKE-WI-ADMIN-001` / `-MISSING-001` family that mirrors the EKS IRSA rules. The privesc graph already has the `external:*` node shape and a generic `aws_iam_role` target enum value, so adding `gcp_service_account` is a small drop-in: ensure the external node, wire SA -> external edges from the new annotation, and let the existing BFS / glossary / remediation pipelines reuse the EKS plumbing. GKE Workload Identity uses GCE metadata server (169.254.169.254) for the unbound fallback, so the IMDS-pivot helper reuses cleanly: the cloud module just needs a GKE-specific Fargate-equivalent (`spec.nodeName` matching a GKE-Autopilot node) carve-out. AKS managed identities follow next and round out the provider trio.
+**Richer routes independent of remediation** (`docs/privesc-research.md` section O3). The
+cut-resilient work that just landed only surfaces a second route to a sink when it survives
+cutting the binding behind the finding's own first hop. A subject with a richer, more instructive
+route that the recommended fix does *not* affect still never sees it, because path search keeps
+only the shortest chain per (source, sink) pair regardless of remediation. The design doc's
+"Deferred" section frames the fix as a k-visit BFS generalization; see O3 for the current state
+of what's addressed and what's still open.
+
+**Cloud Provider Integration: GKE Workload Identity was the previous entry here and is now known
+to be wrong on two counts**, found while auditing this branch's docs rather than during dedicated
+GKE work, so treat this as a corrected starting point rather than a finished design. First, the
+privesc graph's external-identity node shape (`EscalationNode.IsExternal`, the `aws_iam_role`
+target enum) was assumed to generalize cleanly across cloud providers; it does not, and GKE's
+identity model needs its own design pass rather than a drop-in `gcp_service_account` variant.
+Second, the natural GKE analog of the EKS IMDS-pivot rule has an **inverted** condition: on EKS,
+`KUBE-CLOUD-IMDS-PIVOT-001` fires when a pod's SA lacks an IRSA annotation, because the node's IAM
+role is reachable by default in that case. On GKE, Workload Identity being **on** is what blocks a
+pod from reaching the node's underlying service account through the metadata server, so the
+risky state is Workload Identity being **off**, not a missing per-SA annotation. Porting the EKS
+condition as written would ship a silently inverted rule. AKS managed identities remain
+unscouted and follow after GKE.
 
 ## Completed
 
+- **Cut-resilient escalation paths.** Every `KUBE-PRIVESC-PATH-*` / `KUBE-CONFUSED-DEPUTY-001`
+  finding now states whether the fix it recommends actually closes the route. `models.EscalationEdge`
+  and `models.EscalationHop` gained `SourceBinding` / `SourceRole` / `BindingNamespace` provenance
+  ([internal/analyzer/privesc/graph.go](internal/analyzer/privesc/graph.go),
+  [internal/models/escalation.go](internal/models/escalation.go),
+  [internal/models/finding.go](internal/models/finding.go)), so `remediation.ForPrivescPath`
+  ([internal/remediation/rbac.go](internal/remediation/rbac.go)) cuts the binding that actually
+  granted the first hop instead of the first binding naming the subject. `pathfinder.go` adds a
+  second BFS pass per source (`alternatesForSource`) that re-runs the search with that binding's
+  edges banned; a route that survives becomes `EscalationPath.AlternateHops` /
+  `Finding.AlternateEscalationPath` (`json:"alternate_escalation_path"`) plus the tag
+  `privesc:survives-first-cut`. Report rendering
+  ([internal/report/evidence_render.go](internal/report/evidence_render.go)) shows the alternate
+  in a collapsed disclosure beneath the primary chain in both the Findings tab and the Escalation
+  paths tab. No rule IDs added; both e2e ruleset goldens are unchanged (set-equality over rule
+  IDs, and every rule the new fixture fires was already listed). E2E coverage in
+  `testdata/e2e/vulnerable/18-privesc-cut-resilient.yaml` and
+  `testdata/e2e/expectations/cut-resilient.chain`, plus a universal invariant gate in
+  `scripts/kind-e2e.sh` asserting that no finding's alternate reuses the primary's cut binding.
+- **Privesc graph and engine defects found auditing the work above.** An adversarial seam audit
+  plus the review loop turned up eight defects, several pre-existing and unrelated to the feature
+  except that this work is what exposed them: an escalation edge was emitted per subject rather
+  than per granting binding, hiding a second route whenever two bindings granted the same
+  capability (`addPrivilegedPodCreateEdges`, `deputy.go`); two-rule correlation edges (secret-mint,
+  node-migrate) could never be modeled as cut, even when one binding was the sole grantor of a
+  half (new `CutBreakers` field, `internal/analyzer/privesc/graph.go`); `ForPrivescPath` never
+  covered `KUBE-CONFUSED-DEPUTY-001` findings and otherwise fell back to a subject-wide binding
+  scan that printed a diff against an unrelated binding for pod-escape-rooted chains, fixing
+  nothing; the engine's cross-module dedupe collapsed distinct confused-deputy chains reaching
+  different sinks through one controller into a single finding, discarding the rest
+  ([internal/analyzer/correlate.go](internal/analyzer/correlate.go)); map iteration order in the
+  pod-create edge fan-out and the privesc path sort comparator made finding selection and IDs
+  nondeterministic across runs, fixed by sorting the fan-out keys and adding `EscalationPath.TargetID`
+  as a sort tiebreak (also appended to the `KUBE-PRIVESC-PATH-AWS-IAM-ROLE` finding ID, which
+  previously collided when one subject could reach two different IAM roles); the empty-alternate
+  doc comments described only two causes when a third exists (a surviving route outside
+  `--max-privesc-depth`); and the engine's post-analysis sort was documented as stable but called
+  the unstable `sort.Slice` and collected module results in goroutine-completion order rather than
+  module order ([internal/analyzer/engine.go](internal/analyzer/engine.go)). All fixed without
+  moving either e2e ruleset golden.
 - **Cloud Provider Integration: EKS** (this slot). Added the `cloud` analyzer module with an EKS sub-package: `internal/analyzer/cloud/analyzer.go` dispatches by `snapshot.Metadata.CloudProvider`, and `internal/analyzer/cloud/eks/{aws_auth,irsa,imds_pivot,detect,eks}.go` ships seven rule IDs: `KUBE-CLOUD-AWSAUTH-SYSTEM-MASTERS-001` (HIGH 8.6), `KUBE-CLOUD-AWSAUTH-OVERBROAD-001` (MEDIUM 6.2), `KUBE-CLOUD-AWSAUTH-PARSE-ERROR-001` (INFO), `KUBE-CLOUD-IRSA-ADMIN-ROLE-001` (HIGH 7.8 / 9.2 for reserved-SSO), `KUBE-CLOUD-IRSA-MISSING-001` (LOW 3.5), `KUBE-CLOUD-IMDS-PIVOT-001` (HIGH 8.2), `KUBE-CLOUD-PROVIDER-UNKNOWN-001` (INFO, reserved). Privesc graph extended with cloud-identity edges in `internal/analyzer/privesc/cloud_edges.go` (IRSA, aws-auth, IMDS-pivot) plus `KUBE-PRIVESC-PATH-AWS-IAM-ROLE` emitted from `internal/analyzer/privesc/analyzer.go` for paths terminating at an external IAM node; `models.TargetAWSIAMRole` and `EscalationNode.IsExternal` added to support external-identity nodes. `--cloud-provider auto|eks|gke|aks|none` flag on `scan` controls dispatch; auto-detection keys off `eks.amazonaws.com/{nodegroup,compute-type}` node labels. Glossary + Techniques entries added for `external_aws_iam`, `irsa_assume_role`, `aws_auth_admin`, `imds_node_role_pivot`. E2E coverage in `testdata/e2e/vulnerable/15-cloud-eks.yaml` with assertions in `testdata/e2e/expectations/cloud-eks.{expect,rollout}` against a `--exclusions-preset=minimal` scan so the kube-system-anchored aws-auth finding is not dropped; the kind nodes are stamped with `eks.amazonaws.com/nodegroup=kind-test` by `scripts/kind-e2e.sh` so `DetectCloudProvider` classifies the cluster as EKS.
 - **Structured remediation hints across every analyzer**. The half-shipped `Finding.Remediation.Patch` feature is complete: `internal/remediation/{network,admission,secrets,serviceaccount,containersec}.go` join the existing `{podsec,rbac,privesc}` generators so all eight analyzer modules attach `RemediationHint` (kubectl patch, Kyverno / Gatekeeper policy, or RBAC diff) to every finding. Surfaced via a new `--remediation-patches` opt-in flag on `scan`, `scan-resource`, and `report`. The shared helpers (`jsonPatchHint`, `mergeHint`, `strategicHintRaw`, `commandOnlyHint`) live in `internal/remediation/common.go` alongside the original pod-spec wrappers. JSON / HTML / SARIF render the hints when present; CSV continues to omit them. Note: this is a behavioral change. Earlier in-tree podsec/rbac/privesc hint emission was unconditional; it is now gated by the same flag for consistency.
 - CIS/NSA framework tags on every rule — `models.FrameworkRef` and `Finding.Frameworks` ([internal/models/finding.go](internal/models/finding.go)); hand-maintained rule → control mapping table for CIS Kubernetes Benchmark v1.9 and NSA/CISA Kubernetes Hardening Guide v1.2 ([internal/compliance/mapping.go](internal/compliance/mapping.go)); engine post-processing pass that decorates every finding ([internal/analyzer/engine.go](internal/analyzer/engine.go)); Compliance Coverage tab in the HTML report grouping by framework → control ([internal/report/compliance_section.go](internal/report/compliance_section.go), template additions in [internal/report/assets/report.html.tmpl](internal/report/assets/report.html.tmpl)); `--compliance cis|nsa` flag on `scan`, `scan-resource`, and `report` that filters output to findings tagged with the requested framework. JSON/SARIF/CSV outputs gain the `frameworks` field automatically — additive and back-compatible.

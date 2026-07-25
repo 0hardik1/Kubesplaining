@@ -92,10 +92,29 @@ Two edge builders outside `addEdgesForRule` also have provenance in scope and **
   receives `perms.Rules`, so the granting binding is available per rule the same way it is in
   `addEdgesForRule`.
 
-The remaining edges keep empty provenance by construction, because no single binding grants
-them: the pod-escape edges (`graph.go:491,515,566`), the node-escape continuation
-(`graph.go:691,697`), the namespace-admin token-theft fan-out (`graph.go:428`, which emanates
-from a sink node rather than a subject), and the cloud-identity edges in `cloud_edges.go`.
+**Correction, added after implementation.** The rule for the remaining edges is: an edge stamps
+provenance when exactly one RBAC rule justifies it. That is why `addPrivilegedPodCreateEdges`
+(the `KUBE-PRIVESC-002` create-pods-to-node-escape edge) DOES stamp provenance despite living
+outside `addEdgesForRule`: it derives from a single matching rule the same way the loop above
+does, and an earlier draft of this design wrongly grouped it with the edges below.
+
+The edges that keep empty provenance by construction fall into two groups. Synthetic edges trace
+back to no RBAC rule at all: the pod-escape edges (`graph.go:491,515,566`), the node-escape
+continuation (`graph.go:691,697`), the namespace-admin token-theft fan-out (`graph.go:428`, which
+emanates from a sink node rather than a subject), and the cloud-identity edges in
+`cloud_edges.go`. Two-rule correlations trace back to RBAC but to two rules that may come from
+different bindings (`addSecretMintEdge` and `addNodeMigrateEdge`), so naming one of the two as
+*the* grantor would be wrong: the other binding alone could still grant the missing half.
+
+Provenance and cuttability answer different questions, and a correlation edge can have an answer
+to the second without one to the first. `SourceBinding` answers "which binding granted this
+edge"; a correlation edge has no single answer, so it stays empty. `CutBreakers`
+(`EscalationEdge`, `json:"-"`, added by the sole-grantor fix that followed this design) separately
+answers "which bindings would break this edge if cut": for each of the two halves, the binding
+that is its *sole* grantor, or none if the half is redundantly granted by several bindings. The
+cut-resilient pass ban predicate consults `CutBreakers` for edges with no `SourceBinding`, so a
+correlation edge can still be correctly banned without ever claiming one binding is "the" grantor
+of the whole edge.
 
 `models.EscalationHop` (`finding.go:297`) gains the same three fields, copied through in
 `buildPath` (`pathfinder.go:146`) so they survive into the finding, JSON, and report.
