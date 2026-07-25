@@ -3,6 +3,7 @@ package privesc
 import (
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
@@ -74,6 +75,10 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 	}
 
 	finalizeCSRApprovals(graph, csrCapabilities)
+
+	// Runs after the per-subject loop so every namespace-admin sink that any
+	// subject reaches already exists as a node.
+	addNamespaceAdminTokenTheftEdges(graph, subjectsByNs)
 
 	for _, pod := range snapshot.Resources.Pods {
 		addPodEscapeEdges(graph, pod)
@@ -386,6 +391,36 @@ func addEdgesForRule(
 	}
 }
 
+// addNamespaceAdminTokenTheftEdges links each namespace-admin sink onward to every
+// ServiceAccount living in that namespace. Namespace-admin over X means the holder
+// can create a pod as any SA in X, exec into its pods, or read its token Secret, so
+// every co-located identity is effectively theirs. This is what turns a bounded
+// namespace grant into a cluster-wide path when X co-hosts a privileged controller.
+//
+// Iteration runs over a sorted key list so edge order stays deterministic across runs.
+func addNamespaceAdminTokenTheftEdges(graph *models.EscalationGraph, subjectsByNs map[string][]models.SubjectRef) {
+	sinkIDs := make([]string, 0, len(graph.Nodes))
+	for id, node := range graph.Nodes {
+		if node.IsSink && node.Target == models.TargetNamespaceAdmin {
+			sinkIDs = append(sinkIDs, id)
+		}
+	}
+	sort.Strings(sinkIDs)
+
+	for _, sinkID := range sinkIDs {
+		namespace := graph.Nodes[sinkID].TargetNamespace
+		for _, target := range subjectsByNs[namespace] {
+			ensureSubjectNode(graph, target)
+			addEdge(graph, sinkID, nodeID(target), &models.EscalationEdge{
+				Technique:   "KUBE-PRIVESC-010",
+				Action:      "colocated_sa_token_theft",
+				Permission:  "namespace-admin in " + namespace,
+				Description: fmt.Sprintf("can steal the token of co-located ServiceAccount %s/%s", target.Namespace, target.Name),
+			})
+		}
+	}
+}
+
 // addSecretMintEdge emits the KUBE-PRIVESC-007 edge: a subject that holds BOTH
 // cluster-scoped `create secrets` and `get secrets` can create a legacy
 // ServiceAccount-token Secret and read the controller-populated token, minting
@@ -584,8 +619,11 @@ func ensureNamespaceAdminSink(graph *models.EscalationGraph, namespace string) s
 	id := sinkNamespaceAdminPrefix + namespace
 	if _, ok := graph.Nodes[id]; !ok {
 		graph.Nodes[id] = &models.EscalationNode{
-			ID:              id,
-			IsSink:          true,
+			ID:     id,
+			IsSink: true,
+			// Namespace-admin is not a dead end: it implies control over every
+			// identity co-located in the namespace. See addNamespaceAdminTokenTheftEdges.
+			Traversable:     true,
 			Target:          models.TargetNamespaceAdmin,
 			TargetNamespace: namespace,
 		}

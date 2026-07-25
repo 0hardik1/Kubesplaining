@@ -280,3 +280,53 @@ func TestControlPlaneSAIsTraversableButNotASource(t *testing.T) {
 		t.Fatalf("want a 2-hop chain through the controller, got %d", len(paths[0].Hops))
 	}
 }
+
+// TestNamespaceAdminReachesColocatedServiceAccounts proves the namespace-admin
+// sink is walked past into the ServiceAccounts that live in that namespace, so a
+// subject bounded to one namespace still surfaces the cluster-admin-bound identity
+// co-hosted there.
+func TestNamespaceAdminReachesColocatedServiceAccounts(t *testing.T) {
+	t.Parallel()
+
+	snapshot := models.Snapshot{}
+	snapshot.Resources.Namespaces = []corev1.Namespace{
+		{ObjectMeta: objectMeta("tenant", "")},
+	}
+	snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+		{ObjectMeta: objectMeta("powerful", "tenant")},
+	}
+	snapshot.Resources.Roles = []rbacv1.Role{{
+		ObjectMeta: objectMeta("binder", "tenant"),
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups: []string{"rbac.authorization.k8s.io"},
+			Resources: []string{"rolebindings"},
+			Verbs:     []string{"create"},
+		}},
+	}}
+	snapshot.Resources.RoleBindings = []rbacv1.RoleBinding{{
+		ObjectMeta: objectMeta("binder-rb", "tenant"),
+		RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "binder"},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "attacker", Namespace: "tenant"}},
+	}}
+	snapshot.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{{
+		ObjectMeta: objectMeta("powerful-crb", ""),
+		RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "cluster-admin"},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "powerful", Namespace: "tenant"}},
+	}}
+
+	graph := BuildGraph(snapshot)
+	paths := FindPaths(graph, 5)
+
+	var found bool
+	for _, p := range paths {
+		if p.Source.Name != "attacker" || p.Target != models.TargetClusterAdmin {
+			continue
+		}
+		if len(p.Hops) >= 3 && p.Hops[1].Action == "colocated_sa_token_theft" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want attacker -> namespace_admin -> colocated SA -> cluster_admin; paths: %+v", paths)
+	}
+}
