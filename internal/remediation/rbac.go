@@ -332,7 +332,12 @@ func buildDangerousAfter(roleKind, roleName, namespace string) string {
 }
 
 // ForPrivescPath returns the structured remediation for a KUBE-PRIVESC-PATH-*
-// finding. The fix is the *smallest* edit that breaks the escalation chain;
+// finding, or a KUBE-CONFUSED-DEPUTY-001 finding. Both are graph-path findings
+// built by the privesc analyzer's findingFromPath: confused-deputy chains are
+// a technique overlay on the same EscalationPath shape (a first hop with
+// binding provenance, an operator-reconcile bridge, then whatever the
+// controller itself reaches), so the same first-hop-binding-cut logic applies
+// unchanged. The fix is the *smallest* edit that breaks the escalation chain;
 // the algorithm picks the first hop (the closest one to the subject) because
 // it's the one the operator has the most control over: it lives in their
 // configuration, not the cluster's built-in identity layer.
@@ -356,7 +361,7 @@ func buildDangerousAfter(roleKind, roleName, namespace string) string {
 // when the finding's path is empty or the subject is missing: the analyzer
 // always populates both, but defensively we don't crash on a degenerate input.
 func ForPrivescPath(finding models.Finding, snap models.Snapshot) *models.RemediationHint {
-	if !strings.HasPrefix(finding.RuleID, "KUBE-PRIVESC-PATH-") {
+	if !strings.HasPrefix(finding.RuleID, "KUBE-PRIVESC-PATH-") && finding.RuleID != "KUBE-CONFUSED-DEPUTY-001" {
 		return nil
 	}
 	if len(finding.EscalationPath) == 0 || finding.Subject == nil {

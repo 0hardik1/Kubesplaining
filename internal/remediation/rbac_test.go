@@ -285,6 +285,47 @@ func TestForPrivescPathCutsGrantingBinding(t *testing.T) {
 	}
 }
 
+// TestForPrivescPathCoversConfusedDeputy is the regression test for defect (b):
+// KUBE-CONFUSED-DEPUTY-001 findings carry hop-1 binding provenance (deputy.go
+// stamps SourceBinding/SourceRole/BindingNamespace on every operator_reconcile
+// edge), but the RuleID guard only accepted the KUBE-PRIVESC-PATH- prefix, so
+// ForPrivescPath returned nil and these findings got no printed fix at all, even
+// though the cut-resilient pass can tag them privesc:survives-first-cut. The
+// finding must produce a hint cutting hop 1's actual binding, not merely a
+// non-nil hint.
+func TestForPrivescPathCoversConfusedDeputy(t *testing.T) {
+	subject := models.SubjectRef{Kind: "ServiceAccount", Name: "gitops-writer", Namespace: "team"}
+	snap := models.Snapshot{}
+	snap.Resources.RoleBindings = []rbacv1.RoleBinding{{
+		ObjectMeta: metav1.ObjectMeta{Name: "kustomization-writer", Namespace: "team"},
+		RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "kustomization-editor"},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "gitops-writer", Namespace: "team"}},
+	}}
+
+	finding := models.Finding{
+		RuleID:  "KUBE-CONFUSED-DEPUTY-001",
+		Subject: &subject,
+		EscalationPath: []models.EscalationHop{{
+			Step:             1,
+			Action:           "operator_reconcile",
+			SourceBinding:    "kustomization-writer",
+			SourceRole:       "kustomization-editor",
+			BindingNamespace: "team",
+		}},
+	}
+
+	hint := ForPrivescPath(finding, snap)
+	if hint == nil {
+		t.Fatal("ForPrivescPath returned nil for a confused-deputy finding, want a hint")
+	}
+	if !strings.Contains(hint.RBACDiff, "kustomization-writer") {
+		t.Errorf("diff does not name hop 1's binding:\n%s", hint.RBACDiff)
+	}
+	if hint.Patch == nil || !strings.Contains(hint.Patch.Command, "kubectl edit rolebinding kustomization-writer") {
+		t.Errorf("Patch.Command should target the confused-deputy binding, got %+v", hint.Patch)
+	}
+}
+
 // TestForPrivescPathFallsBackWithoutProvenance keeps the synthetic-edge path working:
 // a pod-escape-rooted chain has no binding to name, so the old scan still applies.
 func TestForPrivescPathFallsBackWithoutProvenance(t *testing.T) {
