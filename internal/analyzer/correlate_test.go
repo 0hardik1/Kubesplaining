@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
@@ -221,6 +222,171 @@ func TestDedupeKeepsHighestScoreAndUnionsTags(t *testing.T) {
 		if !slices.Contains(got[0].Tags, want) {
 			t.Errorf("tag %q missing from merged tags: %v", want, got[0].Tags)
 		}
+	}
+}
+
+// TestDedupeStripsSurviveTagWithoutAlternate proves the output invariant that
+// "privesc:survives-first-cut" asserts AlternateEscalationPath is non-empty: a
+// finding that carries the tag without the field is a contradiction, so dedupe
+// strips the tag rather than let it reach the report.
+//
+// This used to be phrased as a repair inside dedupe's collision branch, dropping the
+// tag from a merge survivor that hadn't itself earned it. It is driven here directly,
+// with a single finding and no collision at all, because dedupeKey now keys a
+// chain-bearing finding on its own ID (see dedupeKey), and two privesc findings can
+// never collide with each other again - the merge this test used to exercise cannot
+// happen in production. The fixture carries a non-empty EscalationPath because that
+// is the only shape privesc actually emits; a fixture with AlternateEscalationPath
+// set but EscalationPath empty (the old fixture's shape) cannot occur there.
+func TestDedupeStripsSurviveTagWithoutAlternate(t *testing.T) {
+	subject := &models.SubjectRef{Kind: "ServiceAccount", Namespace: "app", Name: "deployer"}
+	findings := []models.Finding{
+		{
+			ID:             "KUBE-CONFUSED-DEPUTY-001:ServiceAccount/app/deployer:cluster_admin_equivalent",
+			RuleID:         "KUBE-CONFUSED-DEPUTY-001",
+			Score:          8.0,
+			Subject:        subject,
+			Tags:           []string{"module:privesc", "privesc:survives-first-cut"},
+			EscalationPath: []models.EscalationHop{{Step: 1, Action: "operator_reconcile"}},
+			// AlternateEscalationPath deliberately empty: the tag claims a route that
+			// this finding does not itself carry.
+		},
+	}
+
+	got := dedupe(findings)
+
+	if len(got) != 1 {
+		t.Fatalf("want the single finding to pass through unmerged, got %d", len(got))
+	}
+	if slices.Contains(got[0].Tags, "privesc:survives-first-cut") {
+		t.Errorf("finding has no AlternateEscalationPath, so it must not carry privesc:survives-first-cut; got tags %v", got[0].Tags)
+	}
+}
+
+// TestDedupeKeepsSurviveTagWithAlternate is the positive companion: a finding whose
+// AlternateEscalationPath is genuinely non-empty keeps the tag. Without this test,
+// unconditionally stripping the tag in dedupe would also satisfy the negative test
+// above.
+func TestDedupeKeepsSurviveTagWithAlternate(t *testing.T) {
+	subject := &models.SubjectRef{Kind: "ServiceAccount", Namespace: "app", Name: "deployer"}
+	findings := []models.Finding{
+		{
+			ID:                      "KUBE-CONFUSED-DEPUTY-001:ServiceAccount/app/deployer:cluster_admin_equivalent",
+			RuleID:                  "KUBE-CONFUSED-DEPUTY-001",
+			Score:                   8.0,
+			Subject:                 subject,
+			Tags:                    []string{"module:privesc", "privesc:survives-first-cut"},
+			EscalationPath:          []models.EscalationHop{{Step: 1, Action: "operator_reconcile"}},
+			AlternateEscalationPath: []models.EscalationHop{{Step: 1, Action: "bound_to_cluster_admin"}},
+		},
+	}
+
+	got := dedupe(findings)
+
+	if len(got) != 1 {
+		t.Fatalf("want the single finding to pass through unmerged, got %d", len(got))
+	}
+	if !slices.Contains(got[0].Tags, "privesc:survives-first-cut") {
+		t.Errorf("finding carries AlternateEscalationPath, so the tag must survive; got tags %v", got[0].Tags)
+	}
+}
+
+// TestDedupeKeepsDistinctEscalationChainsToDifferentSinks pins the fix for the data
+// loss described in Task 11: a confused-deputy subject reaching several sinks through
+// the same controller produces several findings that share RuleID, Subject, and a nil
+// Resource, which used to be the entire dedupe key. Modeled on the real shape shipped
+// findings had: one ServiceAccount, two of its four sinks, same RuleID, different IDs
+// because the target differs.
+func TestDedupeKeepsDistinctEscalationChainsToDifferentSinks(t *testing.T) {
+	subject := &models.SubjectRef{Kind: "ServiceAccount", Namespace: "deepchain-tenant", Name: "deepchain-deployer"}
+	findings := []models.Finding{
+		{
+			ID:      "KUBE-CONFUSED-DEPUTY-001:ServiceAccount/deepchain-tenant/deepchain-deployer:cluster_admin_equivalent",
+			RuleID:  "KUBE-CONFUSED-DEPUTY-001",
+			Score:   9.0,
+			Subject: subject,
+			Tags:    []string{"module:privesc", "target:cluster_admin_equivalent"},
+			EscalationPath: []models.EscalationHop{
+				{Step: 1, Action: "operator_reconcile"},
+				{Step: 2, Action: "bound_to_cluster_admin"},
+			},
+		},
+		{
+			ID:      "KUBE-CONFUSED-DEPUTY-001:ServiceAccount/deepchain-tenant/deepchain-deployer:node_escape",
+			RuleID:  "KUBE-CONFUSED-DEPUTY-001",
+			Score:   8.6,
+			Subject: subject,
+			Tags:    []string{"module:privesc", "target:node_escape"},
+			EscalationPath: []models.EscalationHop{
+				{Step: 1, Action: "operator_reconcile"},
+				{Step: 2, Action: "pod_host_escape"},
+			},
+		},
+	}
+
+	got := dedupe(findings)
+
+	if len(got) != 2 {
+		t.Fatalf("want both chains to survive as distinct findings, got %d", len(got))
+	}
+	byTarget := map[string]models.Finding{}
+	for _, f := range got {
+		for _, tag := range f.Tags {
+			if strings.HasPrefix(tag, "target:") {
+				byTarget[tag] = f
+			}
+		}
+	}
+	clusterAdmin, ok := byTarget["target:cluster_admin_equivalent"]
+	if !ok {
+		t.Fatalf("cluster_admin_equivalent finding missing from output: %v", got)
+	}
+	nodeEscape, ok := byTarget["target:node_escape"]
+	if !ok {
+		t.Fatalf("node_escape finding missing from output: %v", got)
+	}
+	if len(clusterAdmin.Tags) != 2 || slices.Contains(clusterAdmin.Tags, "target:node_escape") {
+		t.Errorf("cluster_admin_equivalent finding picked up the other finding's target tag: %v", clusterAdmin.Tags)
+	}
+	if len(nodeEscape.Tags) != 2 || slices.Contains(nodeEscape.Tags, "target:cluster_admin_equivalent") {
+		t.Errorf("node_escape finding picked up the other finding's target tag: %v", nodeEscape.Tags)
+	}
+	if clusterAdmin.EscalationPath[len(clusterAdmin.EscalationPath)-1].Action != "bound_to_cluster_admin" {
+		t.Errorf("cluster_admin_equivalent finding lost its own chain: %v", clusterAdmin.EscalationPath)
+	}
+	if nodeEscape.EscalationPath[len(nodeEscape.EscalationPath)-1].Action != "pod_host_escape" {
+		t.Errorf("node_escape finding lost its own chain: %v", nodeEscape.EscalationPath)
+	}
+}
+
+// TestDedupeStillCollapsesGenuineCrossModuleDuplicates is the companion to the test
+// above: two findings with no EscalationPath, sharing RuleID, Subject, and Resource but
+// carrying genuinely different IDs, are a genuine cross-module duplicate and must still
+// collapse via the composite (RuleID, Subject, Resource) key.
+//
+// The two IDs are shaped after the real formats internal/analyzer/rbac (analyzer.go:712,
+// "ruleID:subjectKey:namespace:resourcesCSV", both empty for an OVERBROAD-001-style
+// finding, so it renders with a trailing "::") and internal/analyzer/serviceaccount
+// (analyzer.go:317, "ruleID:subjectKey") actually emit. An earlier version of this
+// fixture gave both findings the identical literal ID, so a mutation that keys every
+// finding on its ID unconditionally - dropping the len(EscalationPath) > 0 guard
+// entirely - merged them too, by coincidence rather than by exercising the composite
+// key, and passed undetected. Distinct, realistically-shaped IDs make that mutation
+// fail here (want 1, got 2) while the intended composite-key path still collapses them.
+func TestDedupeStillCollapsesGenuineCrossModuleDuplicates(t *testing.T) {
+	subject := &models.SubjectRef{Kind: "ServiceAccount", Namespace: "app", Name: "sa"}
+	findings := []models.Finding{
+		{ID: "KUBE-RBAC-OVERBROAD-001:ServiceAccount/app/sa::", RuleID: "KUBE-RBAC-OVERBROAD-001", Score: 6.0, Subject: subject, Tags: []string{"module:rbac"}},
+		{ID: "KUBE-RBAC-OVERBROAD-001:ServiceAccount/app/sa", RuleID: "KUBE-RBAC-OVERBROAD-001", Score: 6.5, Subject: subject, Tags: []string{"module:serviceaccount"}},
+	}
+
+	got := dedupe(findings)
+
+	if len(got) != 1 {
+		t.Fatalf("want genuine cross-module duplicates to collapse to 1, got %d", len(got))
+	}
+	if got[0].Score != 6.5 {
+		t.Errorf("want highest score kept: 6.5, got %v", got[0].Score)
 	}
 }
 

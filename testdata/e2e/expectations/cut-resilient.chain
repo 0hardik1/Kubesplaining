@@ -1,0 +1,65 @@
+# Cut-resilience assertions: <finding-id-prefix> <min-hops> <ordered,hop,actions> [primary|alternate]
+#
+# The *.ruleset goldens prove WHICH rules fire and the other *.chain files prove the
+# graph still chains. These prove something neither can: that a path knows whether the
+# remediation printed alongside it actually closes the route. A regression that dropped
+# alternate-route detection would keep every rule ID identical and pass every other gate.
+#
+# Action note: a direct ClusterRoleBinding to the cluster-admin ClusterRole resolves, via
+# permissions.Aggregate, to an EffectiveRule with verbs/resources/apiGroups all "*". That
+# rule trips the wildcard check in addEdgesForRule before the per-subject loop finishes,
+# so a wildcard_permission edge lands in the graph ahead of the bound_to_cluster_admin
+# edge the direct-ClusterRoleBinding loop adds for the same binding later in BuildGraph.
+# Both edges exist and share the same source binding, but shortest-path BFS reports
+# whichever it inserted first, so the observed hop action below is wildcard_permission,
+# not bound_to_cluster_admin, even though the finding is a plain cluster-admin bind.
+#
+# Shape 1: bound to cluster-admin by two separate ClusterRoleBindings. The primary is a
+# single hop, and cutting its binding leaves the parallel one, so the alternate is also
+# a single hop. This is the case that shows an alternate is not merely a longer detour.
+KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/cutres/cutres-parallel 1 wildcard_permission primary
+KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/cutres/cutres-parallel 1 wildcard_permission alternate
+#
+# Shape 2: a direct binding plus a longer route through the namespace this SA can bind
+# roles in, which co-hosts a cluster-admin-bound identity (cutres-parallel, from shape
+# 1 above). Cutting the direct binding leaves the detour, so the alternate must be
+# strictly deeper than the primary: subject -> (modify_role_binding) -> namespace_admin
+# sink -> (colocated_sa_token_theft) -> cutres-parallel -> (wildcard_permission) ->
+# cluster_admin, the same three-hop shape shard 17 already pins for deepchain-binder.
+KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/cutres/cutres-detour 1 wildcard_permission primary
+KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/cutres/cutres-detour 3 modify_role_binding,colocated_sa_token_theft alternate
+#
+# Shape 3: cutres-doublebind, granted `create pods` by two RoleBindings in two
+# different namespaces (cutres-pods-a, cutres-pods-b). Gives Task 8's
+# addPrivilegedPodCreateEdges fix e2e coverage: shapes 1 and 2 above both route
+# through addEdgesForRule, which Task 8 never touched. Cutting the first binding
+# leaves the second, so primary and alternate are both a single hop, through
+# different bindings in different namespaces.
+KUBE-PRIVESC-PATH-NODE-ESCAPE:ServiceAccount/cutres/cutres-doublebind:node_escape 1 pod_create_privileged_escape primary
+KUBE-PRIVESC-PATH-NODE-ESCAPE:ServiceAccount/cutres/cutres-doublebind:node_escape 1 pod_create_privileged_escape alternate
+#
+# Shape 4: cutres-deputy, the confused-deputy version of shape 3. A self-contained
+# tenant writes a catalogued custom resource (cert-manager Certificates) via two
+# RoleBindings to the same Role, steering its own controller SA (cert-manager,
+# bound directly to cluster-admin). This is the single best end-to-end proof that
+# Task 8 (one operator_reconcile edge per granting binding, applied to the deputy
+# bridge rather than the pod-create builder), Task 10 part (b) (deputy findings
+# get a remediation hint at all), and Task 11 (dedupe keeps the four sink-scoped
+# confused-deputy findings this tenant reaches separate, rather than collapsing
+# them into one and discarding whichever carried the alternate) all connect: all
+# FOUR sinks this tenant reaches through cert-manager come back with their own
+# alternate, not just the two asserted below. Two are pinned, each with BOTH its
+# primary and its alternate: cluster-admin (a different downstream action from
+# node-escape) and node-escape, to show the alternate is not a fluke of one sink.
+#
+# node-escape's primary and alternate share the identical action list. This is not
+# a copy-paste: node_drain_migrate is a synthetic correlation edge with no binding
+# provenance (see CutBreakers in graph.go), so once the chain reaches cert-manager
+# the downstream route is the same regardless of which RoleBinding (cutres-deputy-
+# cert-a or -b) got the subject there. Only hop 1's SourceBinding differs between
+# the two chains; confirmed against a real scan, not assumed from cluster-admin's
+# shape.
+KUBE-CONFUSED-DEPUTY-001:ServiceAccount/cutres-deputy-tenant/cutres-deputy:cluster_admin_equivalent 2 operator_reconcile,wildcard_permission primary
+KUBE-CONFUSED-DEPUTY-001:ServiceAccount/cutres-deputy-tenant/cutres-deputy:cluster_admin_equivalent 2 operator_reconcile,wildcard_permission alternate
+KUBE-CONFUSED-DEPUTY-001:ServiceAccount/cutres-deputy-tenant/cutres-deputy:node_escape 2 operator_reconcile,node_drain_migrate primary
+KUBE-CONFUSED-DEPUTY-001:ServiceAccount/cutres-deputy-tenant/cutres-deputy:node_escape 2 operator_reconcile,node_drain_migrate alternate

@@ -93,6 +93,24 @@ func findingFromPath(path models.EscalationPath) models.Finding {
 		// findings, so keep the namespace in the deterministic finding ID.
 		id = fmt.Sprintf("%s:%s", id, path.TargetNamespace)
 	}
+	if target == models.TargetAWSIAMRole {
+		// Every external AWS IAM role gets its own graph node (cloud_edges.go's
+		// externalAWSIAMNodeID keys on the ARN), but Target and TargetNamespace above
+		// are identical for all of them, so two different roles reached from the same
+		// source would otherwise collide on this ID, exactly like two namespace-admin
+		// sinks would without the suffix three lines above. Distinguish by the ARN
+		// itself rather than the sanitized node ID: it is what an operator greps for,
+		// and it needs no further plumbing, since buildPath already sets the terminal
+		// hop's ToSubject to the external node's Subject (Name = the raw ARN; see
+		// ensureExternalAWSIAMNode). Fall back to TargetID, the sanitized node ID, only
+		// if a path somehow carries no hops, which should not happen since the source
+		// itself is never a sink.
+		suffix := path.TargetID
+		if n := len(path.Hops); n > 0 && path.Hops[n-1].ToSubject.Name != "" {
+			suffix = path.Hops[n-1].ToSubject.Name
+		}
+		id = fmt.Sprintf("%s:%s", id, suffix)
+	}
 	references := make([]string, 0, len(content.LearnMore))
 	for _, ref := range content.LearnMore {
 		references = append(references, ref.URL)
@@ -100,26 +118,40 @@ func findingFromPath(path models.EscalationPath) models.Finding {
 
 	subject := path.Source
 	tags := []string{"module:privesc", "target:" + string(target)}
+	remediation := content.Remediation
+	if len(path.AlternateHops) > 0 {
+		// The recommended fix cuts hop 1's binding, and this path reaches the same
+		// sink without it. Tagged so report, exclusions, and CI consumers can filter
+		// on it without parsing the chain. SARIF surfaces this tag next to
+		// Remediation prose in the same Properties object, so without naming the
+		// evaluated cut here too, a reader can misattribute the tag to whichever
+		// hop hopsRemediation happened to recommend instead. CSV carries no tag
+		// column at all, so this sentence is the only signal a CSV reader has
+		// that an alternate route exists in the first place.
+		tags = append(tags, "privesc:survives-first-cut")
+		remediation += alternateCutNote(path.Hops)
+	}
 	finding := models.Finding{
-		ID:               id,
-		RuleID:           ruleID,
-		Severity:         severity,
-		Score:            score,
-		Category:         category,
-		Title:            content.Title,
-		Description:      content.Description,
-		Subject:          &subject,
-		Scope:            content.Scope,
-		Impact:           content.Impact,
-		AttackScenario:   content.AttackScenario,
-		Evidence:         evidence,
-		Remediation:      content.Remediation,
-		RemediationSteps: content.RemediationSteps,
-		References:       references,
-		LearnMore:        content.LearnMore,
-		MitreTechniques:  content.MitreTechniques,
-		EscalationPath:   path.Hops,
-		Tags:             tags,
+		ID:                      id,
+		RuleID:                  ruleID,
+		Severity:                severity,
+		Score:                   score,
+		Category:                category,
+		Title:                   content.Title,
+		Description:             content.Description,
+		Subject:                 &subject,
+		Scope:                   content.Scope,
+		Impact:                  content.Impact,
+		AttackScenario:          content.AttackScenario,
+		Evidence:                evidence,
+		Remediation:             remediation,
+		RemediationSteps:        content.RemediationSteps,
+		References:              references,
+		LearnMore:               content.LearnMore,
+		MitreTechniques:         content.MitreTechniques,
+		EscalationPath:          path.Hops,
+		AlternateEscalationPath: path.AlternateHops,
+		Tags:                    tags,
 	}
 	if target == models.TargetNamespaceAdmin && path.TargetNamespace != "" {
 		// Anchor the finding to the namespace it compromises so the report's resource column,

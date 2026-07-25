@@ -3,6 +3,7 @@ package privesc
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
@@ -617,5 +618,271 @@ func TestDifficultyScoringKeepsEasyChainsCritical(t *testing.T) {
 	severity, _, _ := targetScoring(models.TargetClusterAdmin, hops)
 	if severity != models.SeverityCritical {
 		t.Fatalf("a 4-hop all-easy chain to cluster-admin should stay critical, got %s", severity)
+	}
+}
+
+// TestFindingCarriesAlternateAndTag proves the alternate reaches the Finding as an
+// additive field plus a filterable tag, rather than as a second Finding. A second
+// Finding would collide on the engine dedupe key (RuleID, Subject, Resource) and be
+// silently swallowed, since privesc paths to non-namespace sinks carry no Resource.
+func TestFindingCarriesAlternateAndTag(t *testing.T) {
+	path := models.EscalationPath{
+		Source: models.SubjectRef{Kind: "ServiceAccount", Name: "twice", Namespace: "app"},
+		Target: models.TargetClusterAdmin,
+		Hops: []models.EscalationHop{
+			{Step: 1, Action: "bound_to_cluster_admin", SourceBinding: "admin-a"},
+		},
+		AlternateHops: []models.EscalationHop{
+			{Step: 1, Action: "bound_to_cluster_admin", SourceBinding: "admin-b"},
+		},
+	}
+
+	finding := findingFromPath(path)
+
+	if len(finding.AlternateEscalationPath) != 1 {
+		t.Fatalf("want 1 alternate hop on the finding, got %d", len(finding.AlternateEscalationPath))
+	}
+	if finding.AlternateEscalationPath[0].SourceBinding != "admin-b" {
+		t.Errorf("alternate binding = %q, want admin-b", finding.AlternateEscalationPath[0].SourceBinding)
+	}
+	var tagged bool
+	for _, tag := range finding.Tags {
+		if tag == "privesc:survives-first-cut" {
+			tagged = true
+		}
+	}
+	if !tagged {
+		t.Errorf("want the privesc:survives-first-cut tag, got %v", finding.Tags)
+	}
+}
+
+// TestFindingWithoutAlternateIsUntagged keeps the common case clean: no alternate
+// means no field and no tag, so existing JSON output is byte-identical.
+func TestFindingWithoutAlternateIsUntagged(t *testing.T) {
+	path := models.EscalationPath{
+		Source: models.SubjectRef{Kind: "ServiceAccount", Name: "once", Namespace: "app"},
+		Target: models.TargetClusterAdmin,
+		Hops:   []models.EscalationHop{{Step: 1, Action: "bound_to_cluster_admin", SourceBinding: "only"}},
+	}
+
+	finding := findingFromPath(path)
+
+	if len(finding.AlternateEscalationPath) != 0 {
+		t.Errorf("want no alternate, got %d hops", len(finding.AlternateEscalationPath))
+	}
+	for _, tag := range finding.Tags {
+		if tag == "privesc:survives-first-cut" {
+			t.Errorf("finding without an alternate must not carry the tag: %v", finding.Tags)
+		}
+	}
+}
+
+// TestFindingRemediationNamesEvaluatedCutWhenAlternateExists is the regression
+// test for defect (c): CSV and SARIF consumers see only Finding.Remediation and
+// Finding.Tags, with nothing saying which cut "privesc:survives-first-cut" is
+// about. hopsRemediation often recommends a different, cheaper mid-chain hop, so
+// without this sentence a reader can misattribute the tag to that hop instead of
+// to the hop-1 binding cut the alternate pass actually evaluated.
+func TestFindingRemediationNamesEvaluatedCutWhenAlternateExists(t *testing.T) {
+	path := models.EscalationPath{
+		Source: models.SubjectRef{Kind: "ServiceAccount", Name: "twice", Namespace: "app"},
+		Target: models.TargetClusterAdmin,
+		Hops: []models.EscalationHop{
+			{Step: 1, Action: "bound_to_cluster_admin", SourceBinding: "admin-a", Permission: "cluster-admin"},
+		},
+		AlternateHops: []models.EscalationHop{
+			{Step: 1, Action: "bound_to_cluster_admin", SourceBinding: "admin-b", Permission: "cluster-admin"},
+		},
+	}
+
+	finding := findingFromPath(path)
+
+	if !strings.Contains(finding.Remediation, "admin-a") {
+		t.Errorf("Remediation should name hop 1's binding (admin-a), the one the alternate pass actually cut: %q", finding.Remediation)
+	}
+	if !strings.Contains(finding.Remediation, "survives") {
+		t.Errorf("Remediation should note that a route survives the evaluated cut: %q", finding.Remediation)
+	}
+}
+
+// TestFindingRemediationUnchangedWithoutAlternate proves the common case (no
+// alternate) keeps today's Remediation prose byte-for-byte, per the brief's
+// smallest-fix constraint.
+func TestFindingRemediationUnchangedWithoutAlternate(t *testing.T) {
+	hops := []models.EscalationHop{{Step: 1, Action: "bound_to_cluster_admin", SourceBinding: "only", Permission: "cluster-admin"}}
+	path := models.EscalationPath{
+		Source: models.SubjectRef{Kind: "ServiceAccount", Name: "once", Namespace: "app"},
+		Target: models.TargetClusterAdmin,
+		Hops:   hops,
+	}
+
+	finding := findingFromPath(path)
+	want := contentClusterAdminPath(path.Source, hops).Remediation
+	if finding.Remediation != want {
+		t.Errorf("Remediation changed for a finding without an alternate:\ngot:  %q\nwant: %q", finding.Remediation, want)
+	}
+}
+
+// TestFindingFromPathSuffixesAWSIAMRoleIDByARN is the direct regression test for
+// defect (b): findingFromPath must not collapse two different AWS IAM roles into
+// one finding ID. Target and TargetNamespace are identical for every IAM role path
+// (the enum is always aws_iam_role, the namespace is always empty), so without a
+// per-role suffix the ID built from ruleID:sourceKey:target alone is byte-identical
+// for both roles below.
+//
+// The suffix comes from the terminal hop's ToSubject.Name (the raw ARN), not the
+// sanitized TargetID node ID: buildPath already sets that field to the external
+// node's Subject, whose Name is the ARN, so no further plumbing is needed. This
+// also proves the ARN wins over TargetID when both are available.
+func TestFindingFromPathSuffixesAWSIAMRoleIDByARN(t *testing.T) {
+	source := models.SubjectRef{Kind: "ServiceAccount", Name: "deployer", Namespace: "app"}
+	pathTo := func(arn, targetID string) models.EscalationPath {
+		return models.EscalationPath{
+			Source:   source,
+			Target:   models.TargetAWSIAMRole,
+			TargetID: targetID,
+			Hops: []models.EscalationHop{
+				{Step: 1, Action: "irsa_assume_role", Permission: arn, ToSubject: models.SubjectRef{Kind: "User", Name: arn}},
+			},
+		}
+	}
+
+	roleOneARN := "arn:aws:iam::111111111111:role/RoleOne"
+	roleTwoARN := "arn:aws:iam::222222222222:role/RoleTwo"
+	f1 := findingFromPath(pathTo(roleOneARN, "external:aws-iam:role-one"))
+	f2 := findingFromPath(pathTo(roleTwoARN, "external:aws-iam:role-two"))
+
+	if f1.ID == f2.ID {
+		t.Fatalf("two different IAM roles produced the same finding ID: %q", f1.ID)
+	}
+	if !strings.Contains(f1.ID, roleOneARN) {
+		t.Errorf("f1.ID = %q, want it to contain the ARN %q", f1.ID, roleOneARN)
+	}
+	if !strings.Contains(f2.ID, roleTwoARN) {
+		t.Errorf("f2.ID = %q, want it to contain the ARN %q", f2.ID, roleTwoARN)
+	}
+	if strings.Contains(f1.ID, "external:aws-iam:") {
+		t.Errorf("f1.ID = %q, should prefer the raw ARN over the sanitized TargetID node ID", f1.ID)
+	}
+}
+
+// TestFindingFromPathAWSIAMRoleIDFallsBackToTargetID covers the defensive fallback:
+// a path with no hops (should not happen in practice, since the source is never a
+// sink) still gets a stable, non-colliding suffix from TargetID rather than an
+// empty one.
+func TestFindingFromPathAWSIAMRoleIDFallsBackToTargetID(t *testing.T) {
+	path := models.EscalationPath{
+		Source:   models.SubjectRef{Kind: "ServiceAccount", Name: "deployer", Namespace: "app"},
+		Target:   models.TargetAWSIAMRole,
+		TargetID: "external:aws-iam:role-one",
+	}
+	finding := findingFromPath(path)
+	if !strings.HasSuffix(finding.ID, ":external:aws-iam:role-one") {
+		t.Errorf("finding.ID = %q, want it to end with the TargetID fallback", finding.ID)
+	}
+}
+
+// twoIRSARoleSnapshot builds a fixture where one source (deployer) has `create
+// pods` in a namespace hosting two ServiceAccounts, each carrying a different
+// eks.amazonaws.com/role-arn annotation. deployer reaches both roles via a 2-hop
+// pod-create-then-assume-role chain, so both paths tie on Source, Target
+// (aws_iam_role for both), TargetNamespace (empty for both), and hop count (2 for
+// both): the exact shape behind defect (b).
+func twoIRSARoleSnapshot() models.Snapshot {
+	snapshot := models.Snapshot{Metadata: models.SnapshotMetadata{CloudProvider: "eks"}}
+	snapshot.Resources.Namespaces = []corev1.Namespace{{ObjectMeta: objectMeta("app", "")}}
+	snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+		{ObjectMeta: objectMeta("deployer", "app")},
+		{ObjectMeta: metav1.ObjectMeta{
+			Name: "sa-a", Namespace: "app",
+			Annotations: map[string]string{"eks.amazonaws.com/role-arn": "arn:aws:iam::111111111111:role/RoleOne"},
+		}},
+		{ObjectMeta: metav1.ObjectMeta{
+			Name: "sa-b", Namespace: "app",
+			Annotations: map[string]string{"eks.amazonaws.com/role-arn": "arn:aws:iam::222222222222:role/RoleTwo"},
+		}},
+	}
+	snapshot.Resources.Roles = []rbacv1.Role{
+		{
+			ObjectMeta: objectMeta("pod-creator", "app"),
+			Rules: []rbacv1.PolicyRule{{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"create"},
+			}},
+		},
+	}
+	snapshot.Resources.RoleBindings = []rbacv1.RoleBinding{
+		{
+			ObjectMeta: objectMeta("pod-creator-binding", "app"),
+			RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "pod-creator"},
+			Subjects: []rbacv1.Subject{
+				{Kind: "ServiceAccount", Name: "deployer", Namespace: "app"},
+			},
+		},
+	}
+	return snapshot
+}
+
+// TestAWSIAMRoleFindingIDsDistinguishTwoRoles is the end-to-end regression test for
+// defect (b): a subject that can reach two different AWS IAM roles must produce two
+// distinct findings, not one that silently drops whichever role lost the map
+// iteration race. Cross-reference: this is the same under-specified-key defect Task
+// 11 fixed one layer up, at the engine's dedupe key (see analyzer/correlate.go and
+// its dedupeKey); this is it one layer down, inside privesc's own `seen` map in
+// Analyze.
+//
+// Before the fix both chains produced the byte-identical ID
+// "KUBE-PRIVESC-PATH-AWS-IAM-ROLE:ServiceAccount/app/deployer:aws_iam_role" (Target
+// and TargetNamespace tie because both are the enum aws_iam_role and empty
+// respectively), and Analyze's seen map silently kept whichever sorted first. An
+// out-of-process audit measured a 26/4 split across 30 runs.
+//
+// Asserting len == 2 is not enough: a regression that names the same role twice
+// under two coincidentally different IDs would still pass a bare length check. This
+// asserts both roles are present by name, identically across N runs, since the
+// underlying nondeterminism (ties broken by map iteration order) would otherwise
+// turn a real regression into an intermittent flake instead of a clean failure.
+func TestAWSIAMRoleFindingIDsDistinguishTwoRoles(t *testing.T) {
+	snapshot := twoIRSARoleSnapshot()
+
+	for i := 0; i < 20; i++ {
+		findings, err := New().Analyze(context.Background(), snapshot)
+		if err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+
+		var deployerFindings []models.Finding
+		for _, f := range findings {
+			if f.RuleID != "KUBE-PRIVESC-PATH-AWS-IAM-ROLE" {
+				continue
+			}
+			if f.Subject == nil || f.Subject.Key() != "ServiceAccount/app/deployer" {
+				continue
+			}
+			deployerFindings = append(deployerFindings, f)
+		}
+
+		if len(deployerFindings) != 2 {
+			t.Fatalf("run %d: want 2 deployer AWS IAM role findings, got %d: %+v", i, len(deployerFindings), deployerFindings)
+		}
+
+		ids := map[string]bool{}
+		var sawRoleOne, sawRoleTwo bool
+		for _, f := range deployerFindings {
+			ids[f.ID] = true
+			if strings.Contains(string(f.Evidence), "RoleOne") {
+				sawRoleOne = true
+			}
+			if strings.Contains(string(f.Evidence), "RoleTwo") {
+				sawRoleTwo = true
+			}
+		}
+		if len(ids) != 2 {
+			t.Fatalf("run %d: want 2 distinct finding IDs, got %v", i, ids)
+		}
+		if !sawRoleOne || !sawRoleTwo {
+			t.Fatalf("run %d: want both RoleOne and RoleTwo named, sawRoleOne=%v sawRoleTwo=%v (%+v)", i, sawRoleOne, sawRoleTwo, deployerFindings)
+		}
 	}
 }

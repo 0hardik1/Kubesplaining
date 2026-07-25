@@ -1,4 +1,8 @@
-# Chain-shape assertions: <finding-id-prefix> <min-hops> <ordered,hop,actions>
+# Chain-shape assertions: <finding-id-prefix> <min-hops> <ordered,hop,actions> [primary|alternate]
+#
+# The fourth column selects escalation_path (primary, the default when omitted) or
+# alternate_escalation_path (alternate). Every assertion below predates the alternate
+# column and omits it, so all of them keep reading against the primary path unchanged.
 #
 # The *.ruleset goldens prove WHICH rules fire; these prove the graph still produces
 # real multi-hop chains. Without them a regression that flattened every path to a
@@ -10,7 +14,19 @@
 # The tenant holds no dangerous verb of its own. It reaches cluster-admin only by
 # steering the Flux controller, so this asserts the confused-deputy bridge exists
 # and is genuinely the first hop.
-KUBE-CONFUSED-DEPUTY-001:ServiceAccount/deepchain-tenant/deepchain-deployer 2 operator_reconcile
+#
+# The prefix names the target (:cluster_admin_equivalent) because deepchain-deployer
+# steers the same controller to four separate sinks (Task 11): one finding per sink,
+# all sharing this RuleID and Subject. An unqualified prefix now matches all four,
+# which trips the exactly-one-match check above rather than picking one silently.
+KUBE-CONFUSED-DEPUTY-001:ServiceAccount/deepchain-tenant/deepchain-deployer:cluster_admin_equivalent 2 operator_reconcile
+#
+# The same confused-deputy bridge also reaches node_escape and system_masters
+# through the controller. Before Task 11 these three chains were silently dropped
+# by dedupe (only the cluster-admin finding above survived); pinning them here
+# keeps that data loss from regressing invisibly.
+KUBE-CONFUSED-DEPUTY-001:ServiceAccount/deepchain-tenant/deepchain-deployer:node_escape 2 operator_reconcile,node_drain_migrate
+KUBE-CONFUSED-DEPUTY-001:ServiceAccount/deepchain-tenant/deepchain-deployer:system_masters 3 operator_reconcile,node_drain_migrate,control_plane_pki_theft
 #
 # Namespace-admin must be walked past into the co-located cluster-admin-bound SA.
 KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/deepchain-tenant/deepchain-binder 3 modify_role_binding,colocated_sa_token_theft

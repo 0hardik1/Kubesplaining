@@ -77,3 +77,79 @@ func TestConfusedDeputyRequiresInstalledController(t *testing.T) {
 		}
 	}
 }
+
+// TestConfusedDeputyEmitsBridgePerBinding is the same property for the operator bridge:
+// one subject granted write on a catalogued custom resource by two bindings must produce
+// two operator_reconcile edges, so the cut-resilient pass sees the second binding still
+// steers the controller when the first is cut.
+func TestConfusedDeputyEmitsBridgePerBinding(t *testing.T) {
+	t.Parallel()
+
+	snapshot := models.Snapshot{}
+	snapshot.Resources.Namespaces = []corev1.Namespace{
+		{ObjectMeta: objectMeta("tenant", "")},
+		{ObjectMeta: objectMeta("flux-system", "")},
+	}
+	snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+		{ObjectMeta: objectMeta("kustomize-controller", "flux-system")},
+	}
+	snapshot.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{{
+		ObjectMeta: objectMeta("flux-crb", ""),
+		RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "cluster-admin"},
+		Subjects: []rbacv1.Subject{
+			{Kind: "ServiceAccount", Name: "kustomize-controller", Namespace: "flux-system"},
+		},
+	}}
+	snapshot.Resources.Roles = []rbacv1.Role{
+		{
+			ObjectMeta: objectMeta("gitops-a", "tenant"),
+			Rules: []rbacv1.PolicyRule{{
+				APIGroups: []string{"kustomize.toolkit.fluxcd.io"},
+				Resources: []string{"kustomizations"},
+				Verbs:     []string{"create"},
+			}},
+		},
+		{
+			ObjectMeta: objectMeta("gitops-b", "tenant"),
+			Rules: []rbacv1.PolicyRule{{
+				APIGroups: []string{"kustomize.toolkit.fluxcd.io"},
+				Resources: []string{"kustomizations"},
+				Verbs:     []string{"patch"},
+			}},
+		},
+	}
+	snapshot.Resources.RoleBindings = []rbacv1.RoleBinding{
+		{
+			ObjectMeta: objectMeta("gitops-rb-a", "tenant"),
+			RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "gitops-a"},
+			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "dev-deployer", Namespace: "tenant"}},
+		},
+		{
+			ObjectMeta: objectMeta("gitops-rb-b", "tenant"),
+			RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "gitops-b"},
+			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "dev-deployer", Namespace: "tenant"}},
+		},
+	}
+
+	graph := BuildGraph(snapshot)
+
+	const subjectID = "subject:ServiceAccount/tenant/dev-deployer"
+	const controllerID = "subject:ServiceAccount/flux-system/kustomize-controller"
+	bindings := map[string]bool{}
+	var count int
+	for _, edge := range graph.Edges {
+		if edge.From != subjectID || edge.To != controllerID || edge.Action != "operator_reconcile" {
+			continue
+		}
+		count++
+		bindings[edge.SourceBinding] = true
+	}
+	if count != 2 {
+		t.Fatalf("want 2 operator_reconcile edges, got %d (edges=%+v)", count, graph.Edges)
+	}
+	for _, want := range []string{"gitops-rb-a", "gitops-rb-b"} {
+		if !bindings[want] {
+			t.Errorf("no operator_reconcile edge stamped with binding %q; got %v", want, bindings)
+		}
+	}
+}

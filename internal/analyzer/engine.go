@@ -139,31 +139,47 @@ func (e *Engine) selectModules(opts Options) ([]Module, error) {
 }
 
 // runModulesInParallel fans out each module to its own goroutine, waits for all of them,
-// and returns the merged findings slice. If any module returns an error, only the first
-// one is reported; the other modules' findings still come back so a single misbehaving
+// and returns the merged findings slice concatenated in module order. If any module
+// returns an error, only the first one BY MODULE POSITION is reported (not the first to
+// arrive): errors are collected into the same positional slots as findings and picked up
+// in the same final pass, so a slow module's error can no longer race a fast module's
+// error for firstErr. The other modules' findings still come back so a single misbehaving
 // analyzer can't blank the whole report.
+//
+// Results are written into per-index slots (results[i], errs[i]) rather than appended
+// under a mutex as goroutines complete, because goroutine completion order is not fixed
+// by anything in this function and varies run to run. Concatenating by index after
+// wg.Wait() makes the combined findings slice's order depend only on modules' fixed
+// position in the slice (itself fixed by DefaultModules in modules.go), not on which
+// module happened to finish first. sortFindings's stability then preserves this order
+// for any findings that tie on its comparator keys.
 func runModulesInParallel(ctx context.Context, snapshot models.Snapshot, modules []Module) ([]models.Finding, error) {
-	var (
-		wg       sync.WaitGroup
-		mu       sync.Mutex
-		findings []models.Finding
-		firstErr error
-	)
-	for _, module := range modules {
-		module := module
+	results := make([][]models.Finding, len(modules))
+	errs := make([]error, len(modules))
+
+	var wg sync.WaitGroup
+	for i, module := range modules {
+		i, module := i, module
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			moduleFindings, err := module.Analyze(ctx, snapshot)
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil && firstErr == nil {
-				firstErr = fmt.Errorf("%s: %w", module.Name(), err)
+			results[i] = moduleFindings
+			if err != nil {
+				errs[i] = fmt.Errorf("%s: %w", module.Name(), err)
 			}
-			findings = append(findings, moduleFindings...)
 		}()
 	}
 	wg.Wait()
+
+	var findings []models.Finding
+	var firstErr error
+	for i := range modules {
+		findings = append(findings, results[i]...)
+		if firstErr == nil && errs[i] != nil {
+			firstErr = errs[i]
+		}
+	}
 	return findings, firstErr
 }
 
@@ -207,10 +223,25 @@ func stripRemediationHints(findings []models.Finding) []models.Finding {
 }
 
 // sortFindings sorts in place by severity (descending), then score (descending), then
-// rule ID (ascending), then title (ascending). Stable ordering matters: tests, golden
-// files, and SARIF consumers all depend on the same input yielding the same output.
+// rule ID (ascending), then title (ascending), with Finding.ID (ascending) as a final
+// total tiebreak. Stable ordering matters: tests, golden files, and SARIF consumers all
+// depend on the same input yielding the same output. That guarantee now rests on three
+// things together: runModulesInParallel collects results by module position rather than
+// goroutine completion order, sort.SliceStable (not sort.Slice) preserves that order for
+// anything the four named keys don't distinguish, and the Finding.ID tiebreak below stops
+// remaining ties from resolving by module registration order, an accident of how
+// NewWithConfig happens to list modules in modules.go rather than anything principled.
+// Finding.ID is not guaranteed unique post-dedupe (two findings can share an ID while
+// differing in Resource, and dedupe's key covers both), so the tiebreak alone is not
+// sufficient; positional collection is what covers that residue.
 func sortFindings(findings []models.Finding) {
-	sort.Slice(findings, func(i, j int) bool {
+	// Do not simplify this to sort.Slice. Determinism across runs comes from
+	// runModulesInParallel's positional collection, not from this call; what
+	// SliceStable buys instead is tie order that follows predictably from that
+	// input rather than from sort.Slice's undocumented, no-forward-compatibility-
+	// guaranteed pivot choices. It is also what this function's own doc comment,
+	// CLAUDE.md, and docs/architecture.md already promise.
+	sort.SliceStable(findings, func(i, j int) bool {
 		if findings[i].Severity.Rank() != findings[j].Severity.Rank() {
 			return findings[i].Severity.Rank() > findings[j].Severity.Rank()
 		}
@@ -220,6 +251,9 @@ func sortFindings(findings []models.Finding) {
 		if findings[i].RuleID != findings[j].RuleID {
 			return findings[i].RuleID < findings[j].RuleID
 		}
-		return findings[i].Title < findings[j].Title
+		if findings[i].Title != findings[j].Title {
+			return findings[i].Title < findings[j].Title
+		}
+		return findings[i].ID < findings[j].ID
 	})
 }

@@ -74,6 +74,7 @@ func buildPrivescPaths(findings []models.Finding) PrivescPathsSection {
 				HopCount:  len(f.EscalationPath),
 				Summary:   heroChainSummary(f, sink),
 				Hops:      f.EscalationPath,
+				AltHops:   f.AlternateEscalationPath,
 				RuleID:    f.RuleID,
 				Anchor:    "finding-" + f.RuleID,
 			})

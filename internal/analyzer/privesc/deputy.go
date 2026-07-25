@@ -79,17 +79,29 @@ func addConfusedDeputyEdges(graph *models.EscalationGraph, subject models.Subjec
 			targets = append(targets, permissions.ResourceTarget{Group: entry.group, Resource: resource})
 		}
 
+		// One bridge per distinct granting binding, not one per (subject, controller). See
+		// the matching comment in addPrivilegedPodCreateEdges: two bindings granting the
+		// same write have to appear as two edges, or cutting one wrongly reports the bridge
+		// closed while the other binding still steers the controller.
+		emitted := map[cutKey]bool{}
 		for _, rule := range rules {
 			if !rule.Grants(targets, deputyVerbs...) {
 				continue
 			}
+			key := cutKey{binding: rule.SourceBinding, namespace: rule.Namespace}
+			if emitted[key] {
+				continue
+			}
+			emitted[key] = true
 			addEdge(graph, nodeID(subject), nodeID(controller), &models.EscalationEdge{
-				Technique:   "KUBE-CONFUSED-DEPUTY-001",
-				Action:      "operator_reconcile",
-				Permission:  fmt.Sprintf("write %s.%s", entry.resources[0], entry.group),
-				Description: fmt.Sprintf("can steer %s/%s, which %s", entry.saNamespace, entry.saName, entry.gains),
+				Technique:        "KUBE-CONFUSED-DEPUTY-001",
+				Action:           "operator_reconcile",
+				Permission:       fmt.Sprintf("write %s.%s", entry.resources[0], entry.group),
+				Description:      fmt.Sprintf("can steer %s/%s, which %s", entry.saNamespace, entry.saName, entry.gains),
+				SourceBinding:    rule.SourceBinding,
+				SourceRole:       rule.SourceRole,
+				BindingNamespace: rule.Namespace,
 			})
-			break // one bridge per (subject, controller) is enough
 		}
 	}
 }

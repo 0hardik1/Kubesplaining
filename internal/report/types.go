@@ -484,8 +484,13 @@ type PrivescPathCard struct {
 	HopCount  int
 	Summary   string
 	Hops      []models.EscalationHop
-	RuleID    string
-	Anchor    string
+	// AltHops is a route to the same sink that survives cutting the binding named by
+	// Hops[0]. Empty means no such route was found within the searched depth, which is
+	// not the same as the cut being sufficient: a bounded search cannot establish that.
+	// See models.Finding.AlternateEscalationPath for the other causes of an empty value.
+	AltHops []models.EscalationHop
+	RuleID  string
+	Anchor  string
 }
 
 // htmlReportData is the template input for the HTML dashboard; assembled by BuildHTMLData.
@@ -513,6 +518,11 @@ type htmlReportData struct {
 	// UsageInfo carries the audit-log window summary rendered into the Least
 	// Privilege tab header. nil when no --audit-log was supplied.
 	UsageInfo *UsageInfo
+	// MaxPrivescDepth is the --max-privesc-depth the scan ran with, from
+	// Options.MaxPrivescDepth. Zero hides the search-depth line on the
+	// Privilege-Escalation Paths tab, matching how the field's zero value is a no-op
+	// everywhere upstream of it.
+	MaxPrivescDepth int
 
 	// Modern-dashboard fields — all derived from Findings so any cluster renders.
 	RiskIndex   int

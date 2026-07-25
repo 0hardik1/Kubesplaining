@@ -21,16 +21,6 @@ const (
 	sinkNamespaceAdminPrefix = "sink:namespace_admin:"
 )
 
-// csrAnnotation tags a subject with one of the two halves of the CSR-approval
-// privesc primitive. A subject that accumulates both halves (after every rule
-// has been processed) gets an edge to the system_masters sink in finalizeCSRApprovals.
-type csrAnnotation int
-
-const (
-	csrAnnotationCreate csrAnnotation = 1 << iota
-	csrAnnotationApprove
-)
-
 // nodeID returns the canonical graph-node ID for a subject.
 func nodeID(ref models.SubjectRef) string {
 	return "subject:" + ref.Key()
@@ -52,29 +42,25 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 	subjectsByNs := serviceAccountsByNamespace(snapshot)
 	podSAsByNs := podServiceAccountsByNamespace(snapshot)
 
-	// csrCapabilities accumulates the two CSR-approval halves (create CSRs +
-	// approve at the /approval subresource) per subject. Both verbs across the
-	// subject's effective rules are required before an edge to system_masters is
-	// emitted, so collection runs across the per-rule loop and the finalize step
-	// emits the edge once both halves are present.
-	csrCapabilities := map[string]csrAnnotation{}
-
 	privilegedNamespaces := namespacesAllowingPrivileged(snapshot)
 
 	effective := permissions.Aggregate(snapshot)
 	for _, perms := range effective {
 		ensureSubjectNode(graph, perms.Subject)
 		for _, rule := range perms.Rules {
-			addEdgesForRule(graph, perms.Subject, rule, subjectsByNs, podSAsByNs, csrCapabilities)
+			addEdgesForRule(graph, perms.Subject, rule, subjectsByNs, podSAsByNs)
 		}
 		// Correlation edges that need the subject's full rule set at once
 		// (two RBAC verbs held together), rather than one rule at a time.
 		addSecretMintEdge(graph, perms.Subject, perms.Rules)
 		addNodeMigrateEdge(graph, perms.Subject, perms.Rules)
 		addPrivilegedPodCreateEdges(graph, perms.Subject, perms.Rules, privilegedNamespaces)
+		// Stays last of the per-subject builders: it used to run in a pass after the
+		// whole loop, and BFS breaks ties on the order edges leaving a node were
+		// inserted. Keeping it last preserves which route to system:masters is
+		// reported as primary for a subject that also holds `impersonate groups`.
+		addCSRApprovalEdge(graph, perms.Subject, perms.Rules)
 	}
-
-	finalizeCSRApprovals(graph, csrCapabilities)
 
 	// Runs after the per-subject loop so every namespace-admin sink that any
 	// subject reaches already exists as a node.
@@ -111,6 +97,12 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 				Action:      "bound_to_cluster_admin",
 				Permission:  "cluster-admin",
 				Description: fmt.Sprintf("bound to cluster-admin via %s", binding.Name),
+				// This loop walks ClusterRoleBindings directly and already emits one
+				// edge per binding, so two bindings to cluster-admin produce two
+				// parallel edges. That is exactly the shape the cut-resilient pass
+				// needs to prove that cutting one binding changes nothing.
+				SourceBinding: binding.Name,
+				SourceRole:    binding.RoleRef.Name,
 			})
 		}
 	}
@@ -122,60 +114,30 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 	return graph
 }
 
-// finalizeCSRApprovals emits a csr_approve edge from any subject that holds both
-// halves of the CSR-mint primitive (create on certificatesigningrequests AND
-// update/patch on certificatesigningrequests/approval, both cluster-scoped) to
-// the system_masters sink. The CSR mint primitive is the only one in the model
-// today that requires correlating two separate RBAC rules on the same subject,
-// hence the two-pass build.
-func finalizeCSRApprovals(graph *models.EscalationGraph, caps map[string]csrAnnotation) {
-	const both = csrAnnotationCreate | csrAnnotationApprove
-	for subjectKey, ann := range caps {
-		if ann&both != both {
-			continue
-		}
-		from := "subject:" + subjectKey
-		// Defensive: the subject node may not yet exist if the caller stored an
-		// annotation without first walking effective rules. ensureSubjectNode is
-		// keyed on SubjectRef, so we parse the key back; the graph builder is
-		// the only writer of caps, so this branch is effectively unreachable but
-		// kept simple in case future code paths short-circuit.
-		if _, ok := graph.Nodes[from]; !ok {
-			continue
-		}
-		addEdge(graph, from, sinkSystemMasters, &models.EscalationEdge{
-			Technique:   "KUBE-PRIVESC-011",
-			Action:      "csr_approve",
-			Permission:  "create certificatesigningrequests + update certificatesigningrequests/approval",
-			Description: "can submit a CSR with system:masters in its Subject and self-approve it, minting a kubelet-signed cluster-admin client cert",
-		})
-	}
-}
-
-// annotateSubjectCSR records that subject holds one of the two CSR-approval halves.
-// Stored on a side map (passed in by BuildGraph) because addEdgesForRule sees one
-// rule at a time; the edge is only safe to emit once we've confirmed both halves
-// landed across the subject's full effective rule set.
-func annotateSubjectCSR(caps map[string]csrAnnotation, subject models.SubjectRef, half csrAnnotation) {
-	caps[subject.Key()] |= half
-}
-
 // addEdgesForRule inspects one aggregated RBAC rule and emits the graph edges it enables (to sinks or to impersonable subjects).
-// csrCapabilities accumulates the per-subject CSR-mint halves across rules so finalizeCSRApprovals
-// can emit the csr_approve edge once both halves are present.
 func addEdgesForRule(
 	graph *models.EscalationGraph,
 	subject models.SubjectRef,
 	rule permissions.EffectiveRule,
 	subjectsByNs map[string][]models.SubjectRef,
 	podSAsByNs map[string][]models.SubjectRef,
-	csrCapabilities map[string]csrAnnotation,
 ) {
 	from := nodeID(subject)
 	clusterScope := rule.Namespace == ""
 
-	if hasAll(rule.Verbs, "*") && hasAll(rule.Resources, "*") && hasAll(rule.APIGroups, "*") {
-		addEdge(graph, from, sinkClusterAdmin, &models.EscalationEdge{
+	// add stamps binding provenance from the rule that justified the edge before
+	// delegating to addEdge. Every edge in this function derives from exactly one
+	// aggregated RBAC rule, so provenance is unambiguous here; builders outside this
+	// function stamp it themselves or deliberately leave it empty.
+	add := func(to string, edge *models.EscalationEdge) {
+		edge.SourceBinding = rule.SourceBinding
+		edge.SourceRole = rule.SourceRole
+		edge.BindingNamespace = rule.Namespace
+		addEdge(graph, from, to, edge)
+	}
+
+	if isFullWildcardRule(rule) {
+		add(sinkClusterAdmin, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-017",
 			Action:      "wildcard_permission",
 			Permission:  "*:*:*",
@@ -190,7 +152,7 @@ func addEdgesForRule(
 	// Namespace-scoped grants on `clusterrolebindings` are dead RBAC (clusterrolebindings is a
 	// cluster-scoped resource and the authorizer never allows the verb to succeed via a RoleBinding).
 	if clusterScope && matchesResourceVerb(rule, []string{"rolebindings", "clusterrolebindings"}, []string{"create", "update", "patch"}) {
-		addEdge(graph, from, sinkClusterAdmin, &models.EscalationEdge{
+		add(sinkClusterAdmin, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-010",
 			Action:      "modify_role_binding",
 			Permission:  verbResource(rule, "rolebindings|clusterrolebindings"),
@@ -199,7 +161,7 @@ func addEdgesForRule(
 	}
 	if !clusterScope && matchesResourceVerb(rule, []string{"rolebindings"}, []string{"create", "update", "patch"}) {
 		sink := ensureNamespaceAdminSink(graph, rule.Namespace)
-		addEdge(graph, from, sink, &models.EscalationEdge{
+		add(sink, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-010",
 			Action:      "modify_role_binding",
 			Permission:  verbResource(rule, "rolebindings"),
@@ -211,7 +173,7 @@ func addEdgesForRule(
 	// grants on `roles` let the subject bind any ClusterRole inside the binding's namespace; on
 	// `clusterroles` they're dead RBAC.
 	if clusterScope && matchesResourceVerb(rule, []string{"roles", "clusterroles"}, []string{"bind", "escalate"}) {
-		addEdge(graph, from, sinkClusterAdmin, &models.EscalationEdge{
+		add(sinkClusterAdmin, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-009",
 			Action:      "bind_or_escalate",
 			Permission:  verbResource(rule, "roles|clusterroles"),
@@ -220,7 +182,7 @@ func addEdgesForRule(
 	}
 	if !clusterScope && matchesResourceVerb(rule, []string{"roles"}, []string{"bind", "escalate"}) {
 		sink := ensureNamespaceAdminSink(graph, rule.Namespace)
-		addEdge(graph, from, sink, &models.EscalationEdge{
+		add(sink, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-009",
 			Action:      "bind_or_escalate",
 			Permission:  verbResource(rule, "roles"),
@@ -232,7 +194,7 @@ func addEdgesForRule(
 	// granting these verbs is dead RBAC (the authorizer never lets it succeed). Only emit the
 	// cluster-admin edge for cluster-scoped grants.
 	if clusterScope && matchesResourceVerb(rule, []string{"users", "groups"}, []string{"impersonate"}) {
-		addEdge(graph, from, sinkClusterAdmin, &models.EscalationEdge{
+		add(sinkClusterAdmin, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-008",
 			Action:      "impersonate",
 			Permission:  verbResource(rule, "users|groups"),
@@ -241,7 +203,7 @@ func addEdgesForRule(
 	}
 
 	if clusterScope && matchesResourceVerb(rule, []string{"groups"}, []string{"impersonate"}) {
-		addEdge(graph, from, sinkSystemMasters, &models.EscalationEdge{
+		add(sinkSystemMasters, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-008",
 			Action:      "impersonate_system_masters",
 			Permission:  verbResource(rule, "groups"),
@@ -255,7 +217,7 @@ func addEdgesForRule(
 	// can still surface a real path if one of those SAs reaches a sink.
 	if matchesResourceVerb(rule, []string{"serviceaccounts"}, []string{"impersonate"}) {
 		if clusterScope {
-			addEdge(graph, from, sinkClusterAdmin, &models.EscalationEdge{
+			add(sinkClusterAdmin, &models.EscalationEdge{
 				Technique:   "KUBE-PRIVESC-008",
 				Action:      "impersonate",
 				Permission:  verbResource(rule, "serviceaccounts"),
@@ -267,7 +229,7 @@ func addEdgesForRule(
 					continue
 				}
 				ensureSubjectNode(graph, target)
-				addEdge(graph, from, nodeID(target), &models.EscalationEdge{
+				add(nodeID(target), &models.EscalationEdge{
 					Technique:   "KUBE-PRIVESC-008",
 					Action:      "impersonate_serviceaccount",
 					Permission:  verbResource(rule, "serviceaccounts"),
@@ -295,7 +257,7 @@ func addEdgesForRule(
 			if matchesResourceVerb(rule, []string{"secrets"}, []string{"list", "watch"}) {
 				technique = "KUBE-PRIVESC-005"
 			}
-			addEdge(graph, from, sinkKubeSystemSecrets, &models.EscalationEdge{
+			add(sinkKubeSystemSecrets, &models.EscalationEdge{
 				Technique:   technique,
 				Action:      "read_secrets",
 				Permission:  verbResource(rule, "secrets"),
@@ -305,7 +267,7 @@ func addEdgesForRule(
 	}
 
 	if matchesResourceVerb(rule, []string{"nodes/proxy"}, []string{"get"}) {
-		addEdge(graph, from, sinkNodeEscape, &models.EscalationEdge{
+		add(sinkNodeEscape, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-012",
 			Action:      "nodes_proxy",
 			Permission:  "get nodes/proxy",
@@ -320,7 +282,7 @@ func addEdgesForRule(
 				continue
 			}
 			ensureSubjectNode(graph, target)
-			addEdge(graph, from, nodeID(target), &models.EscalationEdge{
+			add(nodeID(target), &models.EscalationEdge{
 				Technique:   "KUBE-PRIVESC-001",
 				Action:      "pod_create_token_theft",
 				Permission:  "create pods",
@@ -336,7 +298,7 @@ func addEdgesForRule(
 				continue
 			}
 			ensureSubjectNode(graph, target)
-			addEdge(graph, from, nodeID(target), &models.EscalationEdge{
+			add(nodeID(target), &models.EscalationEdge{
 				Technique:   "KUBE-PRIVESC-004",
 				Action:      "pod_exec",
 				Permission:  verbResource(rule, "pods/exec|pods/attach"),
@@ -352,7 +314,7 @@ func addEdgesForRule(
 				continue
 			}
 			ensureSubjectNode(graph, target)
-			addEdge(graph, from, nodeID(target), &models.EscalationEdge{
+			add(nodeID(target), &models.EscalationEdge{
 				Technique:   "KUBE-PRIVESC-013",
 				Action:      "ephemeral_container_inject",
 				Permission:  verbResource(rule, "pods/ephemeralcontainers"),
@@ -368,7 +330,7 @@ func addEdgesForRule(
 				continue
 			}
 			ensureSubjectNode(graph, target)
-			addEdge(graph, from, nodeID(target), &models.EscalationEdge{
+			add(nodeID(target), &models.EscalationEdge{
 				Technique:   "KUBE-PRIVESC-014",
 				Action:      "token_request",
 				Permission:  "create serviceaccounts/token",
@@ -378,7 +340,7 @@ func addEdgesForRule(
 	}
 
 	if clusterScope && matchesResourceVerb(rule, []string{"serviceaccounts/token"}, []string{"create"}) {
-		addEdge(graph, from, sinkTokenMint, &models.EscalationEdge{
+		add(sinkTokenMint, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-014",
 			Action:      "mint_arbitrary_token",
 			Permission:  "create serviceaccounts/token (cluster-wide)",
@@ -386,23 +348,9 @@ func addEdgesForRule(
 		})
 	}
 
-	// CSR approval → system:masters. A subject that can both `create
-	// certificatesigningrequests` AND `update certificatesigningrequests/approval`
-	// can issue a client cert whose Subject carries `O=system:masters` (or any
-	// principal it chooses) and authenticate as cluster-admin. CSRs are cluster-
-	// scoped, so this edge requires cluster-scoped grants for both verbs.
-	//
-	// We need to see both verbs across the same subject's effective rules, but
-	// addEdgesForRule sees one rule at a time. The simplest correct treatment is
-	// to emit a candidate edge whenever EITHER verb is held cluster-scoped, then
-	// drop the candidate in a graph-wide pass if the other verb is missing. That
-	// pass lives in BuildGraph after every rule has been processed.
-	if clusterScope && matchesResourceVerb(rule, []string{"certificatesigningrequests"}, []string{"create"}) {
-		annotateSubjectCSR(csrCapabilities, subject, csrAnnotationCreate)
-	}
-	if clusterScope && matchesResourceVerb(rule, []string{"certificatesigningrequests/approval"}, []string{"update", "patch"}) {
-		annotateSubjectCSR(csrCapabilities, subject, csrAnnotationApprove)
-	}
+	// CSR approval to system:masters needs both halves of a two-rule correlation, so
+	// it cannot be decided one rule at a time. It lives in addCSRApprovalEdge,
+	// alongside the other correlation builders.
 }
 
 // addNamespaceAdminTokenTheftEdges links each namespace-admin sink onward to every
@@ -441,20 +389,32 @@ func addNamespaceAdminTokenTheftEdges(graph *models.EscalationGraph, subjectsByN
 // a token for any ServiceAccount. We model only the cluster-scoped (mint-any)
 // case in the graph (-> sinkTokenMint); narrower namespaced create+get still
 // surfaces as the standalone KUBE-PRIVESC-007 rbac finding.
+//
+// This edge deliberately carries no SourceBinding: the two halves (create, get) can
+// come from two different bindings, so no single binding name would be correct as
+// "the" grantor of the whole edge. That is a different question from what a cut
+// would BREAK, though: whenever a half has exactly one grantor, cutting that one
+// binding un-grants the half, and the correlation no longer holds no matter what
+// the other half still has. CutBreakers records that binding for each half with a
+// sole grantor, so the cut-resilient pass can correctly ban this edge when the cut
+// removes a capability it depends on. A half held by two or more bindings
+// contributes nothing, because cutting one of them leaves the others granting it
+// and the half survives.
 func addSecretMintEdge(graph *models.EscalationGraph, subject models.SubjectRef, rules []permissions.EffectiveRule) {
-	hasCreate, hasGet := false, false
+	createBy, getBy := map[cutKey]bool{}, map[cutKey]bool{}
 	for _, r := range rules {
 		if r.Namespace != "" {
 			continue
 		}
+		key := cutKey{binding: r.SourceBinding, namespace: r.Namespace}
 		if matchesResourceVerb(r, []string{"secrets"}, []string{"create"}) {
-			hasCreate = true
+			createBy[key] = true
 		}
 		if matchesResourceVerb(r, []string{"secrets"}, []string{"get"}) {
-			hasGet = true
+			getBy[key] = true
 		}
 	}
-	if !hasCreate || !hasGet {
+	if len(createBy) == 0 || len(getBy) == 0 {
 		return
 	}
 	ensureSubjectNode(graph, subject)
@@ -463,6 +423,7 @@ func addSecretMintEdge(graph *models.EscalationGraph, subject models.SubjectRef,
 		Action:      "secret_mint_token",
 		Permission:  "create + get secrets (cluster-wide)",
 		Description: "can create a legacy ServiceAccount-token Secret and read the minted token for any ServiceAccount",
+		CutBreakers: cutBreakers(createBy, getBy),
 	})
 }
 
@@ -470,21 +431,32 @@ func addSecretMintEdge(graph *models.EscalationGraph, subject models.SubjectRef,
 // `delete pods` AND manipulate node scheduling cluster-wide (`update`/`patch`
 // on nodes/status, or `delete nodes`) can evict sensitive pods and steer their
 // reschedule onto an attacker-controlled node, then steal their tokens.
+//
+// This edge deliberately carries no SourceBinding: the two halves (delete pods,
+// node manipulation) can come from two different bindings, so no single binding
+// name would be correct as "the" grantor of the whole edge. That is a different
+// question from what a cut would BREAK, though: whenever a half has exactly one
+// grantor, cutting that one binding un-grants the half, and the correlation no
+// longer holds no matter what the other half still has. CutBreakers records that
+// binding for each half with a sole grantor, so the cut-resilient pass can
+// correctly ban this edge when the cut removes a capability it depends on. A half
+// held by two or more bindings contributes nothing, because cutting one of them
+// leaves the others granting it and the half survives.
 func addNodeMigrateEdge(graph *models.EscalationGraph, subject models.SubjectRef, rules []permissions.EffectiveRule) {
-	hasDeletePods, hasNodeManip := false, false
+	deleteBy, manipBy := map[cutKey]bool{}, map[cutKey]bool{}
 	for _, r := range rules {
 		if matchesResourceVerb(r, []string{"pods"}, []string{"delete"}) {
-			hasDeletePods = true
+			deleteBy[cutKey{binding: r.SourceBinding, namespace: r.Namespace}] = true
 		}
 		if r.Namespace != "" {
 			continue
 		}
 		if matchesResourceVerb(r, []string{"nodes/status"}, []string{"update", "patch"}) ||
 			matchesResourceVerb(r, []string{"nodes"}, []string{"delete"}) {
-			hasNodeManip = true
+			manipBy[cutKey{binding: r.SourceBinding, namespace: r.Namespace}] = true
 		}
 	}
-	if !hasDeletePods || !hasNodeManip {
+	if len(deleteBy) == 0 || len(manipBy) == 0 {
 		return
 	}
 	ensureSubjectNode(graph, subject)
@@ -493,7 +465,101 @@ func addNodeMigrateEdge(graph *models.EscalationGraph, subject models.SubjectRef
 		Action:      "node_drain_migrate",
 		Permission:  "delete pods + node scheduling control",
 		Description: "can migrate sensitive pods onto an attacker-controlled node via eviction + node manipulation",
+		CutBreakers: cutBreakers(deleteBy, manipBy),
 	})
+}
+
+// addCSRApprovalEdge emits the KUBE-PRIVESC-011 edge: a subject that holds BOTH
+// cluster-scoped `create certificatesigningrequests` and cluster-scoped `update` or
+// `patch` on `certificatesigningrequests/approval` can submit a CSR whose Subject
+// carries `O=system:masters` (or any principal it chooses), approve its own request,
+// and authenticate to the apiserver as cluster-admin. CSRs are cluster-scoped, so a
+// namespaced grant of either verb is dead RBAC and is skipped for both halves. Unlike
+// addNodeMigrateEdge, which counts namespaced grants for its `delete pods` half
+// because pods are namespaced, neither CSR half has a namespaced form worth counting.
+//
+// This edge deliberately carries no SourceBinding: the two halves (create, approve)
+// can come from two different bindings, so no single binding name would be correct as
+// "the" grantor of the whole edge. That is a different question from what a cut would
+// BREAK, though: whenever a half has exactly one grantor, cutting that one binding
+// un-grants the half, and the correlation no longer holds no matter what the other
+// half still has. CutBreakers records that binding for each half with a sole grantor,
+// so the cut-resilient pass can correctly ban this edge when the cut removes a
+// capability it depends on. A half held by two or more bindings contributes nothing,
+// because cutting one of them leaves the others granting it and the half survives.
+//
+// Emission and provenance answer two different questions here, which is why this
+// builder tracks them separately rather than mirroring its siblings exactly:
+//
+//   - "Does this half exist?" gates emission, and a full `*/*/*` rule does NOT count.
+//     Such a subject is already reported as cluster-admin in one hop through that same
+//     binding (KUBE-PRIVESC-017), and a second route to system:masters for it would be
+//     noise. This mirrors the wildcard early return in addEdgesForRule, which the CSR
+//     halves used to sit behind, so emission is exactly what it was before.
+//   - "Who grants this half?" feeds cutBreakers, and a `*/*/*` rule DOES count, because
+//     it really does grant the verb. A half granted by both a wildcard binding and a
+//     narrow one therefore has no sole grantor and contributes no breaker: cutting the
+//     narrow binding leaves the wildcard one still granting it, so the route survives.
+//
+// Grantor collection goes through matchesResourceVerb, which honors resourceNames. A
+// `*/*/*` rule pinned to resourceNames grants the approve half (update/patch name an
+// object) but not the create half (create on a top-level resource carries no name at
+// authorization time), so it is recorded as a grantor of one half only. That is
+// deliberate: do not "tidy" it into an unconditional grant of both halves.
+func addCSRApprovalEdge(graph *models.EscalationGraph, subject models.SubjectRef, rules []permissions.EffectiveRule) {
+	createBy, approveBy := map[cutKey]bool{}, map[cutKey]bool{}
+	// Narrow means "granted by something other than a full `*/*/*` rule". Emission
+	// requires both halves to be held narrowly; the maps above stay wildcard-inclusive.
+	var createNarrow, approveNarrow bool
+	for _, r := range rules {
+		if r.Namespace != "" {
+			continue
+		}
+		key := cutKey{binding: r.SourceBinding, namespace: r.Namespace}
+		if matchesResourceVerb(r, []string{"certificatesigningrequests"}, []string{"create"}) {
+			createBy[key] = true
+			createNarrow = createNarrow || !isFullWildcardRule(r)
+		}
+		if matchesResourceVerb(r, []string{"certificatesigningrequests/approval"}, []string{"update", "patch"}) {
+			approveBy[key] = true
+			approveNarrow = approveNarrow || !isFullWildcardRule(r)
+		}
+	}
+	if !createNarrow || !approveNarrow {
+		return
+	}
+	ensureSubjectNode(graph, subject)
+	addEdge(graph, nodeID(subject), sinkSystemMasters, &models.EscalationEdge{
+		Technique:   "KUBE-PRIVESC-011",
+		Action:      "csr_approve",
+		Permission:  "create certificatesigningrequests + update certificatesigningrequests/approval",
+		Description: "can submit a CSR with system:masters in its Subject and self-approve it, minting a kubelet-signed cluster-admin client cert",
+		CutBreakers: cutBreakers(createBy, approveBy),
+	})
+}
+
+// cutBreakers computes, for each half of a two-rule correlation edge, the binding
+// that would break it if the subject were cut from it: the half's SOLE grantor. A
+// half granted by zero or several distinct bindings contributes nothing, because
+// cutting one of several still leaves the others granting it and the correlation
+// still holds. Shared by addSecretMintEdge, addNodeMigrateEdge and addCSRApprovalEdge,
+// the three builders that correlate two RBAC rules rather than deriving from a single one.
+func cutBreakers(halves ...map[cutKey]bool) []models.BindingRef {
+	var breakers []models.BindingRef
+	seen := map[cutKey]bool{}
+	for _, half := range halves {
+		if len(half) != 1 {
+			continue
+		}
+		for key := range half {
+			if key.binding == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			breakers = append(breakers, models.BindingRef{Name: key.binding, Namespace: key.namespace})
+		}
+	}
+	return breakers
 }
 
 // addPrivilegedPodCreateEdges emits the KUBE-PRIVESC-002 edge: a subject that
@@ -501,24 +567,37 @@ func addNodeMigrateEdge(graph *models.EscalationGraph, subject models.SubjectRef
 // not block privileged pods can launch a privileged pod and escape to the node.
 // Full wildcards are already cluster-admin (-017), so they are skipped.
 func addPrivilegedPodCreateEdges(graph *models.EscalationGraph, subject models.SubjectRef, rules []permissions.EffectiveRule, privilegedNamespaces map[string]bool) {
+	// One edge per distinct granting binding, not one per subject. The cut-resilient pass
+	// models removing this subject from a single binding, so two bindings granting the
+	// same capability have to appear as two edges: collapsed into one, cutting it reports
+	// the route closed while the other binding still opens it. Keyed on cutKey so the
+	// builder and the cut agree on binding identity by construction.
+	emitted := map[cutKey]bool{}
 	for _, r := range rules {
 		if !matchesResourceVerb(r, []string{"pods"}, []string{"create"}) {
 			continue
 		}
-		if hasAll(r.Verbs, "*") && hasAll(r.Resources, "*") && hasAll(r.APIGroups, "*") {
+		if isFullWildcardRule(r) {
 			continue
 		}
 		if !podCreateAllowsPrivileged(r.Namespace == "", r.Namespace, privilegedNamespaces) {
 			continue
 		}
+		key := cutKey{binding: r.SourceBinding, namespace: r.Namespace}
+		if emitted[key] {
+			continue
+		}
+		emitted[key] = true
 		ensureSubjectNode(graph, subject)
 		addEdge(graph, nodeID(subject), sinkNodeEscape, &models.EscalationEdge{
-			Technique:   "KUBE-PRIVESC-002",
-			Action:      "pod_create_privileged_escape",
-			Permission:  "create pods (Pod Security Admission does not block privileged)",
-			Description: "can create a privileged pod that escapes to the node",
+			Technique:        "KUBE-PRIVESC-002",
+			Action:           "pod_create_privileged_escape",
+			Permission:       "create pods (Pod Security Admission does not block privileged)",
+			Description:      "can create a privileged pod that escapes to the node",
+			SourceBinding:    r.SourceBinding,
+			SourceRole:       r.SourceRole,
+			BindingNamespace: r.Namespace,
 		})
-		return // one node-escape edge per subject is sufficient
 	}
 }
 
@@ -830,12 +909,27 @@ func addEdge(graph *models.EscalationGraph, from, to string, edge *models.Escala
 	graph.Edges = append(graph.Edges, edge)
 }
 
-// podCreateTargets returns the candidate service accounts a subject can mount by creating pods: all SAs when cluster-scoped, or namespace-local otherwise.
+// podCreateTargets returns the candidate service accounts a subject can mount by
+// creating pods: all SAs when cluster-scoped, or namespace-local otherwise.
+//
+// The cluster-scope branch flattens subjectsByNs in namespace-key sorted order,
+// not by ranging the map directly. BFS walks graph.Edges in the order edges were
+// appended (buildAdjacency preserves insertion order, and bfsToSinks walks
+// adj[node] in it), so this order decides which of several equal-length chains a
+// finding reports whenever two candidate targets tie. The values inside each
+// namespace slice already come from iterating snapshot.Resources.ServiceAccounts,
+// itself a stable slice, so sorting only the outer namespace keys is enough to make
+// the whole flattened order deterministic.
 func podCreateTargets(clusterScope bool, namespace string, subjectsByNs map[string][]models.SubjectRef) []models.SubjectRef {
 	if clusterScope {
+		namespaces := make([]string, 0, len(subjectsByNs))
+		for ns := range subjectsByNs {
+			namespaces = append(namespaces, ns)
+		}
+		sort.Strings(namespaces)
 		var all []models.SubjectRef
-		for _, refs := range subjectsByNs {
-			all = append(all, refs...)
+		for _, ns := range namespaces {
+			all = append(all, subjectsByNs[ns]...)
 		}
 		return all
 	}
@@ -925,6 +1019,20 @@ func matchesResourceVerb(rule permissions.EffectiveRule, resources, verbs []stri
 		targets = append(targets, permissions.ResourceTarget{Group: resourceAPIGroup[r], Resource: r})
 	}
 	return rule.Grants(targets, verbs...)
+}
+
+// isFullWildcardRule reports whether a rule is the `*/*/*` shape: a literal "*" on
+// each of verbs, resources and API groups. A holder of such a rule is already
+// cluster-admin, so the graph models it with the single KUBE-PRIVESC-017 edge rather
+// than re-deriving every technique the wildcard happens to cover.
+//
+// Only those three axes are consulted. resourceNames and nonResourceURLs are
+// deliberately ignored: folding them in would change which rules count as wildcards
+// and therefore which subjects the suppression applies to. The check is also per
+// rule, never per subject: one wildcard rule must not silence the narrow rules a
+// subject holds alongside it.
+func isFullWildcardRule(rule permissions.EffectiveRule) bool {
+	return hasAll(rule.Verbs, "*") && hasAll(rule.Resources, "*") && hasAll(rule.APIGroups, "*")
 }
 
 // hasAll reports whether every expected value is present in values (or values contains a wildcard).

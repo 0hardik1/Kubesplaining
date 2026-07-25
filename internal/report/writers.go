@@ -259,6 +259,24 @@ func writeHTMLWithOptions(path string, snapshot models.Snapshot, findings []mode
 		"escalationPathHTML": func(hops []models.EscalationHop) template.HTML {
 			return renderEscalationPath(hops)
 		},
+		// alternatePathHTML renders Finding.AlternateEscalationPath: a route to the same
+		// sink that survives cutting the binding the remediation hint recommends removing.
+		// Returns "" for empty input so the template gate suppresses the whole block. Empty
+		// does not mean the recommended fix is sufficient: it means no surviving route was
+		// found within the search depth. See AlternateEscalationPath's doc comment for the
+		// other causes an empty result can have.
+		//
+		// primary is the finding's own EscalationPath, passed so the lead-in can name the
+		// binding the cut pass actually evaluated. Every call site has it in scope.
+		"alternatePathHTML": func(alt, primary []models.EscalationHop) template.HTML {
+			return renderEscalationPathVariant(alt, "alternate", alternateCutBinding(primary))
+		},
+		// alternateSummaryLabel is the <summary> line for the collapsed alternate block. It
+		// names the evaluated cut instead of asserting that "this fix" fails, because the
+		// fix under Remediation is often broader than the cut that was simulated.
+		"alternateSummaryLabel": func(alt, primary []models.EscalationHop) template.HTML {
+			return alternateSummaryHTML(alt, primary)
+		},
 		// findingEducationHTML returns a "Background" block of glossary/technique
 		// definitions tailored to the finding (subject kind, resource kind, technique).
 		// Returns "" when no entries apply, gating the wrapper.
@@ -301,6 +319,7 @@ func writeHTMLWithOptions(path string, snapshot models.Snapshot, findings []mode
 	data.DefaultTab = opts.DefaultTab
 	data.UsageInfo = opts.UsageInfo
 	data.LeastPrivilegeOnly = opts.LeastPrivilegeOnly
+	data.MaxPrivescDepth = opts.MaxPrivescDepth
 
 	if err := tmpl.Execute(file, data); err != nil {
 		return fmt.Errorf("render html report: %w", err)

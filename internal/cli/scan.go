@@ -172,6 +172,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 				DefaultTab:         defaultTabFor(leastPrivilegeOnly),
 				LeastPrivilegeOnly: leastPrivilegeOnly,
 				UsageInfo:          report.UsageInfoFrom(usageIdx),
+				MaxPrivescDepth:    maxPrivescDepth,
 			}
 
 			written, err := report.WriteWithOptions(outputDir, outputFormats, snapshot, findings, result.Admission, truncation, reportOpts)

@@ -36,10 +36,19 @@ type Finding struct {
 	LearnMore        []Reference      `json:"learn_more,omitempty"`       // structured references (Title + URL)
 	MitreTechniques  []MitreTechnique `json:"mitre_techniques,omitempty"` // ATT&CK technique IDs for Containers / Kubernetes
 	EscalationPath   []EscalationHop  `json:"escalation_path,omitempty"`  // populated by the privesc module
-	Frameworks       []FrameworkRef   `json:"frameworks,omitempty"`       // compliance/hardening controls this rule maps to (CIS, NSA, …); populated post-analysis from the static mapping table
-	Excluded         bool             `json:"excluded"`                   // set post-analysis by the exclusions matcher
-	ExclusionReason  string           `json:"exclusion_reason,omitempty"`
-	Tags             []string         `json:"tags,omitempty"` // free-form labels like "module:rbac", "check:wildcardVerbs"
+	// AlternateEscalationPath is a route to the same sink that survives the binding cut
+	// this finding's RemediationHint recommends. Non-empty means the printed fix is not
+	// sufficient on its own, and the finding also carries the tag
+	// "privesc:survives-first-cut". Empty (the common case) means one of three things:
+	// no such route exists within the searched depth; the chain is synthetic-rooted so
+	// no binding cut was modeled; or a surviving route exists but is longer than the
+	// configured search depth (--max-privesc-depth, default 5), since the alternate
+	// search runs on the same depth bound as the primary search that found this path.
+	AlternateEscalationPath []EscalationHop `json:"alternate_escalation_path,omitempty"`
+	Frameworks              []FrameworkRef  `json:"frameworks,omitempty"` // compliance/hardening controls this rule maps to (CIS, NSA, …); populated post-analysis from the static mapping table
+	Excluded                bool            `json:"excluded"`             // set post-analysis by the exclusions matcher
+	ExclusionReason         string          `json:"exclusion_reason,omitempty"`
+	Tags                    []string        `json:"tags,omitempty"` // free-form labels like "module:rbac", "check:wildcardVerbs"
 	// RemediationHint is the structured fix payload: a kubectl patch and / or equivalent
 	// Kyverno / Gatekeeper policies and / or a minimal RBAC diff. Optional and additive —
 	// nil means the analyzer hasn't supplied a structured fix yet, in which case JSON
@@ -310,4 +319,10 @@ type EscalationHop struct {
 	ToSubject   SubjectRef `json:"to_subject"`
 	Permission  string     `json:"permission"` // RBAC permission or condition that enables the hop
 	Gains       string     `json:"gains"`      // human-readable description of what the attacker obtained
+	// SourceBinding, SourceRole, and BindingNamespace are carried through from the
+	// enabling edge so remediation can cut the right binding without re-walking the
+	// graph. See EscalationEdge for the semantics, including what an empty value means.
+	SourceBinding    string `json:"source_binding,omitempty"`
+	SourceRole       string `json:"source_role,omitempty"`
+	BindingNamespace string `json:"binding_namespace,omitempty"`
 }

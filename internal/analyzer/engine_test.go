@@ -3,6 +3,7 @@ package analyzer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -171,6 +172,34 @@ func TestEngineSurfacesFirstModuleError(t *testing.T) {
 	}
 }
 
+// TestEngineFirstErrIsPositionalNotArrivalOrder pins the deliberate behavior change
+// in runModulesInParallel made alongside Task 15's ordering fix: firstErr now means
+// "the first error by module position" (fixed by the modules slice the Engine was
+// built with), not "the first error to arrive", which was a goroutine-completion
+// race before. With two modules that both fail, the lower-indexed module's error
+// must win regardless of which module's goroutine happens to finish first.
+//
+// Asserted in both registration orders so the test cannot pass by accident of
+// which module a race happens to favor, and run repeatedly so an implementation
+// that is still race-dependent doesn't get lucky on a single call.
+func TestEngineFirstErrIsPositionalNotArrivalOrder(t *testing.T) {
+	a := &stubModule{name: "a", err: errors.New("a-broke")}
+	b := &stubModule{name: "b", err: errors.New("b-broke")}
+
+	for i := 0; i < 50; i++ {
+		_, err := analyze(t, engineWith(a, b), Options{})
+		if err == nil || !strings.Contains(err.Error(), "a-broke") {
+			t.Fatalf("run %d: modules registered [a, b]: want a's error (lowest index) to win, got %v", i, err)
+		}
+	}
+	for i := 0; i < 50; i++ {
+		_, err := analyze(t, engineWith(b, a), Options{})
+		if err == nil || !strings.Contains(err.Error(), "b-broke") {
+			t.Fatalf("run %d: modules registered [b, a]: want b's error (lowest index) to win, got %v", i, err)
+		}
+	}
+}
+
 func TestEngineDedupesAcrossModulesAndKeepsHigherScore(t *testing.T) {
 	t.Parallel()
 
@@ -277,5 +306,164 @@ func TestNewReturnsNonNilEngine(t *testing.T) {
 	t.Parallel()
 	if New() == nil {
 		t.Fatal("New() returned nil")
+	}
+}
+
+// tiedFinding builds a finding that ties with every other tiedFinding on all four of
+// sortFindings' named keys (Severity, Score, RuleID, Title), differing only by id (and by
+// Subject, so dedupe's (RuleID, SubjectKey, ResourceKey) key keeps all of them distinct
+// findings instead of collapsing them). This is deliberately the same shape as the
+// engine-wide bug found while verifying Task 12: KUBE-CLOUD-IMDS-PIVOT-001 (a non-privesc,
+// generic-titled rule) produced many findings with identical severity/score/rule-ID/title
+// that differed only by Resource, and those ties were the ones that reordered between runs.
+func tiedFinding(id string) models.Finding {
+	return models.Finding{
+		ID:       id,
+		RuleID:   "TIE-RULE-001",
+		Title:    "Same generic title for every tied finding",
+		Severity: models.SeverityHigh,
+		Score:    7.0,
+		Subject:  &models.SubjectRef{Kind: "ServiceAccount", Name: id},
+	}
+}
+
+// TestEngineFindingOrderIsDeterministicAcrossRuns is the regression test for the
+// engine-wide ordering defect: runModulesInParallel used to append module results under a
+// mutex in goroutine completion order (not fixed by anything in the code), and sortFindings
+// used sort.Slice, which Go documents as unstable, so findings tying on every one of the
+// four comparator keys kept whatever relative order that race left them in.
+//
+// The fixture needs at least two tied findings from at least two different modules, or a
+// two-module race might happen to resolve the same way often enough (or the tie might not
+// even reach the comparator's tie branch) to pass vacuously. 15 modules, each contributing
+// one tied finding, reliably reproduces the divergence pre-fix: an empirical probe run
+// against the unfixed code diverged on 19 of 20 calls in one process. Fewer modules make the
+// goroutine race less likely to actually interleave differently within a single test run.
+func TestEngineFindingOrderIsDeterministicAcrossRuns(t *testing.T) {
+	const n = 15
+	mods := make([]Module, 0, n)
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("tie-%02d", i)
+		mods = append(mods, &stubModule{name: fmt.Sprintf("mod-%02d", i), findings: []models.Finding{tiedFinding(id)}})
+	}
+	e := engineWith(mods...)
+
+	var baseline []models.Finding
+	for i := 0; i < 20; i++ {
+		got, err := analyze(t, e, Options{})
+		if err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+		if baseline == nil {
+			if len(got) != n {
+				t.Fatalf("fixture premise: want %d tied findings, got %d", n, len(got))
+			}
+			baseline = got
+			continue
+		}
+		if len(got) != len(baseline) {
+			t.Fatalf("run %d: finding count changed, got %d want %d", i, len(got), len(baseline))
+		}
+		for j := range baseline {
+			if got[j].ID != baseline[j].ID {
+				t.Fatalf("run %d: order diverged at index %d: got %q, want %q\n got:  %v\n want: %v",
+					i, j, got[j].ID, baseline[j].ID, findingIDs(got), findingIDs(baseline))
+			}
+		}
+	}
+}
+
+// findingIDs projects a finding slice to its IDs for compact failure messages.
+func findingIDs(findings []models.Finding) []string {
+	ids := make([]string, len(findings))
+	for i, f := range findings {
+		ids[i] = f.ID
+	}
+	return ids
+}
+
+// TestEngineTieBreaksByFindingIDRegardlessOfModuleOrder isolates part (c) of the fix (the
+// Finding.ID tiebreak) from parts (a) and (b). With module-positional collection and a
+// stable sort alone, two tied findings from two DISTINCT modules already sort consistently
+// per run, because their relative order is fixed by which module is registered first in
+// the modules slice passed to the engine - but that is an accident of module registration
+// order, not a principled tiebreak, and would silently flip if DefaultModules in
+// modules.go were ever reordered. This test builds the same two engines with the two
+// modules in opposite registration order and asserts both produce the SAME finding order,
+// proving the tiebreak is Finding.ID and not "whichever module the engine happened to list
+// first".
+func TestEngineTieBreaksByFindingIDRegardlessOfModuleOrder(t *testing.T) {
+	a := &stubModule{name: "a", findings: []models.Finding{tiedFinding("tie-a")}}
+	b := &stubModule{name: "b", findings: []models.Finding{tiedFinding("tie-b")}}
+
+	forward, err := analyze(t, engineWith(a, b), Options{})
+	if err != nil {
+		t.Fatalf("forward order: %v", err)
+	}
+	reversed, err := analyze(t, engineWith(b, a), Options{})
+	if err != nil {
+		t.Fatalf("reversed module order: %v", err)
+	}
+
+	want := []string{"tie-a", "tie-b"}
+	if got := findingIDs(forward); got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("modules registered [a, b]: got order %v, want %v", got, want)
+	}
+	if got := findingIDs(reversed); got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("modules registered [b, a]: got order %v, want %v (order should not depend on registration order)", got, want)
+	}
+}
+
+// TestEngineFindingOrderDeterministicWhenFindingIDsCollide isolates part (a)
+// (module-positional collection) from part (c) (the Finding.ID tiebreak): it proves
+// (a) is independently necessary, not merely redundant with (c).
+//
+// Finding.ID is not guaranteed unique post-dedupe: dedupe's key is (RuleID, SubjectKey,
+// ResourceKey), so two findings sharing an ID but differing in Resource have different
+// dedupe keys and both survive (see dedupeKey in correlate.go). When that happens, every
+// key sortFindings compares, including the ID tiebreak, ties, so (c) cannot disambiguate
+// them and only module-positional order does. This fixture builds exactly that shape: 15
+// findings sharing one Finding.ID, differing only by Resource, from 15 different modules.
+func TestEngineFindingOrderDeterministicWhenFindingIDsCollide(t *testing.T) {
+	const n = 15
+	mods := make([]Module, 0, n)
+	for i := 0; i < n; i++ {
+		resourceName := fmt.Sprintf("resource-%02d", i)
+		f := tiedFinding("shared-id")
+		f.Resource = &models.ResourceRef{Kind: "Pod", Name: resourceName}
+		mods = append(mods, &stubModule{name: fmt.Sprintf("mod-%02d", i), findings: []models.Finding{f}})
+	}
+	e := engineWith(mods...)
+
+	resourceNames := func(findings []models.Finding) []string {
+		out := make([]string, len(findings))
+		for i, f := range findings {
+			out[i] = f.Resource.Name
+		}
+		return out
+	}
+
+	var baseline []models.Finding
+	for i := 0; i < 20; i++ {
+		got, err := analyze(t, e, Options{})
+		if err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+		if baseline == nil {
+			if len(got) != n {
+				t.Fatalf("fixture premise: want %d findings sharing one ID, got %d", n, len(got))
+			}
+			baseline = got
+			continue
+		}
+		if len(got) != len(baseline) {
+			t.Fatalf("run %d: finding count changed, got %d want %d", i, len(got), len(baseline))
+		}
+		for j := range baseline {
+			if got[j].Resource.Name != baseline[j].Resource.Name {
+				t.Fatalf("run %d: order diverged at index %d: got %q, want %q\n got:  %v\n want: %v",
+					i, j, got[j].Resource.Name, baseline[j].Resource.Name, resourceNames(got), resourceNames(baseline))
+			}
+		}
 	}
 }

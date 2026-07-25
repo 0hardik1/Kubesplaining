@@ -43,6 +43,13 @@ type EscalationNode struct {
 	TargetNamespace string           `json:"target_namespace,omitempty"` // populated only when Target == TargetNamespaceAdmin to identify which namespace the sink represents
 }
 
+// BindingRef names a (Cluster)RoleBinding. Namespace is empty for ClusterRoleBindings,
+// matching how permissions.Aggregate records it.
+type BindingRef struct {
+	Name      string
+	Namespace string
+}
+
 // EscalationEdge is a directed labeled edge describing how one subject can obtain another subject's identity or reach a sink.
 type EscalationEdge struct {
 	From        string  `json:"from"`
@@ -59,6 +66,26 @@ type EscalationEdge struct {
 	// these rather than penalizing raw hop count, so a long chain of trivial grants
 	// outranks a short chain that needs a race.
 	Difficulty string `json:"difficulty,omitempty"`
+	// SourceBinding, SourceRole, and BindingNamespace record which (Cluster)RoleBinding
+	// and (Cluster)Role granted the RBAC rule that justified this edge. Remediation uses
+	// them to cut the binding that actually enabled the hop rather than the first binding
+	// listing the subject, and path search uses them to model what removing that binding
+	// would do (see pathfinder.go's cut-resilient pass).
+	//
+	// All three are empty for synthetic edges that no single binding grants: pod escapes,
+	// the node-escape continuation, the namespace-admin token-theft fan-out, and cloud
+	// identity edges. An empty BindingNamespace on a populated SourceBinding means a
+	// ClusterRoleBinding, matching how permissions.Aggregate builds the rule.
+	SourceBinding    string `json:"source_binding,omitempty"`
+	SourceRole       string `json:"source_role,omitempty"`
+	BindingNamespace string `json:"binding_namespace,omitempty"`
+	// CutBreakers lists the bindings whose removal from this subject would break this
+	// edge. For an edge derived from one RBAC rule the granting binding is already in
+	// SourceBinding and this stays empty. It is populated for correlation edges that
+	// require two capabilities, where no single binding "granted" the edge but one may
+	// still be the sole grantor of a half, so cutting it closes the route. Graph-internal:
+	// excluded from JSON so no output surface changes.
+	CutBreakers []BindingRef `json:"-"`
 }
 
 // EscalationPath is one source → sink chain returned by path search, with each hop annotated.
@@ -66,5 +93,24 @@ type EscalationPath struct {
 	Source          SubjectRef       `json:"source"`
 	Target          EscalationTarget `json:"target"`
 	TargetNamespace string           `json:"target_namespace,omitempty"` // populated only when Target == TargetNamespaceAdmin
-	Hops            []EscalationHop  `json:"hops"`
+	// TargetID is the graph node ID of the terminal node (see privesc.nodeID /
+	// externalAWSIAMNodeID), unique per node even when several nodes share the same
+	// Target enum and TargetNamespace, as every external AWS IAM role does (each ARN
+	// gets its own node, but Target is always TargetAWSIAMRole and TargetNamespace is
+	// always empty). Without it, two paths to two different IAM roles tie on every
+	// other field FindPaths sorts by, so an unstable sort orders them arbitrarily and
+	// findingFromPath cannot tell them apart when building a finding ID. Not
+	// serialized to any production output surface today (only Hops/AlternateHops
+	// reach Finding.EscalationPath/AlternateEscalationPath), so a plain tag is fine;
+	// this struct's other fields are already tagged despite the same non-surfacing.
+	TargetID string          `json:"target_id,omitempty"`
+	Hops     []EscalationHop `json:"hops"`
+	// AlternateHops is a route to the same Target that survives cutting the binding
+	// named by Hops[0]. Non-empty means the obvious remediation is not sufficient on
+	// its own. Empty means one of three things: no such route exists within the
+	// searched depth; Hops[0] is a synthetic edge with no binding to model cutting; or
+	// a surviving route exists but is longer than the configured search depth
+	// (--max-privesc-depth, default 5), since the alternate search runs on the same
+	// depth bound as the primary search that found this path.
+	AlternateHops []EscalationHop `json:"alternate_hops,omitempty"`
 }

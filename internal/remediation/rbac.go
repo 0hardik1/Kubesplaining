@@ -332,30 +332,51 @@ func buildDangerousAfter(roleKind, roleName, namespace string) string {
 }
 
 // ForPrivescPath returns the structured remediation for a KUBE-PRIVESC-PATH-*
-// finding. The fix is the *smallest* edit that breaks the escalation chain;
+// finding, or a KUBE-CONFUSED-DEPUTY-001 finding. Both are graph-path findings
+// built by the privesc analyzer's findingFromPath: confused-deputy chains are
+// a technique overlay on the same EscalationPath shape (a first hop with
+// binding provenance, an operator-reconcile bridge, then whatever the
+// controller itself reaches), so the same first-hop-binding-cut logic applies
+// unchanged. The fix is the *smallest* edit that breaks the escalation chain;
 // the algorithm picks the first hop (the closest one to the subject) because
 // it's the one the operator has the most control over: it lives in their
 // configuration, not the cluster's built-in identity layer.
 //
 // Two shapes of fix exist:
 //
-//  1. If the first hop names a binding we can identify (we look up the binding
-//     by the hop's Permission or by scanning the snapshot for a binding that
-//     carries the subject), we emit a unified diff of the binding with the
-//     subject removed from `subjects:`. This is the cheapest cut because the
-//     binding may still be useful for *other* subjects.
+//  1. If the first hop names a binding we can identify by its own provenance
+//     (SourceBinding / BindingNamespace), we emit a unified diff of the
+//     binding with the subject removed from `subjects:`. This is the
+//     cheapest cut because the binding may still be useful for *other*
+//     subjects.
 //
-//  2. If we can't pin down the binding (synthetic edges like pod_host_escape
-//     don't trace back to a single binding), we fall back to a generic
-//     advisory diff: the subject is annotated with a comment explaining that
-//     the chain comes from a workload-level permission, not an RBAC grant.
+//  2. Otherwise, we fall back to an advisory diff: a comment-only block naming
+//     where the mitigation lives. Three different situations land here and
+//     privescPathAdvisoryDiff tells them apart from the hop alone: a synthetic
+//     workload edge (pod_host_escape and friends), a correlation edge that needs
+//     two RBAC grants at once, and the degenerate case where hop 1 DOES name a
+//     binding that is absent from the snapshot. The third must not be described
+//     as having no binding: the finding's own prose names that binding, and a
+//     hint denying it exists sends the reader hunting a contradiction.
+//
+// We deliberately never fall back to scanning the snapshot for some other
+// binding that merely lists the subject. An earlier version did exactly
+// that, and it could name a binding the chain never used: the cut-resilient
+// pass (pathfinder.go's edgeCut / alternatesForSource) only ever simulates
+// removing the binding named by a hop's own provenance, so any other binding
+// we might print was never evaluated. A hop with no provenance describes a
+// workload-level primitive (e.g. pod_host_escape from a privileged hostPath
+// pod); an unrelated RBAC binding that happens to list the same subject has
+// no bearing on that primitive, and printing a confident diff against it
+// tells the operator a fix closes the chain when it does nothing of the
+// kind.
 //
 // Either way the Command is a `kubectl edit` invocation against the
 // candidate object so the operator can hand-apply the change. Returns nil
 // when the finding's path is empty or the subject is missing: the analyzer
 // always populates both, but defensively we don't crash on a degenerate input.
 func ForPrivescPath(finding models.Finding, snap models.Snapshot) *models.RemediationHint {
-	if !strings.HasPrefix(finding.RuleID, "KUBE-PRIVESC-PATH-") {
+	if !strings.HasPrefix(finding.RuleID, "KUBE-PRIVESC-PATH-") && finding.RuleID != "KUBE-CONFUSED-DEPUTY-001" {
 		return nil
 	}
 	if len(finding.EscalationPath) == 0 || finding.Subject == nil {
@@ -364,14 +385,17 @@ func ForPrivescPath(finding models.Finding, snap models.Snapshot) *models.Remedi
 	subject := *finding.Subject
 	firstHop := finding.EscalationPath[0]
 
-	if binding := findBindingForSubject(snap, subject); binding != nil {
+	// Cut only the binding hop 1's own provenance names: it is the only cut the
+	// cut-resilient pass ever simulated for this chain.
+	if binding := findBindingByName(snap, firstHop.SourceBinding, firstHop.BindingNamespace); binding != nil {
 		return remediationDropSubjectFromBinding(*binding, subject, firstHop)
 	}
 
-	// Fallback when no enumerable binding carries the subject: emit a generic
-	// advisory diff that explains the chain stems from a pod-escape or
-	// synthetic edge that doesn't have a single binding to cut. We still set
-	// the Command so the report has something actionable.
+	// No binding provenance (synthetic or correlation edge), or the named binding
+	// is absent from the snapshot: emit an advisory diff that names where the
+	// mitigation lives. Patch stays nil in all three cases, because there is no
+	// object in the snapshot to patch and a half-correct kubectl invocation is
+	// worse than none.
 	return &models.RemediationHint{
 		RBACDiff: privescPathAdvisoryDiff(subject, firstHop),
 	}
@@ -421,27 +445,18 @@ type bindingRef struct {
 	BindingObject any
 }
 
-// findBindingForSubject scans the snapshot for the (Cluster)RoleBinding whose
-// subject list includes the given subject. We don't try to use the hop's
-// Permission to disambiguate among multiple matching bindings: the user-visible
-// fix is "drop this subject from any binding that grants the dangerous verb",
-// and the first match is good enough for the hint.
-//
-// Returns nil when no binding lists the subject. That happens when the chain
-// is rooted at a synthetic edge (pod_host_escape, token_mint via SA token
-// API) rather than an explicit binding: the ForPrivescPath caller falls back
-// to the advisory diff in that case.
-func findBindingForSubject(snap models.Snapshot, subject models.SubjectRef) *bindingRef {
-	// Walk ClusterRoleBindings first: they're shorter (cluster-scoped subjects
-	// usually accumulate here) and the deterministic order keeps test goldens
-	// stable.
-	bindings := collectBindings(snap)
-	for _, b := range bindings {
-		for _, s := range b.Subjects {
-			if subjectsMatch(s, subject, b.Namespace) {
-				out := b
-				return &out
-			}
+// findBindingByName returns the binding a hop's provenance names. Namespace is
+// empty for ClusterRoleBindings, matching how permissions.Aggregate records it,
+// so the (kind, name) pair is unambiguous. Returns nil when the snapshot has no
+// such binding, which happens on a partial snapshot where the collector could not
+// list one of the two binding kinds.
+func findBindingByName(snap models.Snapshot, name, namespace string) *bindingRef {
+	if name == "" {
+		return nil
+	}
+	for _, b := range collectBindings(snap) {
+		if b.Name == name && b.Namespace == namespace {
+			return &b
 		}
 	}
 	return nil
@@ -593,20 +608,72 @@ func renderBindingYAML(b bindingRef, subjects []rbacv1.Subject) string {
 	return sb.String()
 }
 
+// correlationRootedActions are the hop actions emitted by the privesc graph's
+// correlation edges: edges that fire only when a subject holds TWO separate RBAC
+// grants at once, so no single (Cluster)RoleBinding grants the edge and there is
+// nothing for ForPrivescPath to cut. They land in the advisory branch for the same
+// reason pod-escape edges do (no binding provenance) but for a completely different
+// underlying cause, which is why the advisory copy branches on this set.
+//
+// One entry per builder in internal/analyzer/privesc/graph.go: addSecretMintEdge,
+// addNodeMigrateEdge and addCSRApprovalEdge, the three that call cutBreakers. A
+// fourth correlation edge added there needs an entry here, or its advisory copy will
+// send the operator to the workload layer for a purely RBAC problem.
+var correlationRootedActions = map[string]bool{
+	"secret_mint_token":  true,
+	"node_drain_migrate": true,
+	"csr_approve":        true,
+}
+
 // privescPathAdvisoryDiff is the fallback we emit when ForPrivescPath can't
 // pin the chain to a single binding. The "before" block is the subject as the
 // chain represents it; the "after" block is the same with an inline comment
-// saying the operator needs to look at workload security (pod hostPath, host
-// PID, SA-token mint) rather than RBAC because the chain doesn't terminate in
-// a binding. This is rare in practice: most chains pass through a binding
-// somewhere: but we'd rather emit an explanatory comment than nothing.
+// naming where the mitigation lives. This is rare in practice: most chains pass
+// through a binding somewhere: but we'd rather emit an explanatory comment than
+// nothing.
+//
+// Three causes reach here and they need different advice, told apart from the hop
+// alone. A synthetic edge (pod escape, IMDS pivot) really is a workload-layer
+// problem: no RBAC change closes it. A correlation edge is pure RBAC, and telling
+// its operator to remove hostPath or revoke `serviceaccounts/token` create is
+// advice that does not apply to their finding: for node_drain_migrate, say, the
+// enabler is `delete pods` plus node manipulation, both RBAC grants. And a hop that
+// names a binding the snapshot does not contain is not a chain without a binding at
+// all: the cut is known, only the object is missing, and the finding's own prose
+// (privesc's alternateCutNote) names that binding, so a hint claiming no binding
+// exists contradicts it.
 func privescPathAdvisoryDiff(subject models.SubjectRef, firstHop models.EscalationHop) string {
-	from := fmt.Sprintf("# Subject\n# kind: %s\n# name: %s\n# namespace: %s\n# first-hop action: %s\n",
+	header := fmt.Sprintf("# Subject\n# kind: %s\n# name: %s\n# namespace: %s\n# first-hop action: %s\n",
 		subject.Kind, subject.Name, subject.Namespace, firstHop.Action)
-	to := fmt.Sprintf("# Subject\n# kind: %s\n# name: %s\n# namespace: %s\n# first-hop action: %s\n# NOTE: this chain starts at a synthetic edge (pod escape, token mint,\n# or similar) that does not map to a single (Cluster)RoleBinding. Mitigation\n# is at the workload layer: remove hostPath / hostPID / hostNetwork on the\n# offending pod or revoke `serviceaccounts/token` create on the role that\n# enables the mint.\n",
-		subject.Kind, subject.Name, subject.Namespace, firstHop.Action)
+
+	note := "# NOTE: this chain starts at a synthetic edge (pod escape, token mint,\n# or similar) that does not map to a single (Cluster)RoleBinding. Mitigation\n# is at the workload layer: remove hostPath / hostPID / hostNetwork on the\n# offending pod or revoke `serviceaccounts/token` create on the role that\n# enables the mint.\n"
+	switch {
+	case firstHop.SourceBinding != "":
+		// Reached only when ForPrivescPath's findBindingByName missed, which means a
+		// partial snapshot (one binding kind could not be listed, see the collector's
+		// PermissionsMissing) or an object deleted between collection and analysis.
+		// The recommended cut is unchanged and still correct; only the diff of it is
+		// unavailable, so say that instead of inventing a cause.
+		scope := "ClusterRoleBinding"
+		if firstHop.BindingNamespace != "" {
+			scope = fmt.Sprintf("RoleBinding in namespace %s", firstHop.BindingNamespace)
+		}
+		note = fmt.Sprintf("# NOTE: hop 1 is granted by the `%s` binding (%s), which is not in this\n# snapshot: either the collection was partial (see collection warnings) or the\n# object changed between collection and analysis. The fix is unchanged: remove\n# this subject from that binding. Re-run against a complete snapshot to get the\n# exact diff.\n",
+			firstHop.SourceBinding, scope)
+	case correlationRootedActions[firstHop.Action]:
+		// Permission names both halves ("delete pods + node scheduling control").
+		// Every correlation builder sets it, but the copy still has to read as a
+		// sentence if one ever does not.
+		halves := "see the first hop's permission"
+		if firstHop.Permission != "" {
+			halves = firstHop.Permission
+		}
+		note = fmt.Sprintf("# NOTE: this chain starts at a correlation edge: two RBAC grants that are\n# only dangerous held together (%s), so no single\n# (Cluster)RoleBinding grants it and there is nothing here to cut. Mitigation\n# is RBAC, not workload configuration: revoke EITHER half from this subject.\n# One is enough, since the edge needs both.\n",
+			halves)
+	}
+
 	path := "subject-" + sanitisePath(subject.Key())
-	return unifiedDiff(path, path, from, to)
+	return unifiedDiff(path, path, header, header+note)
 }
 
 // buildKubectlEditCommand returns the canonical `kubectl edit <role>` line so

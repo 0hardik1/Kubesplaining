@@ -256,6 +256,18 @@ for f in "${ROOT_DIR}/testdata/e2e/expectations/"*.expect; do
 done
 shopt -u nullglob
 
+# Non-vacuity: these three expectation gates (*.expect here, *.deny and *.chain
+# below) are all driven by a nullglob'd wildcard, so a renamed directory, a moved
+# fixture, or a file emptied during a rebase yields an empty work list and a green
+# gate that asserted nothing. Each therefore states its own minimum. The two rule
+# lists are guarded separately because they route against different scans: the
+# cloud-eks list against the minimal-preset output, everything else against the
+# standard-preset one, so a total-only guard would let either side vanish silently.
+if (( ${#STD_RULES[@]} == 0 || ${#CLOUD_RULES[@]} == 0 )); then
+  echo "expectation gate collected no rule IDs (std=${#STD_RULES[@]}, cloud=${#CLOUD_RULES[@]}): the *.expect files under testdata/e2e/expectations/ are missing or empty, so this gate would pass vacuously" >&2
+  exit 1
+fi
+
 missing=()
 for rule in "${STD_RULES[@]}"; do
   if ! rg -q "\"rule_id\":\s*\"${rule}\"" "${ROOT_DIR}/.tmp/e2e-report-full/findings.json"; then
@@ -326,6 +338,10 @@ for f in "${ROOT_DIR}/testdata/e2e/expectations/"*.deny; do
   collect_rules "${f}" DENY_RULES
 done
 shopt -u nullglob
+if (( ${#DENY_RULES[@]} == 0 )); then
+  echo "deny gate collected no guards: the *.deny files under testdata/e2e/expectations/ are missing or empty, so this gate would pass vacuously" >&2
+  exit 1
+fi
 deny_violations=()
 for deny in "${DENY_RULES[@]}"; do
   while IFS= read -r hit; do
@@ -343,27 +359,54 @@ ok "no deny-guard violations (${#DENY_RULES[@]} guards checked)"
 step "Verifying escalation-chain shape"
 # Each *.chain file asserts that a finding exists AND that its escalation chain is
 # still deep and correctly ordered. Format, one assertion per non-comment line:
-#   <finding-id-prefix> <min-hop-count> <ordered,comma,separated,actions>
+#   <finding-id-prefix> <min-hop-count> <ordered,comma,separated,actions> [primary|alternate]
+# The fourth column selects which chain to check: primary reads escalation_path and is
+# the default when the column is omitted, so every pre-existing assertion reads
+# unchanged; alternate reads alternate_escalation_path, the route that survives the
+# recommended fix's binding cut (present only on findings tagged privesc:survives-first-cut).
 # The action list must appear as an ordered SUBSEQUENCE of the finding's hop actions,
 # so adding a new intermediate hop does not spuriously fail the gate.
 #
 # This is the gate the rule-ID goldens cannot express: they prove which rules fired,
-# not that the graph still chains. A regression collapsing every path to a single hop
-# keeps the rule-ID set identical and would otherwise pass silently.
+# not that the graph still chains. A regression collapsing every path to a single hop,
+# or collapsing every alternate route back to nothing, keeps the rule-ID set identical
+# and would otherwise pass silently.
 chain_violations=()
 chain_checks=0
 shopt -s nullglob
 for f in "${ROOT_DIR}/testdata/e2e/expectations/"*.chain; do
-  while read -r prefix min_hops actions; do
+  while read -r prefix min_hops actions variant; do
     case "${prefix}" in ''|'#'*) continue ;; esac
     chain_checks=$(( chain_checks + 1 ))
 
-    actual_hops="$(jq -r --arg p "${prefix}" \
-      '[.[] | select(.id == $p or (.id | startswith($p + ":")))] | first | (.escalation_path | length) // 0' \
+    # Fourth column selects which chain to assert against. Omitted means primary, so
+    # every pre-existing assertion reads unchanged.
+    case "${variant}" in
+      ''|primary) path_field="escalation_path" ;;
+      alternate)  path_field="alternate_escalation_path" ;;
+      *) chain_violations+=("${prefix} has unknown variant ${variant}, want primary or alternate"); continue ;;
+    esac
+
+    match_count="$(jq -r --arg p "${prefix}" \
+      '[.[] | select(.id == $p or (.id | startswith($p + ":")))] | length' \
+      "${ROOT_DIR}/.tmp/e2e-report-full/findings.json")"
+    if [[ "${match_count}" != "1" ]]; then
+      chain_violations+=("${prefix} matched ${match_count} findings, want exactly 1 (make the prefix more specific)")
+      continue
+    fi
+
+    actual_hops="$(jq -r --arg p "${prefix}" --arg pf "${path_field}" \
+      '[.[] | select(.id == $p or (.id | startswith($p + ":")))][0] | (.[$pf] | length) // 0' \
       "${ROOT_DIR}/.tmp/e2e-report-full/findings.json")"
 
+    # match_count already proved the finding exists, so a zero-length chain here means
+    # the finding has no path field, not that the finding is missing. Reporting the two
+    # cases identically would be actively misleading for the alternate variant: this is
+    # exactly the shape a regression that collapsed alternate detection back to nothing
+    # would produce, and it would send whoever reads the failure hunting a missing
+    # finding that was never missing.
     if [[ -z "${actual_hops}" || "${actual_hops}" == "null" || "${actual_hops}" == "0" ]]; then
-      chain_violations+=("no finding matching ${prefix}")
+      chain_violations+=("${prefix} exists but has no ${path_field} chain")
       continue
     fi
     if (( actual_hops < min_hops )); then
@@ -371,8 +414,8 @@ for f in "${ROOT_DIR}/testdata/e2e/expectations/"*.chain; do
       continue
     fi
 
-    actual_actions="$(jq -r --arg p "${prefix}" \
-      '[.[] | select(.id == $p or (.id | startswith($p + ":")))] | first | [.escalation_path[].action] | join(",")' \
+    actual_actions="$(jq -r --arg p "${prefix}" --arg pf "${path_field}" \
+      '[.[] | select(.id == $p or (.id | startswith($p + ":")))][0] | [.[$pf][].action] | join(",")' \
       "${ROOT_DIR}/.tmp/e2e-report-full/findings.json")"
 
     # Consume the actual action list left to right, requiring each wanted action to
@@ -393,7 +436,7 @@ for f in "${ROOT_DIR}/testdata/e2e/expectations/"*.chain; do
       chain_violations+=("${prefix} chain [${actual_actions}] missing ordered action ${missing}")
       continue
     fi
-    ok "chain ${prefix}: ${actual_hops} hops [${actual_actions}]"
+    ok "chain ${prefix} (${path_field}): ${actual_hops} hops [${actual_actions}]"
   done < "${f}"
 done
 shopt -u nullglob
@@ -402,7 +445,67 @@ if (( ${#chain_violations[@]} > 0 )); then
   printf '  - %s\n' "${chain_violations[@]}" >&2
   exit 1
 fi
+if (( chain_checks == 0 )); then
+  echo "chain gate ran no assertions: the *.chain files under testdata/e2e/expectations/ are missing or empty, so this gate would pass vacuously" >&2
+  exit 1
+fi
 ok "all ${chain_checks} escalation-chain guards satisfied"
+
+step "Verifying an alternate never starts with the binding its own fix cuts"
+# The whole cut-resilient feature rests on one property, checked here over EVERY
+# finding in the full scan, not just the ones a *.chain line names: for a finding with
+# a non-empty alternate_escalation_path, let P be escalation_path[0] and A be
+# alternate_escalation_path[0]. Then NOT (A.source_binding == P.source_binding AND
+# A.binding_namespace == P.binding_namespace). If A's first hop were granted by the
+# same binding the remediation removes the subject from, the finding would not merely
+# be useless, it would be actively misleading: it tells an operator their fix is
+# insufficient and shows them, as proof, a route the fix itself closes.
+#
+# This is deliberately not a *.chain line. The chain gate above names one finding
+# prefix and pins its shape; this walks the whole findings.json and would catch a
+# regression in a finding nobody thought to write a *.chain assertion for.
+#
+# A.source_binding can legitimately be empty (Task 9's CutBreakers-only correlation
+# edges carry no SourceBinding by design), which is not a violation, just the unstamped
+# case surviving legitimately. Both source_binding and binding_namespace are
+# `omitempty` in the JSON, so an absent field round-trips as jq `null`; the filter
+# below requires BOTH sides' source_binding to be non-null before comparing them, so
+# two absent bindings are never mistaken for a match.
+#
+# ALT_CHECKED therefore counts the COMPARABLE population, not every alternate-bearing
+# finding, and the two are deliberately different numbers. An alternate whose first hop
+# names no binding cannot be compared against the primary's cut binding at all: there is
+# nothing to equal it and nothing to differ from it, so counting it would credit this
+# gate with coverage it does not have. Counting all alternate-bearing findings instead
+# lets a regression that removes every comparable alternate still leave a nonzero count
+# from unstamped ones, pass the guard, compare nothing, and print success. That is
+# precisely the regression this gate exists to catch, so the count must track the
+# comparison.
+ALT_CHECKED="$(jq -r '[.[]
+  | select(((.alternate_escalation_path // []) | length) > 0)
+  | select((.escalation_path[0].source_binding // null) != null
+       and (.alternate_escalation_path[0].source_binding // null) != null)] | length' "${ROOT_DIR}/.tmp/e2e-report-full/findings.json")"
+if [[ "${ALT_CHECKED}" == "0" ]]; then
+  echo "no finding carried an alternate_escalation_path comparable against its primary's cut binding: this gate would pass vacuously, which is worse than not gating at all" >&2
+  exit 1
+fi
+ALT_VIOLATIONS="$(jq -r '
+  .[]
+  | select(((.alternate_escalation_path // []) | length) > 0)
+  | . as $f
+  | ($f.escalation_path[0].source_binding // null) as $p_binding
+  | ($f.escalation_path[0].binding_namespace // "") as $p_ns
+  | ($f.alternate_escalation_path[0].source_binding // null) as $a_binding
+  | ($f.alternate_escalation_path[0].binding_namespace // "") as $a_ns
+  | select($p_binding != null and $a_binding != null and $a_binding == $p_binding and $a_ns == $p_ns)
+  | "\($f.id): alternate hop 1 (\($f.alternate_escalation_path[0].action)) shares binding \($a_binding)/\($a_ns) with primary hop 1 (\($f.escalation_path[0].action))"
+' "${ROOT_DIR}/.tmp/e2e-report-full/findings.json")"
+if [[ -n "${ALT_VIOLATIONS}" ]]; then
+  echo "alternate-escalation-path invariant violations (the recommended fix would not actually close the alternate):" >&2
+  echo "${ALT_VIOLATIONS}" | sed 's/^/  - /' >&2
+  exit 1
+fi
+ok "no alternate reuses its primary's cut binding (${ALT_CHECKED} comparable alternate-bearing findings checked)"
 
 # NOTE: the issue-#48 cluster-admin false-positive guard and the
 # KUBE-ADMISSION-NO-POLICY-ENGINE-001 absence guard now live in
@@ -473,6 +576,34 @@ if ! rg -q '"remediation_hint"' "${ROOT_DIR}/.tmp/e2e-report-remediation/finding
   exit 1
 fi
 ok "remediation hints present under --remediation-patches"
+
+# The check above passes if ANY finding anywhere carries a hint, which would not have
+# caught the defect Task 10 part (b) fixed: ForPrivescPath used to guard on a
+# `KUBE-PRIVESC-PATH-` RuleID prefix and return nil for everything else, so every
+# KUBE-CONFUSED-DEPUTY-001 finding got no hint at all. That fix has unit coverage and,
+# until now, no e2e gate: this asserts it directly. A non-null remediation_hint is not
+# enough on its own, either: ForPrivescPath falls back to a generic advisory diff with
+# no `patch` object when it cannot resolve hop 1's SourceBinding back to a live
+# (Cluster)RoleBinding in the snapshot, so a hint that resolved to nothing would satisfy
+# a bare non-null check. Require the hint to actually NAME a binding: `patch.target.kind`
+# is a (Cluster)RoleBinding and `patch.target.name` is non-empty.
+#
+# Shard 18's cutres-deputy fixture (added by a later task) is load-bearing for this
+# assertion: it is the shape whose deputy findings' hints resolve to a real binding
+# (cutres-deputy-cert-a), alongside shard 17's deepchain-deployer (deepchain-gitops).
+DEPUTY_HINT_COUNT="$(jq -r '
+  [.[] | select(
+    .rule_id == "KUBE-CONFUSED-DEPUTY-001"
+    and .remediation_hint != null
+    and (.remediation_hint.patch.target.kind == "RoleBinding" or .remediation_hint.patch.target.kind == "ClusterRoleBinding")
+    and ((.remediation_hint.patch.target.name // "") != "")
+  )] | length
+' "${ROOT_DIR}/.tmp/e2e-report-remediation/findings.json")"
+if [[ "${DEPUTY_HINT_COUNT}" == "0" ]]; then
+  echo "missing: at least one KUBE-CONFUSED-DEPUTY-001 finding should carry a remediation_hint naming a (Cluster)RoleBinding, not just a non-null hint" >&2
+  exit 1
+fi
+ok "confused-deputy remediation hints name a (Cluster)RoleBinding (${DEPUTY_HINT_COUNT} findings)"
 
 # Confirm the inverse: without the flag, no hints should leak through.
 if rg -q '"remediation_hint"' "${ROOT_DIR}/.tmp/e2e-report-full/findings.json"; then

@@ -515,19 +515,28 @@ External AWS-IAM nodes DO carry outbound return edges to `system_masters` and `c
 (`cloud_edges.go:170,182`), and the pathfinder deliberately continues traversal through external
 sinks. Only **A5(a)** (GKE / AKS unmodeled) is genuinely open.
 
-### O3. A fifth structural limit, still open
+### O3. A fifth structural limit, now addressed for the remediation case
 
 Sections A1-A6 miss one: **path search records only the shortest chain per (source, sink) pair.**
-The global visited prune, the shorter-chain guard, and the one-path-per-pair dedupe together mean
-that once a subject has any 1-hop edge to a sink, every richer route to that same sink is
-invisible. This is why `--max-privesc-depth` is not the binding constraint: building the graph
-over both test snapshots and running the search at depth 5 and depth 10 produces byte-identical
-output. Raising the cap changes nothing until this and the edge topology change.
+Correction to the claim originally made here: three mechanisms did not jointly enforce this. Only
+the global `visited` prune does. The other two named in the original text, a shorter-chain guard
+and a one-path-per-pair `seen` map, were unreachable once the `visited` prune existed and have
+been deleted by the cut-resilient work (see
+[`2026-07-25-cut-resilient-escalation-paths-design.md`](superpowers/specs/2026-07-25-cut-resilient-escalation-paths-design.md)).
+
+That work addresses the limit for the remediation case: a second BFS pass re-runs the search per
+source with the binding behind the first hop banned, and a richer route that survives surfaces as
+`alternate_escalation_path` on the finding, plus the tag `privesc:survives-first-cut`.
+`--max-privesc-depth` still bounds both searches, so an alternate that only exists beyond the
+configured depth stays invisible. The general case (a richer route surfacing regardless of what
+remediation is proposed) remains open; the design doc's "Deferred" section frames the fix as a
+k-visit BFS generalization.
 
 Consequence for the deep-chain work: e2e chains now reach 4 hops and the 3-plus-hop population
 grew from 8 findings to 14, but 5-plus-hop chains will not appear until a subject can reach a
-sink *only* by a long route. Surfacing the instructive longer path alongside the shortest one is
-the next structural change worth making.
+sink *only* by a long route, or via the alternate pass now covering the remediation case.
+Surfacing the instructive longer path alongside the shortest one in the general case is still the
+next structural change worth making.
 
 ### O4. Publicly disclosed since this document was written
 
