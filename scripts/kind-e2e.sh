@@ -431,6 +431,50 @@ if (( ${#chain_violations[@]} > 0 )); then
 fi
 ok "all ${chain_checks} escalation-chain guards satisfied"
 
+step "Verifying an alternate never starts with the binding its own fix cuts"
+# The whole cut-resilient feature rests on one property, checked here over EVERY
+# finding in the full scan, not just the ones a *.chain line names: for a finding with
+# a non-empty alternate_escalation_path, let P be escalation_path[0] and A be
+# alternate_escalation_path[0]. Then NOT (A.source_binding == P.source_binding AND
+# A.binding_namespace == P.binding_namespace). If A's first hop were granted by the
+# same binding the remediation removes the subject from, the finding would not merely
+# be useless, it would be actively misleading: it tells an operator their fix is
+# insufficient and shows them, as proof, a route the fix itself closes.
+#
+# This is deliberately not a *.chain line. The chain gate above names one finding
+# prefix and pins its shape; this walks the whole findings.json and would catch a
+# regression in a finding nobody thought to write a *.chain assertion for. A gate that
+# only ever sees zero alternates would pass vacuously, so ALT_CHECKED must be nonzero.
+#
+# A.source_binding can legitimately be empty (Task 9's CutBreakers-only correlation
+# edges carry no SourceBinding by design), which is not a violation, just the unstamped
+# case surviving legitimately. Both source_binding and binding_namespace are
+# `omitempty` in the JSON, so an absent field round-trips as jq `null`; the filter
+# below requires BOTH sides' source_binding to be non-null before comparing them, so
+# two absent bindings are never mistaken for a match.
+ALT_CHECKED="$(jq -r '[.[] | select(((.alternate_escalation_path // []) | length) > 0)] | length' "${ROOT_DIR}/.tmp/e2e-report-full/findings.json")"
+if [[ "${ALT_CHECKED}" == "0" ]]; then
+  echo "no findings carried an alternate_escalation_path: this gate would pass vacuously, which is worse than not gating at all" >&2
+  exit 1
+fi
+ALT_VIOLATIONS="$(jq -r '
+  .[]
+  | select(((.alternate_escalation_path // []) | length) > 0)
+  | . as $f
+  | ($f.escalation_path[0].source_binding // null) as $p_binding
+  | ($f.escalation_path[0].binding_namespace // "") as $p_ns
+  | ($f.alternate_escalation_path[0].source_binding // null) as $a_binding
+  | ($f.alternate_escalation_path[0].binding_namespace // "") as $a_ns
+  | select($p_binding != null and $a_binding != null and $a_binding == $p_binding and $a_ns == $p_ns)
+  | "\($f.id): alternate hop 1 (\($f.alternate_escalation_path[0].action)) shares binding \($a_binding)/\($a_ns) with primary hop 1 (\($f.escalation_path[0].action))"
+' "${ROOT_DIR}/.tmp/e2e-report-full/findings.json")"
+if [[ -n "${ALT_VIOLATIONS}" ]]; then
+  echo "alternate-escalation-path invariant violations (the recommended fix would not actually close the alternate):" >&2
+  echo "${ALT_VIOLATIONS}" | sed 's/^/  - /' >&2
+  exit 1
+fi
+ok "no alternate reuses its primary's cut binding (${ALT_CHECKED} alternate-bearing findings checked)"
+
 # NOTE: the issue-#48 cluster-admin false-positive guard and the
 # KUBE-ADMISSION-NO-POLICY-ENGINE-001 absence guard now live in
 # testdata/e2e/expectations/baseline.deny and are enforced by the deny-guard

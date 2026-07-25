@@ -220,6 +220,47 @@ func TestSyntheticRootedPathSkipsCutPass(t *testing.T) {
 	}
 }
 
+// buildTwoSinkCutKeyGraph builds the fixture TestAlternatesDeterministicWhenCutKeyCoversTwoSinks
+// pins for determinism, and TestAlternateHopNeverSharesPrimarysCutBinding reuses for its universal
+// invariant sweep: it already contains a same-length parallel-binding alternate (cluster-admin), a
+// longer-detour alternate (kube-system-secrets through mid), a cut that closes its only route
+// (token-mint), and a synthetic-rooted chain the cut pass must skip (other -> node-escape).
+// Extracted to package scope so both tests build the identical graph rather than drifting apart.
+func buildTwoSinkCutKeyGraph() *models.EscalationGraph {
+	graph := &models.EscalationGraph{Nodes: map[string]*models.EscalationNode{}}
+	src := models.SubjectRef{Kind: "ServiceAccount", Name: "src", Namespace: "app"}
+	mid := models.SubjectRef{Kind: "ServiceAccount", Name: "mid", Namespace: "app"}
+	other := models.SubjectRef{Kind: "ServiceAccount", Name: "other", Namespace: "app"}
+	ensureSubjectNode(graph, src)
+	ensureSubjectNode(graph, mid)
+	ensureSubjectNode(graph, other)
+	for _, sink := range []struct {
+		id     string
+		target models.EscalationTarget
+	}{
+		{sinkClusterAdmin, models.TargetClusterAdmin},
+		{sinkKubeSystemSecrets, models.TargetKubeSystemSecrets},
+		{sinkTokenMint, models.TargetTokenMint},
+		{sinkNodeEscape, models.TargetNodeEscape},
+	} {
+		graph.Nodes[sink.id] = &models.EscalationNode{ID: sink.id, IsSink: true, Target: sink.target}
+	}
+
+	// Cut key "bind-a" covers two sinks with different answers.
+	addEdge(graph, nodeID(src), sinkClusterAdmin, bindingEdge("bound_to_cluster_admin", "bind-a"))
+	addEdge(graph, nodeID(src), sinkClusterAdmin, bindingEdge("bound_to_cluster_admin", "bind-a2"))
+	addEdge(graph, nodeID(src), sinkKubeSystemSecrets, bindingEdge("read_secrets", "bind-a"))
+	addEdge(graph, nodeID(src), nodeID(mid), bindingEdge("impersonate", "bind-c"))
+	addEdge(graph, nodeID(mid), sinkKubeSystemSecrets, bindingEdge("read_secrets", "mid-secrets"))
+
+	// Cut key "bind-b": the cut closes this route outright.
+	addEdge(graph, nodeID(src), sinkTokenMint, bindingEdge("token_mint", "bind-b"))
+
+	// No SourceBinding: the cut pass must skip this chain entirely.
+	addEdge(graph, nodeID(other), sinkNodeEscape, &models.EscalationEdge{Action: "pod_host_escape"})
+	return graph
+}
+
 // TestAlternatesDeterministicWhenCutKeyCoversTwoSinks guards the one property that
 // makes alternatesForSource safe to write with a map.
 //
@@ -241,41 +282,7 @@ func TestSyntheticRootedPathSkipsCutPass(t *testing.T) {
 // If this test ever flakes, the property has been broken. Restore it. Do NOT add a
 // sort to paper over the symptom: needing one means the structure changed.
 func TestAlternatesDeterministicWhenCutKeyCoversTwoSinks(t *testing.T) {
-	build := func() *models.EscalationGraph {
-		graph := &models.EscalationGraph{Nodes: map[string]*models.EscalationNode{}}
-		src := models.SubjectRef{Kind: "ServiceAccount", Name: "src", Namespace: "app"}
-		mid := models.SubjectRef{Kind: "ServiceAccount", Name: "mid", Namespace: "app"}
-		other := models.SubjectRef{Kind: "ServiceAccount", Name: "other", Namespace: "app"}
-		ensureSubjectNode(graph, src)
-		ensureSubjectNode(graph, mid)
-		ensureSubjectNode(graph, other)
-		for _, sink := range []struct {
-			id     string
-			target models.EscalationTarget
-		}{
-			{sinkClusterAdmin, models.TargetClusterAdmin},
-			{sinkKubeSystemSecrets, models.TargetKubeSystemSecrets},
-			{sinkTokenMint, models.TargetTokenMint},
-			{sinkNodeEscape, models.TargetNodeEscape},
-		} {
-			graph.Nodes[sink.id] = &models.EscalationNode{ID: sink.id, IsSink: true, Target: sink.target}
-		}
-
-		// Cut key "bind-a" covers two sinks with different answers.
-		addEdge(graph, nodeID(src), sinkClusterAdmin, bindingEdge("bound_to_cluster_admin", "bind-a"))
-		addEdge(graph, nodeID(src), sinkClusterAdmin, bindingEdge("bound_to_cluster_admin", "bind-a2"))
-		addEdge(graph, nodeID(src), sinkKubeSystemSecrets, bindingEdge("read_secrets", "bind-a"))
-		addEdge(graph, nodeID(src), nodeID(mid), bindingEdge("impersonate", "bind-c"))
-		addEdge(graph, nodeID(mid), sinkKubeSystemSecrets, bindingEdge("read_secrets", "mid-secrets"))
-
-		// Cut key "bind-b": the cut closes this route outright.
-		addEdge(graph, nodeID(src), sinkTokenMint, bindingEdge("token_mint", "bind-b"))
-
-		// No SourceBinding: the cut pass must skip this chain entirely.
-		addEdge(graph, nodeID(other), sinkNodeEscape, &models.EscalationEdge{Action: "pod_host_escape"})
-		return graph
-	}
-
+	build := buildTwoSinkCutKeyGraph
 	baseline := FindPaths(build(), 5)
 
 	// Pin the fixture's premise before pinning its stability. Without this, the
@@ -387,10 +394,15 @@ func TestFindPathsStableWhenTwoSinksTieOnEveryOtherKey(t *testing.T) {
 	})
 }
 
-// TestAlternateFoundWhenSecondBindingGrantsPodCreate is the end-to-end property: with
-// two bindings granting `create pods`, cutting the first must leave a surviving route,
-// so the finding warns the operator instead of implying the fix is sufficient.
-func TestAlternateFoundWhenSecondBindingGrantsPodCreate(t *testing.T) {
+// podCreateTwoNamespaceSnapshot builds a snapshot where one ServiceAccount ("deployer",
+// living in "dev") is bound by two separate RoleBindings in two different namespaces,
+// each to a Role granting `create pods`, with neither target namespace carrying a Pod
+// Security Admission enforce label. This is the real-BuildGraph mirror of the e2e shape
+// in testdata/e2e/vulnerable/18-privesc-cut-resilient.yaml step 3: cutting either binding
+// alone must leave the other standing, so the node-escape finding gains an alternate.
+// Shared by TestAlternateFoundWhenSecondBindingGrantsPodCreate and
+// TestAlternateHopNeverSharesPrimarysCutBinding.
+func podCreateTwoNamespaceSnapshot() models.Snapshot {
 	snapshot := models.Snapshot{}
 	snapshot.Resources.Namespaces = []corev1.Namespace{
 		{ObjectMeta: objectMeta("team-a", "")},
@@ -433,8 +445,14 @@ func TestAlternateFoundWhenSecondBindingGrantsPodCreate(t *testing.T) {
 			},
 		},
 	}
+	return snapshot
+}
 
-	graph := BuildGraph(snapshot)
+// TestAlternateFoundWhenSecondBindingGrantsPodCreate is the end-to-end property: with
+// two bindings granting `create pods`, cutting the first must leave a surviving route,
+// so the finding warns the operator instead of implying the fix is sufficient.
+func TestAlternateFoundWhenSecondBindingGrantsPodCreate(t *testing.T) {
+	graph := BuildGraph(podCreateTwoNamespaceSnapshot())
 	paths := FindPaths(graph, 5)
 
 	deployer := models.SubjectRef{Kind: "ServiceAccount", Name: "deployer", Namespace: "dev"}
@@ -487,4 +505,92 @@ func TestCorrelationEdgeIsCutWhenOneBindingGrantsBothHalves(t *testing.T) {
 		t.Fatalf("want no alternate: node-ops-crb is the sole grantor behind both edges, got %d hops (%+v)",
 			len(paths[0].AlternateHops), paths[0].AlternateHops)
 	}
+}
+
+// buildUnstampedAlternateGraph gives TestAlternateHopNeverSharesPrimarysCutBinding the
+// case the task brief's second note warns about: an alternate whose own first hop
+// carries NO SourceBinding at all. src reaches node_escape two ways: a stamped edge
+// ("cut-me") inserted first, which BFS keeps as the shortest/primary route, and an
+// unstamped pod_host_escape edge inserted second. The cut-resilient rerun bans only
+// "cut-me" (banned is scoped to edges leaving src), so it falls through to the
+// unstamped edge. That unstamped alternate must not be flagged: it carries no binding
+// to compare against the primary's, and Task 9's CutBreakers-only correlation edges are
+// exactly this shape in production.
+func buildUnstampedAlternateGraph() *models.EscalationGraph {
+	graph := &models.EscalationGraph{Nodes: map[string]*models.EscalationNode{}}
+	src := models.SubjectRef{Kind: "ServiceAccount", Name: "escapee", Namespace: "ops"}
+	ensureSubjectNode(graph, src)
+	graph.Nodes[sinkNodeEscape] = &models.EscalationNode{ID: sinkNodeEscape, IsSink: true, Target: models.TargetNodeEscape}
+	addEdge(graph, nodeID(src), sinkNodeEscape, bindingEdge("nodes_proxy", "cut-me"))
+	addEdge(graph, nodeID(src), sinkNodeEscape, &models.EscalationEdge{Action: "pod_host_escape"})
+	return graph
+}
+
+// TestAlternateHopNeverSharesPrimarysCutBinding is the universal invariant the whole
+// cut-resilient feature depends on: for EVERY path FindPaths returns with a non-empty
+// alternate, not one hand-picked path, the alternate's first hop must not be the very
+// binding the primary's first hop names. That binding is exactly what the printed
+// remediation removes the subject from, so an alternate riding it would tell the
+// operator their fix is insufficient while showing them, as proof, a route the fix
+// actually closes.
+//
+// Three fixtures, reused from elsewhere in this file rather than invented fresh, cover
+// the shapes the task brief calls out by name: buildTwoSinkCutKeyGraph exercises both a
+// same-length parallel-binding alternate and a longer detour alternate in one graph;
+// buildUnstampedAlternateGraph exercises the legitimate empty-alternate-binding case;
+// podCreateTwoNamespaceSnapshot exercises the real BuildGraph builder path (not a
+// hand-wired graph) that Step 3 of the task turns into an e2e fixture.
+func TestAlternateHopNeverSharesPrimarysCutBinding(t *testing.T) {
+	var paths []models.EscalationPath
+	paths = append(paths, FindPaths(buildTwoSinkCutKeyGraph(), 5)...)
+	paths = append(paths, FindPaths(buildUnstampedAlternateGraph(), 5)...)
+	paths = append(paths, FindPaths(BuildGraph(podCreateTwoNamespaceSnapshot()), 5)...)
+
+	checked := assertNoAlternateReusesPrimarysCutBinding(t, paths)
+	if checked == 0 {
+		t.Fatal("no path in the fixture carried an alternate; the invariant went unchecked (fixture regression, not a pass)")
+	}
+}
+
+// assertNoAlternateReusesPrimarysCutBinding walks every path in paths and, for each one
+// carrying a non-empty AlternateHops, asserts that the alternate's first hop did not
+// survive by riding the same binding the primary's first hop names. Returns the number
+// of alternate-bearing paths it checked, so a caller can refuse to pass vacuously when a
+// fixture regression silently drops every alternate.
+//
+// An empty AlternateHops[0].SourceBinding is NOT a violation: Task 9's correlation edges
+// (CutBreakers) carry no SourceBinding by design, and alternatesForSource can legitimately
+// surface an edge like that once the cut removes everything stamped with the cut binding.
+// See buildUnstampedAlternateGraph. Hops[0].SourceBinding on the PRIMARY, by contrast, is
+// verified non-empty here rather than assumed: alternatesForSource only ever populates
+// targetsByCut from a chain whose first edge has binding provenance (edgeCut requires
+// SourceBinding != ""), so a primary with an alternate but no first-hop binding would mean
+// that guarantee broke upstream, which is worth failing loudly on rather than silently.
+func assertNoAlternateReusesPrimarysCutBinding(t *testing.T, paths []models.EscalationPath) int {
+	t.Helper()
+	var checked int
+	for _, p := range paths {
+		if len(p.AlternateHops) == 0 {
+			continue
+		}
+		checked++
+		primary := p.Hops[0]
+		alternate := p.AlternateHops[0]
+		if primary.SourceBinding == "" {
+			t.Fatalf("path %s -> %s (namespace %q) has an alternate but an unstamped primary first hop (action %q): alternatesForSource should never key a cut off an edge with no binding",
+				p.Source.Key(), p.Target, p.TargetNamespace, primary.Action)
+			continue
+		}
+		if alternate.SourceBinding == "" {
+			// Legitimate: the alternate's first hop names no binding, so the primary's
+			// cut (which removes the subject from ONE named binding) cannot have been
+			// what left this route standing, nor could it be what closes it.
+			continue
+		}
+		if alternate.SourceBinding == primary.SourceBinding && alternate.BindingNamespace == primary.BindingNamespace {
+			t.Errorf("path %s -> %s: alternate hop 1 (%s, binding %q/%q) shares its binding with primary hop 1 (%s): the fix that cuts the primary would ALSO close this alternate",
+				p.Source.Key(), p.Target, alternate.Action, alternate.SourceBinding, alternate.BindingNamespace, primary.Action)
+		}
+	}
+	return checked
 }
