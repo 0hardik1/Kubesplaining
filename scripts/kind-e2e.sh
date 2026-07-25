@@ -545,6 +545,34 @@ if ! rg -q '"remediation_hint"' "${ROOT_DIR}/.tmp/e2e-report-remediation/finding
 fi
 ok "remediation hints present under --remediation-patches"
 
+# The check above passes if ANY finding anywhere carries a hint, which would not have
+# caught the defect Task 10 part (b) fixed: ForPrivescPath used to guard on a
+# `KUBE-PRIVESC-PATH-` RuleID prefix and return nil for everything else, so every
+# KUBE-CONFUSED-DEPUTY-001 finding got no hint at all. That fix has unit coverage and,
+# until now, no e2e gate: this asserts it directly. A non-null remediation_hint is not
+# enough on its own, either: ForPrivescPath falls back to a generic advisory diff with
+# no `patch` object when it cannot resolve hop 1's SourceBinding back to a live
+# (Cluster)RoleBinding in the snapshot, so a hint that resolved to nothing would satisfy
+# a bare non-null check. Require the hint to actually NAME a binding: `patch.target.kind`
+# is a (Cluster)RoleBinding and `patch.target.name` is non-empty.
+#
+# Shard 18's cutres-deputy fixture (added by a later task) is load-bearing for this
+# assertion: it is the shape whose deputy findings' hints resolve to a real binding
+# (cutres-deputy-cert-a), alongside shard 17's deepchain-deployer (deepchain-gitops).
+DEPUTY_HINT_COUNT="$(jq -r '
+  [.[] | select(
+    .rule_id == "KUBE-CONFUSED-DEPUTY-001"
+    and .remediation_hint != null
+    and (.remediation_hint.patch.target.kind == "RoleBinding" or .remediation_hint.patch.target.kind == "ClusterRoleBinding")
+    and ((.remediation_hint.patch.target.name // "") != "")
+  )] | length
+' "${ROOT_DIR}/.tmp/e2e-report-remediation/findings.json")"
+if [[ "${DEPUTY_HINT_COUNT}" == "0" ]]; then
+  echo "missing: at least one KUBE-CONFUSED-DEPUTY-001 finding should carry a remediation_hint naming a (Cluster)RoleBinding, not just a non-null hint" >&2
+  exit 1
+fi
+ok "confused-deputy remediation hints name a (Cluster)RoleBinding (${DEPUTY_HINT_COUNT} findings)"
+
 # Confirm the inverse: without the flag, no hints should leak through.
 if rg -q '"remediation_hint"' "${ROOT_DIR}/.tmp/e2e-report-full/findings.json"; then
   echo "regression: default scan (no --remediation-patches) should not emit remediation_hint" >&2
