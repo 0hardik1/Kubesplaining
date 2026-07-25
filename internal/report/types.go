@@ -484,9 +484,13 @@ type PrivescPathCard struct {
 	HopCount  int
 	Summary   string
 	Hops      []models.EscalationHop
-	AltHops   []models.EscalationHop // route surviving the recommended binding cut; empty when the fix suffices
-	RuleID    string
-	Anchor    string
+	// AltHops is a route to the same sink that survives cutting the binding named by
+	// Hops[0]. Empty means no such route was found within the searched depth, which is
+	// not the same as the cut being sufficient: a bounded search cannot establish that.
+	// See models.Finding.AlternateEscalationPath for the other causes of an empty value.
+	AltHops []models.EscalationHop
+	RuleID  string
+	Anchor  string
 }
 
 // htmlReportData is the template input for the HTML dashboard; assembled by BuildHTMLData.
