@@ -256,6 +256,18 @@ for f in "${ROOT_DIR}/testdata/e2e/expectations/"*.expect; do
 done
 shopt -u nullglob
 
+# Non-vacuity: these three expectation gates (*.expect here, *.deny and *.chain
+# below) are all driven by a nullglob'd wildcard, so a renamed directory, a moved
+# fixture, or a file emptied during a rebase yields an empty work list and a green
+# gate that asserted nothing. Each therefore states its own minimum. The two rule
+# lists are guarded separately because they route against different scans: the
+# cloud-eks list against the minimal-preset output, everything else against the
+# standard-preset one, so a total-only guard would let either side vanish silently.
+if (( ${#STD_RULES[@]} == 0 || ${#CLOUD_RULES[@]} == 0 )); then
+  echo "expectation gate collected no rule IDs (std=${#STD_RULES[@]}, cloud=${#CLOUD_RULES[@]}): the *.expect files under testdata/e2e/expectations/ are missing or empty, so this gate would pass vacuously" >&2
+  exit 1
+fi
+
 missing=()
 for rule in "${STD_RULES[@]}"; do
   if ! rg -q "\"rule_id\":\s*\"${rule}\"" "${ROOT_DIR}/.tmp/e2e-report-full/findings.json"; then
@@ -326,6 +338,10 @@ for f in "${ROOT_DIR}/testdata/e2e/expectations/"*.deny; do
   collect_rules "${f}" DENY_RULES
 done
 shopt -u nullglob
+if (( ${#DENY_RULES[@]} == 0 )); then
+  echo "deny gate collected no guards: the *.deny files under testdata/e2e/expectations/ are missing or empty, so this gate would pass vacuously" >&2
+  exit 1
+fi
 deny_violations=()
 for deny in "${DENY_RULES[@]}"; do
   while IFS= read -r hit; do
@@ -427,6 +443,10 @@ shopt -u nullglob
 if (( ${#chain_violations[@]} > 0 )); then
   echo "escalation-chain guard violations:" >&2
   printf '  - %s\n' "${chain_violations[@]}" >&2
+  exit 1
+fi
+if (( chain_checks == 0 )); then
+  echo "chain gate ran no assertions: the *.chain files under testdata/e2e/expectations/ are missing or empty, so this gate would pass vacuously" >&2
   exit 1
 fi
 ok "all ${chain_checks} escalation-chain guards satisfied"
