@@ -14,6 +14,10 @@ type pathStep struct {
 
 // FindPaths runs shortest-path BFS from every non-system subject node to any sink, up to maxDepth hops, and returns
 // one EscalationPath per (source, sink) pair sorted by source key, target, then hop count.
+//
+// A returned path may also carry AlternateHops: a second route to the same sink that survives cutting the binding named
+// by its first hop, i.e. the fix remediation prints. Non-empty means that fix does not close the route on its own.
+// See alternatesForSource. Alternates attach as a field, never as extra returned paths.
 func FindPaths(graph *models.EscalationGraph, maxDepth int) []models.EscalationPath {
 	adj := map[string][]*models.EscalationEdge{}
 	for _, edge := range graph.Edges {
@@ -42,23 +46,21 @@ func FindPaths(graph *models.EscalationGraph, maxDepth int) []models.EscalationP
 	}
 	sort.Strings(sources)
 
-	seen := map[string]bool{}
 	var paths []models.EscalationPath
 	for _, sourceID := range sources {
 		sourceNode := graph.Nodes[sourceID]
 		if sourceNode == nil {
 			continue
 		}
-		found := bfsToSinks(graph, adj, sourceID, maxDepth)
+		found := bfsToSinks(graph, adj, sourceID, maxDepth, nil)
+		alternates := alternatesForSource(graph, adj, sourceID, maxDepth, found)
 		for targetID, chain := range found {
-			key := sourceID + "->" + targetID
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
 			targetNode := graph.Nodes[targetID]
 			path := buildPath(graph, sourceNode.Subject, targetNode.Target, chain)
 			path.TargetNamespace = targetNode.TargetNamespace
+			if alt, ok := alternates[targetID]; ok {
+				path.AlternateHops = buildPath(graph, sourceNode.Subject, targetNode.Target, alt).Hops
+			}
 			paths = append(paths, path)
 		}
 	}
@@ -81,11 +83,14 @@ func FindPaths(graph *models.EscalationGraph, maxDepth int) []models.EscalationP
 
 // bfsToSinks walks the graph from sourceID and returns, for each reachable sink, the shortest step chain that got there.
 // System subjects (e.g. system:masters) are treated as non-traversable intermediates but still valid as sinks via explicit edges.
+// banned, when non-nil, removes edges from consideration: the cut-resilient pass uses it to ask what stays reachable once a
+// given binding is revoked. Passing nil bans nothing.
 func bfsToSinks(
 	graph *models.EscalationGraph,
 	adj map[string][]*models.EscalationEdge,
 	sourceID string,
 	maxDepth int,
+	banned func(*models.EscalationEdge) bool,
 ) map[string][]pathStep {
 	type queueItem struct {
 		nodeID string
@@ -103,6 +108,9 @@ func bfsToSinks(
 			continue
 		}
 		for _, edge := range adj[item.nodeID] {
+			if banned != nil && banned(edge) {
+				continue
+			}
 			neighbor := graph.Nodes[edge.To]
 			if neighbor == nil {
 				continue
@@ -117,9 +125,9 @@ func bfsToSinks(
 			nextPath[len(item.path)] = pathStep{nodeID: edge.To, edge: edge}
 
 			if neighbor.IsSink {
-				if existing, ok := sinks[edge.To]; !ok || len(nextPath) < len(existing) {
-					sinks[edge.To] = nextPath
-				}
+				// First arrival is the shortest: the visited prune above rejects every
+				// later one, so this assignment happens at most once per sink.
+				sinks[edge.To] = nextPath
 				// A traversable sink records its own path and is then walked past,
 				// so richer chains routed through it are captured as separate,
 				// longer paths. External cloud-IAM nodes carry outbound aws-auth
@@ -140,6 +148,74 @@ func bfsToSinks(
 	}
 
 	return sinks
+}
+
+// cutKey identifies a (Cluster)RoleBinding whose removal we want to model. An empty
+// namespace means a ClusterRoleBinding, matching permissions.EffectiveRule.
+type cutKey struct {
+	binding   string
+	namespace string
+}
+
+// edgeCut returns the binding an edge came from. The false return covers synthetic
+// edges (pod escape, node-escape continuation, namespace-admin fan-out, cloud
+// identity) that no single binding grants, so there is nothing to model cutting.
+func edgeCut(edge *models.EscalationEdge) (cutKey, bool) {
+	if edge == nil || edge.SourceBinding == "" {
+		return cutKey{}, false
+	}
+	return cutKey{binding: edge.SourceBinding, namespace: edge.BindingNamespace}, true
+}
+
+// alternatesForSource returns, per reachable sink, a chain that survives cutting the
+// binding named by that sink's own first hop.
+//
+// Removing a subject from a binding revokes every capability that binding conferred
+// on THAT subject and nothing else, so the banned set is scoped to edges leaving the
+// source node. Edges elsewhere in the graph are untouched.
+//
+// One BFS runs per distinct first-hop binding, not one per path, because a single
+// banned run reports every sink still reachable. Each path then reads only the run
+// for its OWN first hop: a source reaching cluster-admin via binding A and node-escape
+// via binding B gets two runs, and reading run A's node-escape result would answer a
+// question nobody asked, since cutting A was never the proposed fix for that path.
+func alternatesForSource(
+	graph *models.EscalationGraph,
+	adj map[string][]*models.EscalationEdge,
+	sourceID string,
+	maxDepth int,
+	primary map[string][]pathStep,
+) map[string][]pathStep {
+	targetsByCut := map[cutKey][]string{}
+	for targetID, chain := range primary {
+		if len(chain) == 0 {
+			continue
+		}
+		if key, ok := edgeCut(chain[0].edge); ok {
+			targetsByCut[key] = append(targetsByCut[key], targetID)
+		}
+	}
+	if len(targetsByCut) == 0 {
+		return nil
+	}
+
+	alternates := map[string][]pathStep{}
+	for key, targetIDs := range targetsByCut {
+		banned := func(edge *models.EscalationEdge) bool {
+			if edge.From != sourceID {
+				return false
+			}
+			k, ok := edgeCut(edge)
+			return ok && k == key
+		}
+		surviving := bfsToSinks(graph, adj, sourceID, maxDepth, banned)
+		for _, targetID := range targetIDs {
+			if chain, ok := surviving[targetID]; ok && len(chain) > 0 {
+				alternates[targetID] = chain
+			}
+		}
+	}
+	return alternates
 }
 
 // buildPath materializes the BFS chain into an EscalationPath, numbering hops and threading the evolving "current" subject.
