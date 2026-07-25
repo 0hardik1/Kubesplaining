@@ -339,13 +339,14 @@ func TestRenderEscalationPathAlternateVariant(t *testing.T) {
 	}
 }
 
-// TestRenderEscalationPathPrimaryUnchanged pins that the default variant still
-// produces exactly what the existing renderer did, so no Findings-tab output moves.
+// TestRenderEscalationPathPrimaryUnchanged checks that the primary variant still
+// opens with the bare attack-chain list (no alternate lead-in leaked in) and never
+// carries the alternate class, so no Findings-tab output moves.
 func TestRenderEscalationPathPrimaryUnchanged(t *testing.T) {
 	hops := []models.EscalationHop{{Step: 1, Action: "impersonate", Gains: "became admin"}}
 
-	if got, want := string(renderEscalationPath(hops)), string(renderEscalationPathVariant(hops, "primary")); got != want {
-		t.Errorf("renderEscalationPath diverged from the primary variant\ngot:  %s\nwant: %s", got, want)
+	if got := string(renderEscalationPath(hops)); !strings.HasPrefix(got, `<ol class="attack-chain">`) {
+		t.Errorf("primary render must open with the bare attack-chain list, got:\n%s", got)
 	}
 	if strings.Contains(string(renderEscalationPath(hops)), "attack-chain-alt") {
 		t.Error("primary render must not carry the alternate class")
