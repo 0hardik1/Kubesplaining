@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
@@ -150,26 +151,44 @@ func dedupe(findings []models.Finding) []models.Finding {
 				out[prevIdx].Severity = finding.Severity
 			}
 			out[prevIdx].Tags = mergeTags(out[prevIdx].Tags, finding.Tags)
-			// Tags merge across a dedupe collision but fields do not. A tag that
-			// asserts something about a field is only true of the finding that
-			// carries that field, so re-assert the coupling here rather than
-			// let the merged tag outlive the field it describes.
-			// "privesc:survives-first-cut" asserts AlternateEscalationPath is
-			// non-empty; if the surviving finding doesn't have one, the tag must
-			// go, not get grafted onto a chain that describes a different sink.
-			if len(out[prevIdx].AlternateEscalationPath) == 0 {
-				out[prevIdx].Tags = dropTag(out[prevIdx].Tags, "privesc:survives-first-cut")
-			}
 			continue
 		}
 		indexByKey[key] = len(out)
 		out = append(out, finding)
 	}
+	// Invariant: "privesc:survives-first-cut" asserts AlternateEscalationPath is
+	// non-empty, so a finding that carries the tag without the field is a
+	// contradiction - drop the tag rather than let it outlive the field it
+	// describes. This used to live inside the collision branch above, repairing
+	// tag bleed when two chains to different sinks were wrongly merged under one
+	// dedupe key. dedupeKey now keys a chain-bearing finding on its own ID, which
+	// already encodes the chain's endpoints, so two privesc findings can no
+	// longer collide with each other and that contradiction can no longer arise
+	// from a merge. The check still earns its keep as a backstop over every
+	// finding dedupe emits, not only merge survivors, so a future finding built
+	// with the tag but no alternate route is still caught here before it reaches
+	// the report.
+	for i := range out {
+		if len(out[i].AlternateEscalationPath) == 0 && slices.Contains(out[i].Tags, "privesc:survives-first-cut") {
+			out[i].Tags = dropTag(out[i].Tags, "privesc:survives-first-cut")
+		}
+	}
 	return out
 }
 
 // dedupeKey returns the cross-module dedup key, or empty when the finding lacks enough context to merge safely.
+//
+// A finding carrying an escalation chain is identified by that chain's endpoints, so two
+// chains from one subject to different sinks are different findings, not duplicates of
+// each other - even when they share RuleID, Subject, and a nil Resource, which is exactly
+// the shape a confused-deputy finding has for every sink the same controller can reach.
+// Finding.ID for a privesc path is "RuleID:subjectKey:target" (plus namespace for
+// namespace-scoped sinks; see findingFromPath), so it already distinguishes sinks by
+// construction and is used directly instead of the coarser composite key below.
 func dedupeKey(f models.Finding) string {
+	if len(f.EscalationPath) > 0 && f.ID != "" {
+		return f.ID
+	}
 	if f.Subject == nil && f.Resource == nil {
 		return ""
 	}
