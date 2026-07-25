@@ -82,7 +82,13 @@ func TestAlternateViaLongerRoute(t *testing.T) {
 	}
 	addEdge(graph, nodeID(src), sinkClusterAdmin, bindingEdge("bound_to_cluster_admin", "direct"))
 	addEdge(graph, nodeID(src), nodeID(mid), bindingEdge("impersonate", "detour"))
-	addEdge(graph, nodeID(mid), sinkClusterAdmin, bindingEdge("bound_to_cluster_admin", "mid-admin"))
+	// mid's edge reuses the binding name "direct" on purpose, and must keep reusing it.
+	// The ban is scoped to edges leaving the source because remediation drops the subject
+	// from the binding and leaves the binding intact for everyone else. Cutting src's
+	// "direct" therefore has to leave mid's alone, so the 2-hop alternate survives. Give
+	// this edge a unique name and the source scoping goes untested: a whole-binding ban
+	// would then look identical here, while under-reporting alternates in the real graph.
+	addEdge(graph, nodeID(mid), sinkClusterAdmin, bindingEdge("bound_to_cluster_admin", "direct"))
 
 	paths := FindPaths(graph, 5)
 	// mid is a non-system subject, so FindPaths seeds it as its own BFS source and it
