@@ -340,6 +340,70 @@ if (( ${#deny_violations[@]} > 0 )); then
 fi
 ok "no deny-guard violations (${#DENY_RULES[@]} guards checked)"
 
+step "Verifying escalation-chain shape"
+# Each *.chain file asserts that a finding exists AND that its escalation chain is
+# still deep and correctly ordered. Format, one assertion per non-comment line:
+#   <finding-id-prefix> <min-hop-count> <ordered,comma,separated,actions>
+# The action list must appear as an ordered SUBSEQUENCE of the finding's hop actions,
+# so adding a new intermediate hop does not spuriously fail the gate.
+#
+# This is the gate the rule-ID goldens cannot express: they prove which rules fired,
+# not that the graph still chains. A regression collapsing every path to a single hop
+# keeps the rule-ID set identical and would otherwise pass silently.
+chain_violations=()
+chain_checks=0
+shopt -s nullglob
+for f in "${ROOT_DIR}/testdata/e2e/expectations/"*.chain; do
+  while read -r prefix min_hops actions; do
+    case "${prefix}" in ''|'#'*) continue ;; esac
+    chain_checks=$(( chain_checks + 1 ))
+
+    actual_hops="$(jq -r --arg p "${prefix}" \
+      '[.[] | select(.id == $p or (.id | startswith($p + ":")))] | first | (.escalation_path | length) // 0' \
+      "${ROOT_DIR}/.tmp/e2e-report-full/findings.json")"
+
+    if [[ -z "${actual_hops}" || "${actual_hops}" == "null" || "${actual_hops}" == "0" ]]; then
+      chain_violations+=("no finding matching ${prefix}")
+      continue
+    fi
+    if (( actual_hops < min_hops )); then
+      chain_violations+=("${prefix} has ${actual_hops} hops, want at least ${min_hops}")
+      continue
+    fi
+
+    actual_actions="$(jq -r --arg p "${prefix}" \
+      '[.[] | select(.id == $p or (.id | startswith($p + ":")))] | first | [.escalation_path[].action] | join(",")' \
+      "${ROOT_DIR}/.tmp/e2e-report-full/findings.json")"
+
+    # Consume the actual action list left to right, requiring each wanted action to
+    # appear after the previous one. The needle variable keeps the nested quoting
+    # unambiguous; inlining it into the parameter expansion parses badly in bash.
+    missing=""
+    remaining=",${actual_actions},"
+    for want in ${actions//,/ }; do
+      needle=",${want},"
+      if [[ "${remaining}" == *"${needle}"* ]]; then
+        remaining=",${remaining#*"${needle}"}"
+      else
+        missing="${want}"
+        break
+      fi
+    done
+    if [[ -n "${missing}" ]]; then
+      chain_violations+=("${prefix} chain [${actual_actions}] missing ordered action ${missing}")
+      continue
+    fi
+    ok "chain ${prefix}: ${actual_hops} hops [${actual_actions}]"
+  done < "${f}"
+done
+shopt -u nullglob
+if (( ${#chain_violations[@]} > 0 )); then
+  echo "escalation-chain guard violations:" >&2
+  printf '  - %s\n' "${chain_violations[@]}" >&2
+  exit 1
+fi
+ok "all ${chain_checks} escalation-chain guards satisfied"
+
 # NOTE: the issue-#48 cluster-admin false-positive guard and the
 # KUBE-ADMISSION-NO-POLICY-ENGINE-001 absence guard now live in
 # testdata/e2e/expectations/baseline.deny and are enforced by the deny-guard

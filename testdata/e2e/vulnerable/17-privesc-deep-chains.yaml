@@ -1,0 +1,126 @@
+# Deep-chain privesc fixture. Exercises the edge families that only produce a
+# finding when chained: the confused-deputy operator bridge and the namespace-admin
+# continuation into a co-located ServiceAccount. On the single-node kind cluster the
+# control-plane node is schedulable, so node-escape paths from other shards also
+# continue into control-plane PKI theft.
+#
+# No CRDs are installed on purpose. RBAC rules may name resources whose CRD does not
+# exist, which is exactly the shape the confused-deputy catalog matches on: the
+# precision gate is the controller ServiceAccount existing, not the CRD.
+#
+# This shard needs no pods, so it has no *.rollout entry: every edge here is derived
+# from RBAC alone.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: deepchain-tenant
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: flux-system
+---
+# The reconciling controller. Its existence is the precision gate for the
+# confused-deputy edge: without this ServiceAccount, no bridge is emitted.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kustomize-controller
+  namespace: flux-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: deepchain-flux-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: kustomize-controller
+    namespace: flux-system
+---
+# The tenant. Holds no dangerous Kubernetes verb of its own: its only power is
+# writing a Flux Kustomization, which the controller then reconciles as itself.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: deepchain-deployer
+  namespace: deepchain-tenant
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deepchain-gitops
+  namespace: deepchain-tenant
+rules:
+  - apiGroups: ["kustomize.toolkit.fluxcd.io"]
+    resources: ["kustomizations"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: deepchain-gitops
+  namespace: deepchain-tenant
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: deepchain-gitops
+subjects:
+  - kind: ServiceAccount
+    name: deepchain-deployer
+    namespace: deepchain-tenant
+---
+# Namespace-admin continuation: this SA can only bind roles inside its own
+# namespace, but that namespace co-hosts a cluster-admin-bound identity.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: deepchain-binder
+  namespace: deepchain-tenant
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deepchain-binder
+  namespace: deepchain-tenant
+rules:
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: deepchain-binder
+  namespace: deepchain-tenant
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: deepchain-binder
+subjects:
+  - kind: ServiceAccount
+    name: deepchain-binder
+    namespace: deepchain-tenant
+---
+# The co-located high-value identity that makes namespace-admin worth chaining.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: deepchain-privileged
+  namespace: deepchain-tenant
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: deepchain-privileged
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: deepchain-privileged
+    namespace: deepchain-tenant

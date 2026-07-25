@@ -1,0 +1,16 @@
+# Chain-shape assertions: <finding-id-prefix> <min-hops> <ordered,hop,actions>
+#
+# The *.ruleset goldens prove WHICH rules fire; these prove the graph still produces
+# real multi-hop chains. Without them a regression that flattened every path to a
+# single hop would pass every other gate in this script.
+#
+# The action list must appear as an ordered subsequence of the finding's hops, so
+# inserting a new intermediate hop does not spuriously fail the gate.
+#
+# The tenant holds no dangerous verb of its own. It reaches cluster-admin only by
+# steering the Flux controller, so this asserts the confused-deputy bridge exists
+# and is genuinely the first hop.
+KUBE-CONFUSED-DEPUTY-001:ServiceAccount/deepchain-tenant/deepchain-deployer 2 operator_reconcile
+#
+# Namespace-admin must be walked past into the co-located cluster-admin-bound SA.
+KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/deepchain-tenant/deepchain-binder 3 modify_role_binding,colocated_sa_token_theft

@@ -1,0 +1,3 @@
+# Rule IDs the deep-chain shard (17-privesc-deep-chains.yaml) must produce.
+# The chain SHAPE is asserted separately in deep-chains.chain.
+KUBE-CONFUSED-DEPUTY-001
