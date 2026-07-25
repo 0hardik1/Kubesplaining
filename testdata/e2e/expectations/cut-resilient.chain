@@ -48,9 +48,18 @@ KUBE-PRIVESC-PATH-NODE-ESCAPE:ServiceAccount/cutres/cutres-doublebind:node_escap
 # confused-deputy findings this tenant reaches separate, rather than collapsing
 # them into one and discarding whichever carried the alternate) all connect: all
 # FOUR sinks this tenant reaches through cert-manager come back with their own
-# alternate, not just the one asserted below. Two are pinned: cluster-admin (same
-# downstream action as cert-manager's own cluster-admin bind) and node-escape (a
-# different downstream action), to show the alternate is not a fluke of one sink.
+# alternate, not just the two asserted below. Two are pinned, each with BOTH its
+# primary and its alternate: cluster-admin (a different downstream action from
+# node-escape) and node-escape, to show the alternate is not a fluke of one sink.
+#
+# node-escape's primary and alternate share the identical action list. This is not
+# a copy-paste: node_drain_migrate is a synthetic correlation edge with no binding
+# provenance (see CutBreakers in graph.go), so once the chain reaches cert-manager
+# the downstream route is the same regardless of which RoleBinding (cutres-deputy-
+# cert-a or -b) got the subject there. Only hop 1's SourceBinding differs between
+# the two chains; confirmed against a real scan, not assumed from cluster-admin's
+# shape.
 KUBE-CONFUSED-DEPUTY-001:ServiceAccount/cutres-deputy-tenant/cutres-deputy:cluster_admin_equivalent 2 operator_reconcile,wildcard_permission primary
 KUBE-CONFUSED-DEPUTY-001:ServiceAccount/cutres-deputy-tenant/cutres-deputy:cluster_admin_equivalent 2 operator_reconcile,wildcard_permission alternate
+KUBE-CONFUSED-DEPUTY-001:ServiceAccount/cutres-deputy-tenant/cutres-deputy:node_escape 2 operator_reconcile,node_drain_migrate primary
 KUBE-CONFUSED-DEPUTY-001:ServiceAccount/cutres-deputy-tenant/cutres-deputy:node_escape 2 operator_reconcile,node_drain_migrate alternate

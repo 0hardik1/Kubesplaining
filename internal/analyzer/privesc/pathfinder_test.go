@@ -579,7 +579,6 @@ func assertNoAlternateReusesPrimarysCutBinding(t *testing.T, paths []models.Esca
 		if primary.SourceBinding == "" {
 			t.Fatalf("path %s -> %s (namespace %q) has an alternate but an unstamped primary first hop (action %q): alternatesForSource should never key a cut off an edge with no binding",
 				p.Source.Key(), p.Target, p.TargetNamespace, primary.Action)
-			continue
 		}
 		if alternate.SourceBinding == "" {
 			// Legitimate: the alternate's first hop names no binding, so the primary's
