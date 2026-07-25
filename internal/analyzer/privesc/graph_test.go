@@ -470,7 +470,10 @@ func TestBuildGraphStampsClusterAdminBindingProvenance(t *testing.T) {
 
 // TestPodEscapeEdgesCarryNoProvenance pins the negative case: a pod-escape edge
 // comes from a workload spec, not a binding, so there is no binding to model
-// cutting and the cut-resilient pass must skip it.
+// cutting and the cut-resilient pass must skip it. Scoped to the pod_host_escape
+// action rather than every edge into sinkNodeEscape, because
+// pod_create_privileged_escape also targets that sink and, unlike this one, DOES
+// carry provenance (see TestPrivilegedPodCreateEdgeStampsProvenance).
 func TestPodEscapeEdgesCarryNoProvenance(t *testing.T) {
 	privileged := true
 	snapshot := models.Snapshot{}
@@ -489,7 +492,7 @@ func TestPodEscapeEdgesCarryNoProvenance(t *testing.T) {
 
 	var checked int
 	for _, edge := range graph.Edges {
-		if edge.To != sinkNodeEscape {
+		if edge.Action != "pod_host_escape" {
 			continue
 		}
 		checked++
@@ -499,6 +502,63 @@ func TestPodEscapeEdgesCarryNoProvenance(t *testing.T) {
 		}
 	}
 	if checked == 0 {
-		t.Fatal("no node-escape edge emitted; fixture is wrong")
+		t.Fatal("no pod_host_escape edge emitted; fixture is wrong")
+	}
+}
+
+// TestPrivilegedPodCreateEdgeStampsProvenance proves the KUBE-PRIVESC-002
+// pod_create_privileged_escape edge carries the granting binding. Unlike
+// addSecretMintEdge and addNodeMigrateEdge, which correlate two rules that may
+// come from two different bindings, this edge derives from a single `create
+// pods` rule, so naming the binding is unambiguous and the cut-resilient pass
+// must be able to key off it.
+func TestPrivilegedPodCreateEdgeStampsProvenance(t *testing.T) {
+	snapshot := models.Snapshot{}
+	snapshot.Resources.Namespaces = []corev1.Namespace{
+		{ObjectMeta: metav1.ObjectMeta{Name: "dev"}},
+	}
+	snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+		{ObjectMeta: metav1.ObjectMeta{Name: "deployer", Namespace: "dev"}},
+	}
+	snapshot.Resources.Roles = []rbacv1.Role{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "pod-creator", Namespace: "dev"},
+			Rules: []rbacv1.PolicyRule{{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"create"},
+			}},
+		},
+	}
+	snapshot.Resources.RoleBindings = []rbacv1.RoleBinding{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "pod-creator-binding", Namespace: "dev"},
+			RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "pod-creator"},
+			Subjects: []rbacv1.Subject{
+				{Kind: "ServiceAccount", Name: "deployer", Namespace: "dev"},
+			},
+		},
+	}
+
+	graph := BuildGraph(snapshot)
+
+	var found bool
+	for _, edge := range graph.Edges {
+		if edge.Action != "pod_create_privileged_escape" {
+			continue
+		}
+		found = true
+		if edge.SourceBinding != "pod-creator-binding" {
+			t.Errorf("edge SourceBinding = %q, want %q", edge.SourceBinding, "pod-creator-binding")
+		}
+		if edge.SourceRole != "pod-creator" {
+			t.Errorf("edge SourceRole = %q, want %q", edge.SourceRole, "pod-creator")
+		}
+		if edge.BindingNamespace != "dev" {
+			t.Errorf("edge BindingNamespace = %q, want %q", edge.BindingNamespace, "dev")
+		}
+	}
+	if !found {
+		t.Fatal("no pod_create_privileged_escape edge emitted; fixture is wrong")
 	}
 }

@@ -458,6 +458,11 @@ func addNamespaceAdminTokenTheftEdges(graph *models.EscalationGraph, subjectsByN
 // a token for any ServiceAccount. We model only the cluster-scoped (mint-any)
 // case in the graph (-> sinkTokenMint); narrower namespaced create+get still
 // surfaces as the standalone KUBE-PRIVESC-007 rbac finding.
+//
+// This edge deliberately carries no provenance: the two halves (create, get) can
+// come from two different bindings, so no single binding name would be correct.
+// Naming one anyway would let the cut-resilient pass ban that binding's edges and
+// wrongly report the route as closed when the other binding alone still grants it.
 func addSecretMintEdge(graph *models.EscalationGraph, subject models.SubjectRef, rules []permissions.EffectiveRule) {
 	hasCreate, hasGet := false, false
 	for _, r := range rules {
@@ -487,6 +492,12 @@ func addSecretMintEdge(graph *models.EscalationGraph, subject models.SubjectRef,
 // `delete pods` AND manipulate node scheduling cluster-wide (`update`/`patch`
 // on nodes/status, or `delete nodes`) can evict sensitive pods and steer their
 // reschedule onto an attacker-controlled node, then steal their tokens.
+//
+// This edge deliberately carries no provenance: the two halves (delete pods,
+// node manipulation) can come from two different bindings, so no single binding
+// name would be correct. Naming one anyway would let the cut-resilient pass ban
+// that binding's edges and wrongly report the route as closed when the other
+// binding alone still grants it.
 func addNodeMigrateEdge(graph *models.EscalationGraph, subject models.SubjectRef, rules []permissions.EffectiveRule) {
 	hasDeletePods, hasNodeManip := false, false
 	for _, r := range rules {
@@ -530,10 +541,13 @@ func addPrivilegedPodCreateEdges(graph *models.EscalationGraph, subject models.S
 		}
 		ensureSubjectNode(graph, subject)
 		addEdge(graph, nodeID(subject), sinkNodeEscape, &models.EscalationEdge{
-			Technique:   "KUBE-PRIVESC-002",
-			Action:      "pod_create_privileged_escape",
-			Permission:  "create pods (Pod Security Admission does not block privileged)",
-			Description: "can create a privileged pod that escapes to the node",
+			Technique:        "KUBE-PRIVESC-002",
+			Action:           "pod_create_privileged_escape",
+			Permission:       "create pods (Pod Security Admission does not block privileged)",
+			Description:      "can create a privileged pod that escapes to the node",
+			SourceBinding:    r.SourceBinding,
+			SourceRole:       r.SourceRole,
+			BindingNamespace: r.Namespace,
 		})
 		return // one node-escape edge per subject is sufficient
 	}
