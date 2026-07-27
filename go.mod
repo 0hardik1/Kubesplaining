@@ -3,7 +3,7 @@ module github.com/0hardik1/kubesplaining
 go 1.26.0
 
 require (
-	github.com/google/cel-go v0.29.2
+	github.com/google/cel-go v0.30.0
 	github.com/spf13/cobra v1.10.2
 	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/api v0.36.2
