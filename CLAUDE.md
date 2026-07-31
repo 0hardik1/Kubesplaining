@@ -82,7 +82,9 @@ type Module interface {
 3. Threshold filter via `scoring.AboveThreshold`.
 4. Stable sort by severity rank → score → rule ID → title.
 
-The seven modules live under `internal/analyzer/{rbac,podsec,network,admission,secrets,serviceaccount,privesc}`. The list is hard-coded in `NewWithConfig`. The `--only-modules` / `--skip-modules` flags select against `Module.Name()`.
+The modules live under `internal/analyzer/{rbac,podsec,network,admission,secrets,serviceaccount,privesc,certificates,containersec,leastprivilege,cel,cloud}`. The canonical, ordered list is `DefaultModules` in `internal/analyzer/modules.go` — adding an analyzer means creating the package and appending one factory entry there, not editing `NewWithConfig`. The `--only-modules` / `--skip-modules` flags select against `Module.Name()`.
+
+Note the split between `rbac` and `certificates` for the certificates API: `rbac` owns the *permission* rules (`KUBE-PRIVESC-011` approval path, `-024` signing path — who could mint a client certificate), `certificates` owns the *evidence* rules (`KUBE-CSR-001` / `-002` — who actually requested one). Neither infers the other, and the collector deliberately drops the raw CSR PEM, so no rule may claim to know which identity a CSR's Subject DN asked for.
 
 ### `privesc` is the differentiator
 

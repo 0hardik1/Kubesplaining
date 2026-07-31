@@ -1,0 +1,28 @@
+{
+  "name": "csr-issuance",
+  "description": "Certificates API, both sides of it. Two ServiceAccounts hold the two mint primitives: `minter` has create+approval plus `approve` on the kube-apiserver-client signer (the fully-authorized KUBE-PRIVESC-011 shape), `signer` has `sign` on that signer plus the CSR status write (KUBE-PRIVESC-024). Four CSR objects then pin the evidence rules: a workload-requested approved client cert (fires), a legacy-unknown probe (fires), a denied request (must not), and the node-bootstrap CSR every kubeadm cluster carries (must not — this is the false positive that would make the certificates module noise on every real cluster).",
+  "snapshot": "testdata/snapshots/csr-issuance.json",
+  "options": {
+    "max_privesc_depth": 5,
+    "admission_mode": "suppress"
+  },
+  "expected": [
+    "KUBE-CSR-001::minted-by-workload",
+    "KUBE-CSR-002::legacy-signer-probe",
+    "KUBE-NETPOL-COVERAGE-001:Namespace:certs",
+    "KUBE-PRIVESC-011:ServiceAccount/certs/minter::certificatesigningrequests",
+    "KUBE-PRIVESC-024:ServiceAccount/certs/signer::signers",
+    "KUBE-PRIVESC-PATH-SYSTEM-MASTERS:ServiceAccount/certs/minter:system_masters",
+    "KUBE-PRIVESC-PATH-SYSTEM-MASTERS:ServiceAccount/certs/signer:system_masters"
+  ],
+  "deny": [
+    "KUBE-CSR-001::csr-node-bootstrap",
+    "KUBE-CSR-002::csr-node-bootstrap",
+    "KUBE-CSR-001::denied-attempt",
+    "KUBE-CSR-002::denied-attempt",
+    "KUBE-CSR-001::legacy-signer-probe",
+    "KUBE-CSR-002::minted-by-workload",
+    "KUBE-PRIVESC-011:ServiceAccount/certs/signer",
+    "KUBE-PRIVESC-024:ServiceAccount/certs/minter"
+  ]
+}

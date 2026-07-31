@@ -55,11 +55,14 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 		addSecretMintEdge(graph, perms.Subject, perms.Rules)
 		addNodeMigrateEdge(graph, perms.Subject, perms.Rules)
 		addPrivilegedPodCreateEdges(graph, perms.Subject, perms.Rules, privilegedNamespaces)
-		// Stays last of the per-subject builders: it used to run in a pass after the
-		// whole loop, and BFS breaks ties on the order edges leaving a node were
-		// inserted. Keeping it last preserves which route to system:masters is
-		// reported as primary for a subject that also holds `impersonate groups`.
+		// These two stay last of the per-subject builders: addCSRApprovalEdge used to
+		// run in a pass after the whole loop, and BFS breaks ties on the order edges
+		// leaving a node were inserted. Keeping it last preserves which route to
+		// system:masters is reported as primary for a subject that also holds
+		// `impersonate groups`, and keeping the signing edge after it does the same
+		// for a subject that holds both certificates-API primitives.
 		addCSRApprovalEdge(graph, perms.Subject, perms.Rules)
+		addCSRSignEdge(graph, perms.Subject, perms.Rules)
 	}
 
 	// Runs after the per-subject loop so every namespace-admin sink that any
@@ -533,8 +536,61 @@ func addCSRApprovalEdge(graph *models.EscalationGraph, subject models.SubjectRef
 		Technique:   "KUBE-PRIVESC-011",
 		Action:      "csr_approve",
 		Permission:  "create certificatesigningrequests + update certificatesigningrequests/approval",
-		Description: "can submit a CSR with system:masters in its Subject and self-approve it, minting a kubelet-signed cluster-admin client cert",
+		Description: "can submit a CSR claiming a privileged identity (a kube-system ServiceAccount CN, or system:masters where CertificateSubjectRestriction is off) and self-approve it, minting a CA-signed client cert",
 		CutBreakers: cutBreakers(createBy, approveBy),
+	})
+}
+
+// addCSRSignEdge emits the KUBE-PRIVESC-024 edge: a subject that holds BOTH `sign` on
+// the `signers` resource covering `kubernetes.io/kube-apiserver-client` and cluster-scoped
+// `update`/`patch` on `certificatesigningrequests/status` does not need the approval path
+// at all. It is the signer: it writes the issued certificate onto the CSR status itself,
+// which is the write the CertificateSigning admission plugin authorizes via that `sign` verb.
+//
+// Only the kube-apiserver-client signer produces an edge, even though the rbac analyzer's
+// -024 finding also fires for the kubelet signers and legacy-unknown. The reason is what
+// the sink means: kube-apiserver-client accepts an arbitrary Subject DN, so control of it
+// reaches any identity in the cluster and system:masters is a fair terminal. The kubelet
+// signers only mint node identities, and the graph has no node-identity sink to point at;
+// pointing them at system_masters would overstate the gain. The finding still reports them.
+//
+// The edge is rated `hard` rather than `easy` (see actionDifficulty). Holding the grant is
+// not the whole exploit here: the certificate written back must chain to a CA in the
+// apiserver's `--client-ca-file`, which the designated signer holds by definition but which
+// the snapshot cannot confirm. That is exactly what the difficulty axis exists to express,
+// so the chain attenuates instead of the edge silently claiming a key it cannot see.
+//
+// Provenance follows addCSRApprovalEdge exactly: a full `*/*/*` rule does not count toward
+// emission (such a subject is already cluster-admin through KUBE-PRIVESC-017) but does count
+// as a grantor for CutBreakers, so a half held by both a wildcard and a narrow binding has
+// no sole grantor and contributes no breaker.
+func addCSRSignEdge(graph *models.EscalationGraph, subject models.SubjectRef, rules []permissions.EffectiveRule) {
+	signBy, statusBy := map[cutKey]bool{}, map[cutKey]bool{}
+	var signNarrow, statusNarrow bool
+	for _, r := range rules {
+		if r.Namespace != "" {
+			continue // signers and CSRs are cluster-scoped; namespaced grants are dead RBAC
+		}
+		key := cutKey{binding: r.SourceBinding, namespace: r.Namespace}
+		if len(r.SignersCovered([]string{permissions.SignerAPIServerClient}, "sign")) > 0 {
+			signBy[key] = true
+			signNarrow = signNarrow || !isFullWildcardRule(r)
+		}
+		if matchesResourceVerb(r, []string{"certificatesigningrequests/status"}, []string{"update", "patch"}) {
+			statusBy[key] = true
+			statusNarrow = statusNarrow || !isFullWildcardRule(r)
+		}
+	}
+	if !signNarrow || !statusNarrow {
+		return
+	}
+	ensureSubjectNode(graph, subject)
+	addEdge(graph, nodeID(subject), sinkSystemMasters, &models.EscalationEdge{
+		Technique:   "KUBE-PRIVESC-024",
+		Action:      "csr_sign",
+		Permission:  "sign signers/kubernetes.io/kube-apiserver-client + update certificatesigningrequests/status",
+		Description: "is an authorized signer for apiserver client certificates and can issue one for any identity without an approval step",
+		CutBreakers: cutBreakers(signBy, statusBy),
 	})
 }
 
@@ -884,9 +940,12 @@ var actionDifficulty = map[string]string{
 	"control_plane_pki_theft":      difficultyModerate,
 	"static_pod_admission_bypass":  difficultyModerate,
 
-	// Needs attacker-controlled infrastructure or a timing window.
+	// Needs attacker-controlled infrastructure, a timing window, or key material the
+	// grant designates but the snapshot cannot confirm the holder has (csr_sign: the
+	// signing CA key that makes an issued certificate authenticate).
 	"node_drain_migrate":   difficultyHard,
 	"imds_node_role_pivot": difficultyHard,
+	"csr_sign":             difficultyHard,
 }
 
 // difficultyForAction returns the rating for an action, defaulting to moderate.
@@ -1007,6 +1066,7 @@ var resourceAPIGroup = map[string]string{
 	// certificates.k8s.io
 	"certificatesigningrequests":          "certificates.k8s.io",
 	"certificatesigningrequests/approval": "certificates.k8s.io",
+	"certificatesigningrequests/status":   "certificates.k8s.io",
 }
 
 // matchesResourceVerb reports whether a rule authorizes any of the given verbs on

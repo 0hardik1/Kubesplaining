@@ -154,3 +154,81 @@ func TestEffectiveRuleGrantsAndNameScoped(t *testing.T) {
 		t.Error("name-scoped get secrets should still grant a scoped read")
 	}
 }
+
+// TestSignersCoveredNameGrammar pins the signer-name grammar, which is the one place
+// resourceNames does NOT mean "these object instances". For the virtual `signers`
+// resource the names are signerNames, with their own wildcard forms, so an
+// unrestricted rule covers every signer while a rule pinned to somebody else's
+// signer covers none of the ones that matter.
+func TestSignersCoveredNameGrammar(t *testing.T) {
+	tests := []struct {
+		name          string
+		apiGroups     []string
+		resources     []string
+		verbs         []string
+		resourceNames []string
+		wantedVerbs   []string
+		want          []string
+	}{
+		{
+			name:      "no resourceNames covers every client-auth signer",
+			apiGroups: []string{"certificates.k8s.io"}, resources: []string{"signers"}, verbs: []string{"sign"},
+			wantedVerbs: []string{"sign"}, want: ClientAuthSigners,
+		},
+		{
+			name:      "exact signer name",
+			apiGroups: []string{"certificates.k8s.io"}, resources: []string{"signers"}, verbs: []string{"approve"},
+			resourceNames: []string{SignerAPIServerClient}, wantedVerbs: []string{"approve"},
+			want: []string{SignerAPIServerClient},
+		},
+		{
+			name:      "domain wildcard covers the whole kubernetes.io family",
+			apiGroups: []string{"certificates.k8s.io"}, resources: []string{"signers"}, verbs: []string{"sign"},
+			resourceNames: []string{"kubernetes.io/*"}, wantedVerbs: []string{"sign"}, want: ClientAuthSigners,
+		},
+		{
+			name:      "*/* covers everything",
+			apiGroups: []string{"certificates.k8s.io"}, resources: []string{"signers"}, verbs: []string{"sign"},
+			resourceNames: []string{"*/*"}, wantedVerbs: []string{"sign"}, want: ClientAuthSigners,
+		},
+		{
+			name:      "third-party signer covers none of the apiserver-trusted ones",
+			apiGroups: []string{"certificates.k8s.io"}, resources: []string{"signers"}, verbs: []string{"sign"},
+			resourceNames: []string{"example.com/my-signer"}, wantedVerbs: []string{"sign"}, want: nil,
+		},
+		{
+			name:      "third-party domain wildcard covers none either",
+			apiGroups: []string{"certificates.k8s.io"}, resources: []string{"signers"}, verbs: []string{"sign"},
+			resourceNames: []string{"example.com/*"}, wantedVerbs: []string{"sign"}, want: nil,
+		},
+		{
+			name:      "wrong verb grants nothing",
+			apiGroups: []string{"certificates.k8s.io"}, resources: []string{"signers"}, verbs: []string{"get", "list"},
+			wantedVerbs: []string{"sign"}, want: nil,
+		},
+		{
+			name:      "wrong API group grants nothing (a CRD named signers is not this one)",
+			apiGroups: []string{"example.com"}, resources: []string{"signers"}, verbs: []string{"sign"},
+			wantedVerbs: []string{"sign"}, want: nil,
+		},
+		{
+			name:      "verb wildcard authorizes sign",
+			apiGroups: []string{"certificates.k8s.io"}, resources: []string{"signers"}, verbs: []string{"*"},
+			resourceNames: []string{SignerAPIServerClientKubelet}, wantedVerbs: []string{"sign"},
+			want: []string{SignerAPIServerClientKubelet},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SignersCovered(tt.apiGroups, tt.resources, tt.verbs, tt.resourceNames, ClientAuthSigners, tt.wantedVerbs)
+			if len(got) != len(tt.want) {
+				t.Fatalf("SignersCovered() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("SignersCovered() = %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}

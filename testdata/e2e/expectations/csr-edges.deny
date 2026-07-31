@@ -1,0 +1,21 @@
+# Negative guards for the certificates module, checked against the standard-preset
+# full scan (.tmp/e2e-report-full/findings.json). Same matching rule as the other
+# *.deny files: a line matches when a finding's id equals it or starts with
+# "<line>:", so a bare rule ID bans every instance.
+#
+# These two are the reason this file exists. A kind cluster is a kubeadm cluster,
+# so it always carries node-bootstrap CertificateSigningRequests: signer
+# `kubernetes.io/kube-apiserver-client-kubelet`, requester `system:bootstrap:<id>`
+# or `system:node:<name>`, auto-approved by the controller-manager. If the
+# certificates module fires on those, it fires on literally every real cluster on
+# day one and the module is noise.
+#
+# KUBE-CSR-001 is scoped to ServiceAccount requesters precisely so the bootstrap
+# flow (never a ServiceAccount) and human cert onboarding fall outside it;
+# KUBE-CSR-002 is scoped to the `kubernetes.io/legacy-unknown` signer, which no
+# current cluster uses. Neither should have anything to say about a fresh kind
+# cluster. Positive coverage for both lives in the corpus case
+# testdata/corpus/csr-issuance/, which can construct CSR objects with arbitrary
+# requesters without needing an impersonated apply.
+KUBE-CSR-001
+KUBE-CSR-002

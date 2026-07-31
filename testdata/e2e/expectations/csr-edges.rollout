@@ -1,2 +1,3 @@
 # Workloads from 14-csr.yaml the e2e script must wait for before scanning.
 deploy/csr-mint-app:csr-fixtures
+deploy/csr-sign-app:csr-fixtures

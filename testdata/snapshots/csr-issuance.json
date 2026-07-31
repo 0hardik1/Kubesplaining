@@ -1,0 +1,171 @@
+{
+  "metadata": {
+    "kubesplaining_version": "dev",
+    "snapshot_timestamp": "2026-07-31T00:00:00Z",
+    "cluster_name": "csr-issuance-fixture",
+    "cluster_version": "v1.35.0",
+    "api_server_url": "https://fixture.local"
+  },
+  "resources": {
+    "namespaces": [
+      {
+        "metadata": {
+          "name": "certs",
+          "labels": {
+            "pod-security.kubernetes.io/enforce": "restricted",
+            "pod-security.kubernetes.io/audit": "restricted",
+            "pod-security.kubernetes.io/warn": "restricted"
+          }
+        }
+      }
+    ],
+    "service_accounts": [
+      {
+        "metadata": {
+          "name": "minter",
+          "namespace": "certs"
+        }
+      },
+      {
+        "metadata": {
+          "name": "signer",
+          "namespace": "certs"
+        }
+      }
+    ],
+    "cluster_roles": [
+      {
+        "metadata": {
+          "name": "cr-csr-mint"
+        },
+        "rules": [
+          {
+            "apiGroups": ["certificates.k8s.io"],
+            "resources": ["certificatesigningrequests"],
+            "verbs": ["create", "get", "list"]
+          },
+          {
+            "apiGroups": ["certificates.k8s.io"],
+            "resources": ["certificatesigningrequests/approval"],
+            "verbs": ["update"]
+          },
+          {
+            "apiGroups": ["certificates.k8s.io"],
+            "resources": ["signers"],
+            "resourceNames": ["kubernetes.io/kube-apiserver-client"],
+            "verbs": ["approve"]
+          }
+        ]
+      },
+      {
+        "metadata": {
+          "name": "cr-csr-sign"
+        },
+        "rules": [
+          {
+            "apiGroups": ["certificates.k8s.io"],
+            "resources": ["signers"],
+            "resourceNames": ["kubernetes.io/kube-apiserver-client"],
+            "verbs": ["sign"]
+          },
+          {
+            "apiGroups": ["certificates.k8s.io"],
+            "resources": ["certificatesigningrequests/status"],
+            "verbs": ["update"]
+          }
+        ]
+      }
+    ],
+    "cluster_role_bindings": [
+      {
+        "metadata": {
+          "name": "crb-csr-mint"
+        },
+        "roleRef": {
+          "apiGroup": "rbac.authorization.k8s.io",
+          "kind": "ClusterRole",
+          "name": "cr-csr-mint"
+        },
+        "subjects": [
+          {
+            "kind": "ServiceAccount",
+            "name": "minter",
+            "namespace": "certs"
+          }
+        ]
+      },
+      {
+        "metadata": {
+          "name": "crb-csr-sign"
+        },
+        "roleRef": {
+          "apiGroup": "rbac.authorization.k8s.io",
+          "kind": "ClusterRole",
+          "name": "cr-csr-sign"
+        },
+        "subjects": [
+          {
+            "kind": "ServiceAccount",
+            "name": "signer",
+            "namespace": "certs"
+          }
+        ]
+      }
+    ],
+    "certificate_signing_requests": [
+      {
+        "name": "minted-by-workload",
+        "signer_name": "kubernetes.io/kube-apiserver-client",
+        "username": "system:serviceaccount:certs:minter",
+        "usages": ["client auth", "digital signature"],
+        "groups": ["system:serviceaccounts", "system:serviceaccounts:certs", "system:authenticated"],
+        "conditions": [
+          {
+            "type": "Approved",
+            "status": "True",
+            "reason": "KubectlApprove",
+            "message": "This CSR was approved by kubectl certificate approve."
+          }
+        ],
+        "approved": true
+      },
+      {
+        "name": "legacy-signer-probe",
+        "signer_name": "kubernetes.io/legacy-unknown",
+        "username": "kubernetes-admin",
+        "usages": ["client auth"],
+        "groups": ["kubeadm:cluster-admins", "system:authenticated"]
+      },
+      {
+        "name": "csr-node-bootstrap",
+        "signer_name": "kubernetes.io/kube-apiserver-client-kubelet",
+        "username": "system:bootstrap:abcdef",
+        "usages": ["client auth", "digital signature", "key encipherment"],
+        "groups": ["system:bootstrappers", "system:bootstrappers:kubeadm:default-node-token", "system:authenticated"],
+        "conditions": [
+          {
+            "type": "Approved",
+            "status": "True",
+            "reason": "AutoApproved",
+            "message": "Auto approving kubelet client certificate after SubjectAccessReview."
+          }
+        ],
+        "approved": true
+      },
+      {
+        "name": "denied-attempt",
+        "signer_name": "kubernetes.io/kube-apiserver-client",
+        "username": "system:serviceaccount:certs:minter",
+        "usages": ["client auth"],
+        "conditions": [
+          {
+            "type": "Denied",
+            "status": "True",
+            "reason": "PolicyDenied",
+            "message": "Denied by the cluster's CSR approver policy."
+          }
+        ]
+      }
+    ]
+  }
+}

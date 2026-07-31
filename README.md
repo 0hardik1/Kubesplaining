@@ -120,7 +120,7 @@ docker run --rm -v "$HOME/.kube:/root/.kube" ghcr.io/0hardik1/kubesplaining:late
 
 ## What it checks
 
-45 stable rule IDs across 8 modules today, plus the privilege-escalation graph that chains them. Full per-rule severity, detection logic, and remediation: [docs/findings.md](docs/findings.md).
+73 stable rule IDs across 11 modules today, plus the privilege-escalation graph that chains them. Full per-rule severity, detection logic, and remediation: [docs/findings.md](docs/findings.md).
 
 | Module | Rules | Focus |
 | --- | --- | --- |
@@ -130,6 +130,7 @@ docker run --rm -v "$HOME/.kube:/root/.kube" ghcr.io/0hardik1/kubesplaining:late
 | **admission** | 3 | failurePolicy: Ignore, objectSelector bypass, sensitive-namespace exemptions |
 | **secrets** | 4 | legacy SA token secrets, credential-like ConfigMap keys, CoreDNS tampering |
 | **serviceaccount** | 4 | privileged SAs, default-SA RBAC, DaemonSet token blast-radius |
+| **certificates** | 2 | CertificateSigningRequest objects: a workload ServiceAccount asking for a client cert, or a request against the `legacy-unknown` signer |
 | **privesc** | 4 sinks | graph chains to cluster-admin / system:masters / node-escape / kube-system-secrets |
 | **leastprivilege** | 4 | granted-but-unused RBAC verbs from audit-log diff; opt-in via `--audit-log`. See [docs/audit-logs.md](docs/audit-logs.md) for setup and the [Least-Privilege analyzer section](#least-privilege-analyzer-audit-log-driven) for the behavior matrix |
 
@@ -418,7 +419,7 @@ To audit what the defaults are hiding, re-run with `--exclusions-preset=none` an
 | `--severity-threshold` | `low` | Hide findings below this severity (`critical` / `high` / `medium` / `low` / `info`). |
 | `--output-format` | `html,json` | Comma-separated list: `html`, `json`, `csv`, `sarif`. |
 | `--output-dir` | `./kubesplaining-report` | Where reports are written. |
-| `--only-modules` / `--skip-modules` | (none) | Scope analyzers (`rbac`, `podsec`, `network`, `admission`, `secrets`, `serviceaccount`, `privesc`, `leastprivilege`). |
+| `--only-modules` / `--skip-modules` | (none) | Scope analyzers (`rbac`, `podsec`, `network`, `admission`, `secrets`, `serviceaccount`, `privesc`, `leastprivilege`, `certificates`). |
 | `--least-privilege-only` | `false` | Focus mode: hide everything except RBAC tightening opportunities and land on the **Least Privilege** tab. Requires `--audit-log`. |
 | `--audit-log` | (none) | Path to a kube-apiserver audit log (file or directory; repeatable). Opt-in: without it the `leastprivilege` module is a no-op. See [docs/audit-logs.md](docs/audit-logs.md) for setup on self-managed, kind, and EKS. |
 | `--audit-source` | `native` | Audit-log format: `native` (kube-apiserver JSON-lines) or `eks` (CloudWatch `filter-log-events` export). |

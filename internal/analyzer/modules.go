@@ -19,6 +19,7 @@ package analyzer
 import (
 	"github.com/0hardik1/kubesplaining/internal/analyzer/admission"
 	celmod "github.com/0hardik1/kubesplaining/internal/analyzer/cel"
+	"github.com/0hardik1/kubesplaining/internal/analyzer/certificates"
 	"github.com/0hardik1/kubesplaining/internal/analyzer/cloud"
 	"github.com/0hardik1/kubesplaining/internal/analyzer/containersec"
 	"github.com/0hardik1/kubesplaining/internal/analyzer/leastprivilege"
@@ -55,6 +56,10 @@ var DefaultModules = []func(cfg Config) Module{
 	},
 	func(_ Config) Module { return leastprivilege.New(nil) },
 	func(_ Config) Module { return containersec.New() },
+	// certificates reads CertificateSigningRequest objects — the evidence that the
+	// certificates API was used, complementing the rbac module's KUBE-PRIVESC-011 /
+	// -024 rules, which flag the grants that make it usable.
+	func(_ Config) Module { return certificates.New() },
 	// custom-rules is the CEL-based user rule loader (slot #20). It's a no-op
 	// when CustomRulesDir is empty, matching the "registered but silent"
 	// pattern the containersec stub above uses.

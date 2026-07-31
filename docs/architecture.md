@@ -36,7 +36,7 @@ The snapshot is a plain JSON file. `kubesplaining download` writes it; `kubespla
 
 ## Stage 3 — Analysis ([internal/analyzer/engine.go](../internal/analyzer/engine.go))
 
-The engine runs seven modules **in parallel** against the snapshot. Each module implements the same interface:
+The engine runs its modules **in parallel** against the snapshot (the canonical, ordered list is `DefaultModules` in [internal/analyzer/modules.go](../internal/analyzer/modules.go)). Each module implements the same interface:
 
 ```go
 type Module interface {
@@ -53,7 +53,8 @@ The modules:
 4. **admission** — webhook inventory, failurePolicy, bypass surface.
 5. **secrets** — long-lived SA tokens, credential-like ConfigMap keys, CoreDNS tampering.
 6. **serviceaccount** — default-SA risk, workload-mounted SA blast radius, DaemonSet amplification.
-7. **privesc** — **the differentiator.** Builds a directed graph where nodes are RBAC subjects and sinks like `cluster-admin`, `node-escape`, `kube-system-secrets`, `system:masters`. Edges are labeled with the technique that enables the hop. Runs BFS from every non-system subject (capped at `--max-privesc-depth`, default 5) and emits one finding per `(source, sink)` pair with the full hop-by-hop chain attached. A second pass then re-runs the search per source with the binding that granted the first hop banned; a route that still reaches the sink becomes the finding's `AlternateEscalationPath` plus the tag `privesc:survives-first-cut`, so the finding states whether its own recommended fix actually closes the route.
+7. **certificates** — CertificateSigningRequest objects: who requested a client certificate, against which signer, and whether it was approved. The permission side of the same API (who *could* mint one) lives in **rbac** as `KUBE-PRIVESC-011` / `-024`; this module is the evidence side, and it never infers one from the other.
+8. **privesc** — **the differentiator.** Builds a directed graph where nodes are RBAC subjects and sinks like `cluster-admin`, `node-escape`, `kube-system-secrets`, `system:masters`. Edges are labeled with the technique that enables the hop. Runs BFS from every non-system subject (capped at `--max-privesc-depth`, default 5) and emits one finding per `(source, sink)` pair with the full hop-by-hop chain attached. A second pass then re-runs the search per source with the binding that granted the first hop banned; a route that still reaches the sink becomes the finding's `AlternateEscalationPath` plus the tag `privesc:survives-first-cut`, so the finding states whether its own recommended fix actually closes the route.
 
 After modules return, the engine post-processes the combined findings list:
 
