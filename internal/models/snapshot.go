@@ -61,11 +61,12 @@ type SnapshotResources struct {
 	// the collector; missing-permission errors degrade them to empty (warning, not fatal).
 	PersistentVolumes      []corev1.PersistentVolume      `json:"persistent_volumes,omitempty"`
 	PersistentVolumeClaims []corev1.PersistentVolumeClaim `json:"persistent_volume_claims,omitempty"`
-	// CertificateSigningRequests are the cluster's pending / approved CSRs. They drive
-	// the KUBE-PRIVESC-011 detection (a subject that can both create CSRs and approve
-	// them at the `certificatesigningrequests/approval` subresource can mint a
-	// kubelet-signed client cert carrying any Subject / Organization, including
-	// `O=system:masters` which the apiserver hard-codes as cluster-admin).
+	// CertificateSigningRequests are the cluster's pending / approved CSRs. They are
+	// the evidence side of the certificates API, consumed by the `certificates`
+	// analyzer (KUBE-CSR-001 / -002): who asked for a client certificate, against
+	// which signer, and whether it was approved. The permission side — who *could*
+	// mint one — is KUBE-PRIVESC-011 / -024 in the rbac analyzer and is derived
+	// entirely from RBAC, not from these objects.
 	CertificateSigningRequests []CSR                                                    `json:"certificate_signing_requests,omitempty"`
 	ValidatingWebhookConfigs   []admissionregistrationv1.ValidatingWebhookConfiguration `json:"validating_webhook_configs,omitempty"`
 	MutatingWebhookConfigs     []admissionregistrationv1.MutatingWebhookConfiguration   `json:"mutating_webhook_configs,omitempty"`

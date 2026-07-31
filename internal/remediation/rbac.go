@@ -616,13 +616,14 @@ func renderBindingYAML(b bindingRef, subjects []rbacv1.Subject) string {
 // underlying cause, which is why the advisory copy branches on this set.
 //
 // One entry per builder in internal/analyzer/privesc/graph.go: addSecretMintEdge,
-// addNodeMigrateEdge and addCSRApprovalEdge, the three that call cutBreakers. A
-// fourth correlation edge added there needs an entry here, or its advisory copy will
-// send the operator to the workload layer for a purely RBAC problem.
+// addNodeMigrateEdge, addCSRApprovalEdge and addCSRSignEdge, the four that call
+// cutBreakers. A fifth correlation edge added there needs an entry here, or its
+// advisory copy will send the operator to the workload layer for a purely RBAC problem.
 var correlationRootedActions = map[string]bool{
 	"secret_mint_token":  true,
 	"node_drain_migrate": true,
 	"csr_approve":        true,
+	"csr_sign":           true,
 }
 
 // privescPathAdvisoryDiff is the fallback we emit when ForPrivescPath can't

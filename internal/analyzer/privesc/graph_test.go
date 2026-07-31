@@ -1145,3 +1145,115 @@ func TestPodCreateTargetsClusterScopeOrderIsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// TestCSRSignEdge covers addCSRSignEdge (KUBE-PRIVESC-024). The edge models the
+// signing path, which needs no approval at all: `sign` on the signer plus the
+// `certificatesigningrequests/status` write. Three things are pinned here.
+//
+//  1. Both halves are required. Either alone issues nothing.
+//  2. Only `kubernetes.io/kube-apiserver-client` produces an edge. The kubelet
+//     signers mint node identities, and the graph has no node-identity sink; aiming
+//     them at system_masters would overstate the gain. The rbac finding still fires
+//     for them, which is why this is a graph-level assertion, not a detection one.
+//  3. The edge carries CutBreakers. Like every correlation edge it names no single
+//     SourceBinding, so without breakers the cut-resilient pass could never ban it
+//     and every chain through it would claim to survive its own remediation.
+func TestCSRSignEdge(t *testing.T) {
+	t.Parallel()
+
+	statusWrite := rbacv1.PolicyRule{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests/status"}, Verbs: []string{"update"}}
+
+	cases := []struct {
+		name       string
+		rules      []rbacv1.PolicyRule
+		expectEdge bool
+	}{
+		{
+			name:       "sign only — no edge",
+			rules:      []rbacv1.PolicyRule{{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"signers"}, Verbs: []string{"sign"}}},
+			expectEdge: false,
+		},
+		{
+			name:       "status write only — no edge",
+			rules:      []rbacv1.PolicyRule{statusWrite},
+			expectEdge: false,
+		},
+		{
+			name: "sign on kube-apiserver-client + status — edge fires",
+			rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"signers"}, Verbs: []string{"sign"}, ResourceNames: []string{"kubernetes.io/kube-apiserver-client"}},
+				statusWrite,
+			},
+			expectEdge: true,
+		},
+		{
+			name: "unrestricted signers grant + status — edge fires",
+			rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"signers"}, Verbs: []string{"sign"}},
+				statusWrite,
+			},
+			expectEdge: true,
+		},
+		{
+			name: "kubelet signer only + status — no edge (node identity, not cluster-admin)",
+			rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"signers"}, Verbs: []string{"sign"}, ResourceNames: []string{"kubernetes.io/kube-apiserver-client-kubelet"}},
+				statusWrite,
+			},
+			expectEdge: false,
+		},
+		{
+			name: "approve instead of sign + status — no edge (that is the -011 path)",
+			rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"signers"}, Verbs: []string{"approve"}},
+				statusWrite,
+			},
+			expectEdge: false,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			snapshot := models.Snapshot{
+				Resources: models.SnapshotResources{
+					ClusterRoles: []rbacv1.ClusterRole{
+						{ObjectMeta: objectMeta("signer-role", ""), Rules: tc.rules},
+					},
+					ClusterRoleBindings: []rbacv1.ClusterRoleBinding{
+						{
+							ObjectMeta: objectMeta("signer-binding", ""),
+							RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "signer-role"},
+							Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "signer-sa", Namespace: "default"}},
+						},
+					},
+				},
+			}
+			graph := BuildGraph(snapshot)
+			const subjectID = "subject:ServiceAccount/default/signer-sa"
+			var sawEdge bool
+			for _, edge := range graph.Edges {
+				if edge.From != subjectID || edge.Action != "csr_sign" {
+					continue
+				}
+				sawEdge = true
+				if edge.To != sinkSystemMasters {
+					t.Errorf("csr_sign edge should target the system_masters sink, got %q", edge.To)
+				}
+				if edge.Technique != "KUBE-PRIVESC-024" {
+					t.Errorf("expected Technique=KUBE-PRIVESC-024, got %q", edge.Technique)
+				}
+				if edge.Difficulty != difficultyHard {
+					t.Errorf("csr_sign must be rated hard (the signing CA key is beyond the grant), got %q", edge.Difficulty)
+				}
+				if len(edge.CutBreakers) == 0 {
+					t.Errorf("csr_sign edge carries no CutBreakers, so no cut can ever ban it: %+v", edge)
+				}
+			}
+			if sawEdge != tc.expectEdge {
+				t.Fatalf("expectEdge=%v, sawEdge=%v; edges=%+v", tc.expectEdge, sawEdge, graph.Edges)
+			}
+		})
+	}
+}

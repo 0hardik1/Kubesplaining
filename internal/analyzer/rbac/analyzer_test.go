@@ -455,6 +455,17 @@ func TestCSRMintPrimitive(t *testing.T) {
 					if !strings.Contains(f.Description, "system:masters") {
 						t.Errorf("KUBE-PRIVESC-011 description should explain the system:masters mechanism: %q", f.Description)
 					}
+					// The copy must lead an operator to the claim that actually works on a
+					// modern cluster. CertificateSubjectRestriction blocks the system:masters
+					// Organization for the kube-apiserver-client signer, so a reproduction that
+					// only tries that form wrongly reads as "not exploitable"; the Common Name
+					// route (any identity string, including a ServiceAccount's) is unguarded.
+					if !strings.Contains(f.Description, "CertificateSubjectRestriction") {
+						t.Errorf("KUBE-PRIVESC-011 description must say system:masters is blocked by CertificateSubjectRestriction: %q", f.Description)
+					}
+					if !strings.Contains(f.Description, "CN=system:serviceaccount:kube-system:<sa>") {
+						t.Errorf("KUBE-PRIVESC-011 description must show the ServiceAccount-CN variant that is not blocked: %q", f.Description)
+					}
 				}
 			}
 			if sawCSR != tc.fires {
@@ -704,4 +715,209 @@ func TestPodCreatePrivilegedEscape(t *testing.T) {
 		t.Fatalf("Analyze() error = %v", err)
 	}
 	assertRuleAbsent(t, findings, "KUBE-PRIVESC-002")
+}
+
+// csrSignerSnapshot builds a one-subject snapshot from a rule set, for the
+// signer-half tests below.
+func csrSignerSnapshot(rules []rbacv1.PolicyRule) models.Snapshot {
+	return models.Snapshot{
+		Resources: models.SnapshotResources{
+			ClusterRoles: []rbacv1.ClusterRole{
+				{ObjectMeta: metav1ObjectMeta("signer-role", ""), Rules: rules},
+			},
+			ClusterRoleBindings: []rbacv1.ClusterRoleBinding{
+				{
+					ObjectMeta: metav1ObjectMeta("signer-binding", ""),
+					RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "signer-role"},
+					Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "signer-sa", Namespace: "default"}},
+				},
+			},
+		},
+	}
+}
+
+// TestCSRMintSignerHalf covers the third gate on KUBE-PRIVESC-011. Since 1.19 the
+// CertificateApproval admission plugin also requires `approve` on the CSR's signer,
+// so the two CSR verbs alone are a latent escalation (HIGH) while the same subject
+// holding the signer verb has every gate the apiserver enforces already satisfied
+// (CRITICAL). Detection still fires either way: the plugin is disableable and the
+// /approval verb is the grant an operator audits.
+func TestCSRMintSignerHalf(t *testing.T) {
+	t.Parallel()
+
+	csrHalves := []rbacv1.PolicyRule{
+		{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests"}, Verbs: []string{"create"}},
+		{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests/approval"}, Verbs: []string{"update"}},
+	}
+
+	cases := []struct {
+		name         string
+		extra        []rbacv1.PolicyRule
+		wantSeverity models.Severity
+		wantPhrase   string
+	}{
+		{
+			name:         "no signer verb — latent, HIGH",
+			wantSeverity: models.SeverityHigh,
+			wantPhrase:   "does NOT currently hold `approve` on any signer",
+		},
+		{
+			name: "approve on the apiserver-client signer — fully authorized, CRITICAL",
+			extra: []rbacv1.PolicyRule{
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"signers"}, Verbs: []string{"approve"}, ResourceNames: []string{"kubernetes.io/kube-apiserver-client"}},
+			},
+			wantSeverity: models.SeverityCritical,
+			wantPhrase:   "ALSO holds `approve` on",
+		},
+		{
+			name: "approve pinned to a third-party signer — still latent",
+			extra: []rbacv1.PolicyRule{
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"signers"}, Verbs: []string{"approve"}, ResourceNames: []string{"example.com/my-signer"}},
+			},
+			wantSeverity: models.SeverityHigh,
+			wantPhrase:   "does NOT currently hold `approve` on any signer",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			findings, err := New().Analyze(context.Background(), csrSignerSnapshot(append(append([]rbacv1.PolicyRule{}, csrHalves...), tc.extra...)))
+			if err != nil {
+				t.Fatalf("Analyze() error = %v", err)
+			}
+			var found bool
+			for _, f := range findings {
+				if f.RuleID != "KUBE-PRIVESC-011" {
+					continue
+				}
+				found = true
+				if f.Severity != tc.wantSeverity {
+					t.Errorf("severity = %q, want %q", f.Severity, tc.wantSeverity)
+				}
+				if !strings.Contains(f.Description, tc.wantPhrase) {
+					t.Errorf("description missing %q: %q", tc.wantPhrase, f.Description)
+				}
+			}
+			if !found {
+				t.Fatal("KUBE-PRIVESC-011 must fire regardless of the signer half")
+			}
+		})
+	}
+}
+
+// TestCSRSignerControl covers KUBE-PRIVESC-024: `sign` on an apiserver-trusted
+// signer PLUS the `certificatesigningrequests/status` write. That pair is what the
+// apiserver enforces for being a signer, and it skips the approval path entirely.
+// Either half alone issues nothing, and a grant scoped to a third-party signer is
+// not an apiserver credential at all.
+func TestCSRSignerControl(t *testing.T) {
+	t.Parallel()
+
+	statusWrite := rbacv1.PolicyRule{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests/status"}, Verbs: []string{"update"}}
+
+	cases := []struct {
+		name         string
+		rules        []rbacv1.PolicyRule
+		fires        bool
+		wantSeverity models.Severity
+		reason       string
+	}{
+		{
+			name:   "sign only — no finding",
+			rules:  []rbacv1.PolicyRule{{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"signers"}, Verbs: []string{"sign"}}},
+			fires:  false,
+			reason: "without the status write there is nowhere to put an issued certificate",
+		},
+		{
+			name:   "status write only — no finding",
+			rules:  []rbacv1.PolicyRule{statusWrite},
+			fires:  false,
+			reason: "the CertificateSigning admission plugin rejects the write without the sign verb",
+		},
+		{
+			name: "sign on kube-apiserver-client + status — CRITICAL",
+			rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"signers"}, Verbs: []string{"sign"}, ResourceNames: []string{"kubernetes.io/kube-apiserver-client"}},
+				statusWrite,
+			},
+			fires:        true,
+			wantSeverity: models.SeverityCritical,
+		},
+		{
+			name: "sign on the kubelet signer only + status — HIGH",
+			rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"signers"}, Verbs: []string{"sign"}, ResourceNames: []string{"kubernetes.io/kube-apiserver-client-kubelet"}},
+				statusWrite,
+			},
+			fires:        true,
+			wantSeverity: models.SeverityHigh,
+			reason:       "kubelet signers mint node identities, a serious but bounded gain",
+		},
+		{
+			name: "sign scoped to a third-party signer — no finding",
+			rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"signers"}, Verbs: []string{"sign"}, ResourceNames: []string{"example.com/my-signer"}},
+				statusWrite,
+			},
+			fires:  false,
+			reason: "that CA is not in the apiserver's --client-ca-file, so its certs authenticate no one",
+		},
+		{
+			name: "namespaced grant — no finding",
+			rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"signers"}, Verbs: []string{"sign"}},
+				statusWrite,
+			},
+			fires:  false,
+			reason: "signers and CSRs are cluster-scoped; a namespaced grant is dead RBAC",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			snapshot := csrSignerSnapshot(tc.rules)
+			if tc.name == "namespaced grant — no finding" {
+				// Same rules, bound through a namespaced RoleBinding instead.
+				snapshot = models.Snapshot{
+					Resources: models.SnapshotResources{
+						Roles: []rbacv1.Role{{ObjectMeta: metav1ObjectMeta("signer-role", "team-a"), Rules: tc.rules}},
+						RoleBindings: []rbacv1.RoleBinding{
+							{
+								ObjectMeta: metav1ObjectMeta("signer-rb", "team-a"),
+								RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "signer-role"},
+								Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "signer-sa", Namespace: "team-a"}},
+							},
+						},
+					},
+				}
+			}
+			findings, err := New().Analyze(context.Background(), snapshot)
+			if err != nil {
+				t.Fatalf("Analyze() error = %v", err)
+			}
+			var found bool
+			for _, f := range findings {
+				if f.RuleID != "KUBE-PRIVESC-024" {
+					continue
+				}
+				found = true
+				if f.Severity != tc.wantSeverity {
+					t.Errorf("severity = %q, want %q", f.Severity, tc.wantSeverity)
+				}
+				if f.Scope.Level != models.ScopeCluster {
+					t.Errorf("scope = %q, want cluster", f.Scope.Level)
+				}
+				if !strings.Contains(f.Description, "--client-ca-file") {
+					t.Errorf("description must state the CA-key condition that makes an issued cert authenticate: %q", f.Description)
+				}
+			}
+			if found != tc.fires {
+				t.Fatalf("fires=%v, found=%v (%s)", tc.fires, found, tc.reason)
+			}
+		})
+	}
 }

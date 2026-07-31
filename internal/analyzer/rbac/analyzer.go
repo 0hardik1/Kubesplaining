@@ -46,6 +46,7 @@ var (
 	targetBindings    = []permissions.ResourceTarget{permissions.InGroup(groupRBAC, "rolebindings"), permissions.InGroup(groupRBAC, "clusterrolebindings")}
 	targetCSR         = []permissions.ResourceTarget{permissions.InGroup(groupCerts, "certificatesigningrequests")}
 	targetCSRApproval = []permissions.ResourceTarget{permissions.InGroup(groupCerts, "certificatesigningrequests/approval")}
+	targetCSRStatus   = []permissions.ResourceTarget{permissions.InGroup(groupCerts, "certificatesigningrequests/status")}
 )
 
 // grants reports whether this rule authorizes any of verbs on any of targets,
@@ -308,23 +309,27 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 			}
 		}
 
-		// KUBE-PRIVESC-011 — CSR-mint primitive. Detection requires correlating two
-		// separate rules on the same subject: cluster-scoped `create` on
-		// `certificatesigningrequests` AND cluster-scoped `update`/`patch` on
-		// `certificatesigningrequests/approval`. Held together, the subject can
-		// submit a CSR carrying `O=system:masters` (or any principal it picks) in
-		// its Subject DN and self-approve it. The kubelet-signed cert then
-		// authenticates as cluster-admin.
+		// KUBE-PRIVESC-011 / -024 — the two certificates-API mint primitives. Both
+		// correlate separate rules on the same subject, so they run as a per-subject
+		// pass after the per-rule switch above: the halves can arrive from different
+		// bindings, and only the union over the subject's whole effective-rule set
+		// can see that. Every half is cluster-scoped — CSRs and `signers` are
+		// cluster-scoped resources, so a namespaced grant of any of them is dead RBAC.
 		//
-		// We do this as a per-subject pass after the per-rule switch above so we
-		// can union both halves across the subject's entire effective-rule set,
-		// then emit one finding (anchored to the create rule for evidence) when
-		// both halves are present.
-		var createRule, approveRule *effectiveRule
+		//   -011 (approval path): `create certificatesigningrequests` +
+		//        `update/patch certificatesigningrequests/approval`, optionally plus
+		//        `approve` on the signer, which the CertificateApproval admission
+		//        plugin has required since 1.19. Holding the signer half too makes
+		//        the path fully enforced-authorized rather than plugin-dependent.
+		//   -024 (signing path): `sign` on the signer + `update/patch
+		//        certificatesigningrequests/status`. This skips approval entirely:
+		//        the holder IS the signer and writes the issued cert itself.
+		var createRule, approveRule, signerApproveRule, signRule, statusRule *effectiveRule
+		var approveSigners, signSigners []string
 		for i := range perms.Rules {
 			r := &perms.Rules[i]
 			if r.Namespace != "" {
-				continue // CSRs are cluster-scoped; namespace-scoped grants are dead RBAC
+				continue // CSRs and signers are cluster-scoped; namespaced grants are dead RBAC
 			}
 			if matchesCSRCreate(*r) && createRule == nil {
 				createRule = r
@@ -332,20 +337,83 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 			if matchesCSRApprove(*r) && approveRule == nil {
 				approveRule = r
 			}
-		}
-		if createRule != nil && approveRule != nil {
-			blastRadius := 1.2 // CSRs are cluster-scoped, always blast-radius=1.2
-			exploitability := 1.0
-			if perms.Subject.Kind == "ServiceAccount" && usedServiceAccounts[perms.Subject.Key()] {
-				exploitability = 1.2
+			if signerApproveRule == nil {
+				if covered := r.signersApproved(); len(covered) > 0 {
+					signerApproveRule, approveSigners = r, covered
+				}
 			}
-			scaledScore := func(base float64) float64 {
-				return scoring.Clamp(base * exploitability * blastRadius)
+			if signRule == nil {
+				if covered := r.signersSigned(); len(covered) > 0 {
+					signRule, signSigners = r, covered
+				}
+			}
+			if matchesCSRStatusWrite(*r) && statusRule == nil {
+				statusRule = r
+			}
+		}
+
+		// Named for the certificates rules specifically: the -007 / -016 correlations
+		// below compute their own multipliers, and a shared `blastRadius` here would
+		// only be shadowed there.
+		const csrBlastRadius = 1.2 // CSRs and signers are cluster-scoped, always blast-radius=1.2
+		csrExploitability := 1.0
+		if perms.Subject.Kind == "ServiceAccount" && usedServiceAccounts[perms.Subject.Key()] {
+			csrExploitability = 1.2
+		}
+		csrScore := func(base float64) float64 {
+			return scoring.Clamp(base * csrExploitability * csrBlastRadius)
+		}
+
+		if createRule != nil && approveRule != nil {
+			grants := csrMintGrants{
+				CreateBinding:  createRule.formattedBinding(),
+				CreateRole:     createRule.formattedRole(),
+				ApproveBinding: approveRule.formattedBinding(),
+				ApproveRole:    approveRule.formattedRole(),
+				SignerApprove:  approveSigners,
+			}
+			// Severity splits on the signer half. Without it, the CertificateApproval
+			// admission plugin rejects the approval on a default 1.19+ cluster, so the
+			// grant is a latent misconfiguration; with it, every gate the apiserver
+			// enforces is already satisfied and nothing stands between the subject and
+			// a client cert for the identity of its choice.
+			severity, base := models.SeverityHigh, 7.0
+			if len(approveSigners) > 0 {
+				severity, base = models.SeverityCritical, 8.5
+				grants.SignerBinding = signerApproveRule.formattedBinding()
+				grants.SignerRole = signerApproveRule.formattedRole()
 			}
 			findings = appendFinding(findings, seen, findingFromContent(perms.Subject, *createRule,
-				"KUBE-PRIVESC-011", models.SeverityHigh, models.CategoryPrivilegeEscalation,
-				scaledScore(7.0), // base 7.0 × 1.2 blast = 8.4 (clamped if SA is mounted)
-				contentPrivesc011(perms.Subject, createRule.formattedBinding(), createRule.formattedRole(), approveRule.formattedBinding(), approveRule.formattedRole())))
+				"KUBE-PRIVESC-011", severity, models.CategoryPrivilegeEscalation,
+				csrScore(base), // base × 1.2 blast (clamped if the SA is mounted)
+				contentPrivesc011(perms.Subject, grants)))
+		}
+
+		// KUBE-PRIVESC-024 — signer control. `sign` on an apiserver-trusted client
+		// signer plus the `certificatesigningrequests/status` write is the exact pair
+		// the apiserver enforces for *being* the signer: the CertificateSigning
+		// admission plugin checks `sign` when a status write populates
+		// `status.certificate`. The holder issues certs without any approval step.
+		if signRule != nil && statusRule != nil {
+			// Only the kube-apiserver-client signer accepts an arbitrary Subject DN, so
+			// only it converts into an identity of the holder's choosing (up to
+			// cluster-admin). The kubelet signers issue node identities, which is a
+			// serious but bounded gain, and legacy-unknown is unsigned by modern
+			// controller-managers.
+			severity := models.SeverityHigh
+			if slices.Contains(signSigners, permissions.SignerAPIServerClient) {
+				severity = models.SeverityCritical
+			}
+			findings = appendFinding(findings, seen, findingFromContent(perms.Subject, *signRule,
+				"KUBE-PRIVESC-024", severity, models.CategoryPrivilegeEscalation,
+				csrScore(8.0),
+				contentPrivesc024(perms.Subject, csrSignGrants{
+					Signers:       signSigners,
+					SignBinding:   signRule.formattedBinding(),
+					SignRole:      signRule.formattedRole(),
+					StatusBinding: statusRule.formattedBinding(),
+					StatusRole:    statusRule.formattedRole(),
+				})))
 		}
 
 		// KUBE-PRIVESC-007 — secret-creation token theft. `create` + `get` on
@@ -791,11 +859,38 @@ func matchesCSRCreate(rule effectiveRule) bool {
 
 // matchesCSRApprove reports whether rule grants `update` or `patch` on the
 // `certificatesigningrequests/approval` subresource. The /approval subresource
-// is the only RBAC gate on CSR approval — the parent CSR object's `update` verb
+// is the RBAC gate on CSR approval — the parent CSR object's `update` verb
 // does not allow approval — so this check is narrow on resource and broad on
 // the two verbs `kubectl certificate approve` could use.
+//
+// It is one of two gates, not the only one: since 1.19 the CertificateApproval
+// admission plugin additionally requires the approving identity to hold `approve`
+// on the CSR's signer (see signersApproved). Detection keeps firing on this half
+// alone because the plugin is disableable and the /approval verb is the grant an
+// operator actually audits, but the finding says which of the two the subject holds.
 func matchesCSRApprove(rule effectiveRule) bool {
 	return rule.grants(targetCSRApproval, "update", "patch")
+}
+
+// matchesCSRStatusWrite reports whether rule grants `update` or `patch` on the
+// `certificatesigningrequests/status` subresource — the write that carries the
+// issued certificate. It is the second half of the signing pair (see
+// signersSigned): the CertificateSigning admission plugin authorizes the `sign`
+// verb on the signer when this write populates `status.certificate`.
+func matchesCSRStatusWrite(rule effectiveRule) bool {
+	return rule.grants(targetCSRStatus, "update", "patch")
+}
+
+// signersApproved / signersSigned report which apiserver-trusted client signers
+// this rule grants `approve` / `sign` on, via the virtual `signers` resource.
+// Empty means none. See permissions.SignersCovered for the signer-name grammar
+// (exact name, `kubernetes.io/*` domain wildcard, `*/*`, or no names at all).
+func (r effectiveRule) signersApproved() []string {
+	return permissions.SignersCovered(r.APIGroups, r.Resources, r.Verbs, r.ResourceNames, permissions.ClientAuthSigners, []string{"approve"})
+}
+
+func (r effectiveRule) signersSigned() []string {
+	return permissions.SignersCovered(r.APIGroups, r.Resources, r.Verbs, r.ResourceNames, permissions.ClientAuthSigners, []string{"sign"})
 }
 
 // matchesSecretCreate / matchesSecretGet are the two halves of the

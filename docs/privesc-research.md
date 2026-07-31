@@ -508,6 +508,52 @@ Landed on the deep-chain work (see `docs/superpowers/specs/2026-07-24-privesc-de
   `Difficulty` rating summed across the chain. Length alone no longer downgrades severity; a
   chain containing a `hard` hop does.
 
+### O1b. Implemented 2026-07-31: the certificates API, both halves
+
+- **B / `KUBE-PRIVESC-024`** — signer control shipped, but with a narrower and more defensible
+  shape than the row in §B claims. That row reads "`sign` / `approve` · `signers` → sign an
+  arbitrary client cert `O=system:masters` directly, bypassing the approval controller", which
+  conflates two different grants and overstates one of them:
+
+  - `approve` on `signers` is not a bypass of anything. It is the *second half of approval*,
+    required by the CertificateApproval admission plugin since 1.19 alongside
+    `certificatesigningrequests/approval`. It is therefore folded into `KUBE-PRIVESC-011` as a
+    severity and narrative qualifier (holding it: CRITICAL, fully enforced-authorized; lacking it:
+    HIGH, latent) rather than being its own rule.
+  - `sign` on `signers` is the real distinct primitive, and it needs a partner the row omits:
+    `update`/`patch` on `certificatesigningrequests/status`, which is the write that carries the
+    issued certificate and the write the CertificateSigning plugin authorizes. `-024` requires
+    both.
+  - The row's "sign an arbitrary client cert directly" also skips a condition: the certificate
+    must chain to a CA in the apiserver's `--client-ca-file`. The RBAC grant designates the
+    signer, and a real signer holds that key by definition, but the snapshot cannot confirm it.
+    The graph edge is rated `hard` for exactly this reason rather than claiming key material it
+    cannot see, and it is emitted only for the `kubernetes.io/kube-apiserver-client` signer: the
+    kubelet signers mint node identities, and there is no node-identity sink to aim them at.
+
+- **C15 (the §L "missed because" note)** — the observation that "the CSR model only covers
+  create+`/approval`; `signers`/`sign` is unmodeled" is now resolved by `-024` plus the shared
+  `permissions.SignersCovered` matcher, which implements the signer-name grammar (`signers`
+  resourceNames are signer *names* with their own wildcard forms, not object instances).
+
+- **Not in this document at all: the CSR objects.** The collector has always gathered
+  CertificateSigningRequests, and nothing read them. The `certificates` module (`KUBE-CSR-001` /
+  `-002`) closes that: the RBAC rules say a certificate *could* be minted, these say one was
+  requested, by whom, against which signer. Worth keeping separate in the model — an issued
+  Kubernetes client certificate has no revocation path, so evidence outranks permission here.
+
+- **A correction this work forced on `-011`'s copy, unrelated to detection.** Every narrative in
+  the tool led with `O=system:masters`, which CertificateSubjectRestriction has blocked for the
+  kube-apiserver-client signer since 1.19. The escalation is real but the demonstration was not:
+  the unrestricted field is the Common Name, and `CN=system:serviceaccount:<ns>:<sa>`
+  authenticates as that ServiceAccount because the apiserver never checks whether an identity in
+  a signed certificate is one Kubernetes would have issued. Any future rule in this space should
+  be written against the CN route, not the system:masters group.
+
+- **Still open in this family**: `KUBE-PRIVESC-026` (bootstrap token → auto-approved nodeclient
+  CSR → `system:node:<name>`) needs the node-identity sink §N proposes, and the cert-manager CA
+  `ClusterIssuer` route in §C stays Tier C on whether the issuer's CA is in `--client-ca-file`.
+
 ### O2. Correction to A5(b)
 
 **A5(b) is inaccurate as written, and was already inaccurate when this document was published.**

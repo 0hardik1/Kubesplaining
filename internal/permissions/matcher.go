@@ -91,6 +91,78 @@ func covers(values []string, want string) bool {
 	return false
 }
 
+// Signer names the kube-apiserver trusts for client authentication. A certificate
+// issued by any of these is accepted as a credential by the apiserver's x509
+// authenticator, so control over the approval or signing path for one of them
+// converts directly into a cluster identity of the holder's choosing.
+//
+// kubelet-serving and any third-party signer are deliberately absent: their certs
+// are server certs (or chain to a CA the apiserver does not trust as a client CA),
+// so authority over them is a different, weaker problem.
+const (
+	SignerAPIServerClient        = "kubernetes.io/kube-apiserver-client"
+	SignerAPIServerClientKubelet = "kubernetes.io/kube-apiserver-client-kubelet"
+	SignerLegacyUnknown          = "kubernetes.io/legacy-unknown"
+)
+
+// ClientAuthSigners is the set above in a fixed order, so callers that report which
+// signers a grant covers produce deterministic output.
+var ClientAuthSigners = []string{SignerAPIServerClient, SignerAPIServerClientKubelet, SignerLegacyUnknown}
+
+// signerTargets is the (group, resource) pair the `sign` / `approve` verbs are
+// checked against. The `signers` resource is virtual: it exists only as an
+// authorization handle, which is why it never appears in a collector listing.
+var signerTargets = []ResourceTarget{InGroup("certificates.k8s.io", "signers")}
+
+// SignersCovered returns which of the wanted signer names an RBAC rule authorizes any
+// of wantedVerbs on, via the `signers` resource in certificates.k8s.io. Empty means
+// the rule grants nothing relevant.
+//
+// The `signers` resource inverts the usual meaning of resourceNames: the names are
+// signer *names* (`kubernetes.io/kube-apiserver-client`), not object instances, and
+// Kubernetes gives them their own wildcard grammar - an exact name, a domain-scoped
+// `example.com/*`, or `*/*` for every signer. An empty resourceNames covers every
+// signer. Grants is therefore called with a nil resourceNames (its object-name
+// semantics do not apply here) and the name check happens in coversSignerName.
+func SignersCovered(apiGroups, resources, verbs, resourceNames, signers, wantedVerbs []string) []string {
+	if !Grants(apiGroups, resources, verbs, nil, signerTargets, wantedVerbs) {
+		return nil
+	}
+	covered := make([]string, 0, len(signers))
+	for _, signer := range signers {
+		if coversSignerName(resourceNames, signer) {
+			covered = append(covered, signer)
+		}
+	}
+	if len(covered) == 0 {
+		return nil
+	}
+	return covered
+}
+
+// SignersCovered is the method form for callers holding an EffectiveRule.
+func (r EffectiveRule) SignersCovered(signers []string, verbs ...string) []string {
+	return SignersCovered(r.APIGroups, r.Resources, r.Verbs, r.ResourceNames, signers, verbs)
+}
+
+// coversSignerName reports whether a rule's resourceNames covers signer, honoring the
+// signer-name grammar: no names at all (every signer), "*" / "*/*" (every signer), an
+// exact match, or a domain wildcard such as "kubernetes.io/*".
+func coversSignerName(resourceNames []string, signer string) bool {
+	if len(resourceNames) == 0 {
+		return true
+	}
+	for _, name := range resourceNames {
+		if name == "*" || name == "*/*" || name == signer {
+			return true
+		}
+		if strings.HasSuffix(name, "/*") && strings.HasPrefix(signer, strings.TrimSuffix(name, "*")) {
+			return true
+		}
+	}
+	return false
+}
+
 // collectionVerb reports whether verb operates on a collection (or creates a new
 // object) with no object name available at authorization time, so a resourceNames
 // restriction cannot authorize it. `create` is collection-like only for top-level

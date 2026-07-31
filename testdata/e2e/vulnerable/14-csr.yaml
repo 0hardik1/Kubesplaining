@@ -1,12 +1,28 @@
-# Fixture for KUBE-PRIVESC-011 (CSR create + approve → system:masters).
+# Fixture for the two certificates-API mint primitives:
+#   KUBE-PRIVESC-011 — approval path: create CSR + approve it.
+#   KUBE-PRIVESC-024 — signing path:  be the signer, no approval involved.
 #
-# The ClusterRole `cr-csr-mint` carries both halves of the CSR-approval primitive:
-# `create certificatesigningrequests` and `update certificatesigningrequests/approval`.
-# A subject bound to this role can submit a CSR with `O=system:masters` in its Subject
-# DN and self-approve it, yielding a kubelet-signed cluster-admin client cert.
+# `cr-csr-mint` carries all three grants the approval path needs on a modern cluster:
+# `create certificatesigningrequests`, `update certificatesigningrequests/approval`,
+# and `approve` on the `signers` resource for the kube-apiserver-client signer (the
+# CertificateApproval admission plugin has required that third one since 1.19). A
+# subject bound to it can submit a CSR claiming any identity in the Subject DN and
+# self-approve it. Note the identity to claim: CertificateSubjectRestriction rejects
+# `O=system:masters` for this signer, but nothing restricts the Common Name, so
+# `CN=system:serviceaccount:kube-system:<sa>` authenticates as that ServiceAccount.
 #
-# The e2e assertion file `csr.expect` requires KUBE-PRIVESC-011 and the
-# KUBE-PRIVESC-PATH-SYSTEM-MASTERS path to appear in findings.json.
+# `cr-csr-sign` carries the signing pair: `sign` on the same signer plus the
+# `certificatesigningrequests/status` write. Its holder issues certificates itself
+# and never touches the approval path.
+#
+# Only RBAC is created here — no CSR objects. The evidence-side rules that read CSR
+# objects (KUBE-CSR-001 / -002, the `certificates` module) are covered deterministically
+# by the corpus case in testdata/corpus/csr-issuance/, since creating a CSR from a
+# ServiceAccount identity requires an impersonated apply this fixture cannot express.
+#
+# The e2e assertion file `csr-edges.expect` requires KUBE-PRIVESC-011 and
+# KUBE-PRIVESC-024; the KUBE-PRIVESC-PATH-SYSTEM-MASTERS path both subjects reach is
+# already asserted by baseline.expect.
 ---
 apiVersion: v1
 kind: Namespace
@@ -30,12 +46,15 @@ rules:
   - apiGroups: ["certificates.k8s.io"]
     resources: ["certificatesigningrequests/approval"]
     verbs: ["update", "patch"]
-  # Some auto-approver flows also need `approve` on the specific signer's
-  # `signers` resource. We omit it here because the apiserver authorizer only
-  # checks signers when the controller-manager runs the approval action with
-  # `--cluster-signing-cert-file` set, which kind does have. Including the
-  # SubjectAccessReview-style permission would force the e2e to bootstrap a
-  # private CA — out of scope for what kubesplaining flags.
+  # The signer half of approval. Since 1.19 the CertificateApproval admission
+  # plugin rejects an approval unless the approver also holds `approve` on the
+  # CSR's signer, so a role with only the two verbs above is a latent escalation
+  # rather than a live one. Including it here pins the "fully enforced-authorized"
+  # branch of KUBE-PRIVESC-011 (severity CRITICAL rather than HIGH).
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["signers"]
+    resourceNames: ["kubernetes.io/kube-apiserver-client"]
+    verbs: ["approve"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -70,6 +89,63 @@ spec:
         app: csr-mint-app
     spec:
       serviceAccountName: sa-csr-mint
+      containers:
+        - name: app
+          image: registry.k8s.io/pause:3.9
+---
+# KUBE-PRIVESC-024 — the signing path. This subject never creates or approves a
+# CSR: it holds `sign` on the kube-apiserver-client signer plus the status write,
+# which is the authorization Kubernetes defines for *being* the signer.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-csr-sign
+  namespace: csr-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-csr-sign
+rules:
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["signers"]
+    resourceNames: ["kubernetes.io/kube-apiserver-client"]
+    verbs: ["sign"]
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["certificatesigningrequests/status"]
+    verbs: ["update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-csr-sign
+subjects:
+  - kind: ServiceAccount
+    name: sa-csr-sign
+    namespace: csr-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-csr-sign
+---
+# Mounted for the same reason as csr-mint-app above: an unmounted SA is a paper
+# risk and scores lower, and the privesc engine correlates to mounted SAs.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: csr-sign-app
+  namespace: csr-fixtures
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: csr-sign-app
+  template:
+    metadata:
+      labels:
+        app: csr-sign-app
+    spec:
+      serviceAccountName: sa-csr-sign
       containers:
         - name: app
           image: registry.k8s.io/pause:3.9

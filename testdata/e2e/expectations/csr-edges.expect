@@ -9,3 +9,10 @@
 # also reaches it), but we add the per-rule -011 here so the fixture is the
 # unique producer for that ID.
 KUBE-PRIVESC-011
+#
+# KUBE-PRIVESC-024 is the signing path on the same fixture: `sign` on the
+# kube-apiserver-client signer plus `update certificatesigningrequests/status`,
+# held by sa-csr-sign. It needs no `create` and no `/approval` — that subject IS
+# the signer. The privesc graph adds a `csr_sign` edge to the same system_masters
+# sink, rated `hard` because the signing CA key is beyond the RBAC grant.
+KUBE-PRIVESC-024
