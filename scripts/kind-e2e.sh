@@ -35,6 +35,10 @@ require_cmd docker
 require_cmd kind
 require_cmd kubectl
 require_cmd rg
+# jq is not reached until the assertion phase, well after the cluster is built and
+# scanned. Preflight it here so a missing jq fails in a second rather than after a
+# full cluster boot. Hermit pins it (bin/jq), so `make e2e` always has it on PATH.
+require_cmd jq
 
 if ! docker info >/dev/null 2>&1; then
   echo "docker daemon is not reachable; start Docker and rerun make e2e" >&2

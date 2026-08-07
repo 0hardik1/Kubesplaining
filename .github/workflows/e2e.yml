@@ -1,0 +1,58 @@
+name: e2e
+
+# `make e2e` is the only gate that runs the analyzers against a live cluster and
+# checks the six assertion classes in scripts/kind-e2e.sh (recall lists, ruleset
+# set-equality goldens, instance-level deny guards, chain shapes, the alternate-path
+# invariant, and the remediation-patch rescan). It used to run only inside
+# example-report.yml, which triggers on push to main, so a pull request could break
+# every assertion and still merge green. This workflow closes that gap.
+#
+# Deliberately not triggered on push to main: example-report.yml already runs
+# `make e2e` there to produce the report it publishes, and this is the heaviest job
+# in the repo. Adding a second run per merge would double that cost for no coverage.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Superseded pushes to the same PR should cancel, not queue. Note this is
+# intentionally a different group from example-report.yml's `pages`, which serializes
+# Pages deploys with cancel-in-progress: false.
+concurrency:
+  group: e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kind-e2e:
+    name: kind cluster e2e
+    # ubuntu-latest only: the script boots a kind cluster and GitHub's macOS runners
+    # have no usable Docker daemon.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/hermit
+            ~/Library/Caches/hermit
+          key: hermit-${{ runner.os }}-${{ hashFiles('bin/.*.pkg') }}
+
+      - uses: actions/cache@v6
+        with:
+          path: .tmp/go-mod-cache
+          key: gomod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+
+      - name: Activate Hermit
+        run: |
+          . ./bin/activate-hermit
+          env >> "$GITHUB_ENV"
+
+      - name: make e2e
+        env:
+          KEEP_CLUSTER: "0"
+        run: make e2e

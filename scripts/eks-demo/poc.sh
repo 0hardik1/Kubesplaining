@@ -248,7 +248,7 @@ step_run "Step 10: stitching reveal" \
     echo '--- Chain B: KUBE-PRIVESC-PATH-SYSTEM-MASTERS (via AWS IAM) ---'; \\
     jq '.[] | select(.rule_id == \"KUBE-PRIVESC-PATH-SYSTEM-MASTERS\" and .subject.namespace == \"prod-data\") | {subject: .subject, hops: .escalation_path}' \"\$REPORT\"; \\
   else \\
-    echo \"findings.json missing or jq not installed. Run 'make eks-demo-scan' first; install jq via 'brew install jq'.\"; \\
+    echo \"findings.json missing or jq not on PATH. Run 'make eks-demo-scan' first; jq is pinned by Hermit, so activate it with '. ./bin/activate-hermit'.\"; \\
   fi"
 
 # --- Closing banner ----------------------------------------------------------
