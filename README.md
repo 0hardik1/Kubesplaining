@@ -26,7 +26,7 @@ make scan
 
 `make scan` builds the binary (Hermit auto-downloads the pinned Go toolchain) and runs it against your current `kubectl` context in one step.
 
-See [Installation](#installation) below for `go install`, pre-built binaries, and checksums.
+See [Installation](#installation) below for krew, `go install`, pre-built binaries, and checksums.
 
 ## vs the alternatives
 
@@ -88,7 +88,18 @@ kubesplaining scan-resource --input-file deployment.yaml
 
 ## Installation
 
-Pick the path that fits. They all produce the same `kubesplaining` CLI. The top of this README covers the from-clone path; this section adds Go install, pre-built binaries, and Docker.
+Pick the path that fits. They all produce the same `kubesplaining` CLI. The top of this README covers the from-clone path; this section adds krew, Go install, pre-built binaries, and Docker.
+
+### kubectl krew
+
+Install as a `kubectl` plugin via [Krew](https://krew.sigs.k8s.io/):
+
+```bash
+kubectl krew install kubesplaining
+kubectl kubesplaining scan
+```
+
+Every command in this README works the same way behind `kubectl`, e.g. `kubectl kubesplaining scan --input-file snapshot.json`.
 
 ### Go install
 
