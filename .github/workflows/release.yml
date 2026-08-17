@@ -72,3 +72,11 @@ jobs:
             ${{ steps.notes.outputs.notes-file && format('--release-notes {0}', steps.notes.outputs.notes-file) || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Renders .krew.yaml against the assets GoReleaser just published and
+      # opens a version-bump PR on kubernetes-sigs/krew-index. Needs no
+      # secrets: the bot verifies the public release and PRs from its own
+      # fork. Fails (without blocking the release) if the plugin is not yet
+      # in the index.
+      - name: Update new version in krew-index
+        uses: rajatjindal/krew-release-bot@v0.0.51
