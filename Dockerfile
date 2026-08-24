@@ -5,7 +5,7 @@
 #
 # Stage 1: compile a static binary with the same ldflags the Makefile uses
 # so `kubesplaining version` reports something useful even from a dev image.
-FROM golang:1.26-alpine AS build
+FROM golang:1.27-alpine AS build
 
 WORKDIR /src
 
