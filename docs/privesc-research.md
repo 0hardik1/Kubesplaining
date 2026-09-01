@@ -36,7 +36,7 @@ A "detectable" gap must be inferable from a `models.Snapshot` **offline** (RBAC 
 | Tier | Meaning | Implementable today? |
 | --- | --- | --- |
 | **A** | Fires on data the collector **already** captures (RBAC grants, Pod/controller specs, Nodes, existing webhook configs, SecretMetadata, ConfigMap keys). | Yes — rule + graph edge only. |
-| **B** | Needs a **new object type** added to the snapshot (Services, Endpoints/EndpointSlices, Ingresses, APIServices, CSIDrivers, VAP/bindings, PriorityClasses, operator CRs, CSRs). Node runtime/kernel version strings are *already present* but unparsed. | Yes — collector extension + rule. |
+| **B** | Needs a **new object type** added to the snapshot (Endpoints/EndpointSlices, Ingresses, APIServices, CSIDrivers, PriorityClasses, operator CRs). Node runtime/kernel version strings are *already present* but unparsed. Services, ValidatingAdmissionPolicies/bindings and CSRs were Tier B when this was written and are now collected, so rules over them are Tier A. | Yes — collector extension + rule. |
 | **C** | Precondition lives **outside the cluster** (cloud IAM policies, apiserver `--client-ca-file` trust, feature-gate state). Detection is **origin-only**: name the pivot, flag intent, cannot confirm the completed edge. | Partial — same fidelity as the shipped EKS IRSA edge. |
 
 ## Baseline recap — what is already modeled
@@ -125,7 +125,7 @@ these are **Tier A** (fire on current snapshot data).
 | KUBE-PRIVESC-019 | CRITICAL | create/update/patch · `mutatingadmissionpolicies`+`…bindings` (and VAP de-hardening) · admissionregistration.k8s.io | Webhookless CEL/JSONPatch injection → `node_escape`/`cluster_admin`. *§D2.* | A |
 | KUBE-PRIVESC-020 | CRITICAL | create/update/patch · `apiservices` · apiregistration.k8s.io | Register aggregated API server → control-plane MITM/credential-forward (CVE-2022-3172) → `traffic_intercept`/`cluster_admin`. | A (edge) / B (flag existing) |
 | KUBE-PRIVESC-021 | HIGH | create/update/patch · `endpoints` (core) / `endpointslices` (discovery.k8s.io) | Repoint a Service backend (esp. a webhook/aggregated-API backing Service) → `traffic_intercept`. CVE-2021-25737/25740. | A (grant) / B (target scoping) |
-| KUBE-PRIVESC-022 | HIGH | create/update · `services` (core); update/patch · `services/status` | Set `spec.externalIPs` / `status.loadBalancer.ingress` → kube-proxy MITM of arbitrary IPs incl. IMDS/apiserver (CVE-2020-8554, unpatched-by-design) → `traffic_intercept`. | A (grant) / B (suppress if externalip-webhook present) |
+| KUBE-PRIVESC-022 | HIGH | create/update · `services` (core); update/patch · `services/status` | Set `spec.externalIPs` / `status.loadBalancer.ingress` → kube-proxy MITM of arbitrary IPs incl. IMDS/apiserver (CVE-2020-8554, unpatched-by-design) → `traffic_intercept`. | A (Services are collected; the externalip-webhook suppression reads the already-collected ValidatingWebhookConfigurations) |
 | KUBE-PRIVESC-023 | MEDIUM | update/patch · `leases` · coordination.k8s.io (esp. `resourceNames` kube-controller-manager/-scheduler) | Overwrite `holderIdentity` → controller reconciliation DoS; conditional leader takeover only if attacker runs a matching replica. Weak `controller_hijack` sink. | A |
 | KUBE-PRIVESC-024 | CRITICAL | `sign` / `approve` · `signers` · certificates.k8s.io (`resourceName kubernetes.io/kube-apiserver-client`) | Sign an arbitrary client cert `O=system:masters` directly, bypassing the approval controller — distinct from `-011`'s create+`/approval`. → `system_masters`. | A |
 | KUBE-PRIVESC-025 | HIGH* | impersonate · `uids` / `userextras/*` · authentication.k8s.io | Forge `Impersonate-Uid`/`-Extra-*` → spoof authorizing attributes. *Conditional:* only escalates when a webhook/ABAC/authenticating-proxy authorizer keys on extras/uid (worthless on stock RBAC-only). → conditional `cluster_admin`. | A (grant) / C (impact) |
@@ -350,14 +350,15 @@ implied token-theft/CRD-create capability.
 Service backing a MutatingWebhookConfiguration-->` apiserver→webhook traffic redirected `--forge
 admit responses / capture AdmissionReview Secret bodies-->` `--inject privileged pod / forge
 RoleBinding-->` `cluster_admin`.
-**Missed because:** no `endpoints`/`endpointslices` edge (A4/§B-021), Services & EndpointSlices
-aren't collected, and nothing correlates an endpoint-writer with an in-namespace webhook Service.
+**Missed because:** no `endpoints`/`endpointslices` edge (A4/§B-021), EndpointSlices aren't
+collected, and nothing correlates an endpoint-writer with an in-namespace webhook Service.
 
 ### K6 — Service externalIPs → kube-proxy MITM of apiserver/IMDS (real-world, 5 hops)
 `create services` `--spec.externalIPs=[apiserver ClusterIP | 169.254.169.254]-->` kube-proxy
 MITM on every node `--capture a privileged token / node IAM creds-->` `cluster_admin` (or
 `aws-iam` on the IMDS variant). **Missed because:** no `services`/externalIPs edge and no MITM
-sink (A4).
+sink (A4). Services *are* collected (`collector.go` `runTask("services")`, and `report/recon.go`
+already counts `spec.externalIPs`), so only the edge and the sink are missing.
 
 ### K7 — Ingress annotation injection → controller-SA cluster secret read (real-world, 5 hops)
 `create ingresses` `--malicious snippet / IngressNightmare-->` ingress-nginx RCE `--read the
@@ -458,8 +459,10 @@ is the deconflicted allocation.)
    Highest value, zero collector work.
 2. **Structural unlocks** — A1 (namespace_admin traversable) and A3 (confused-deputy catalog);
    biggest chain coverage per change.
-3. **Collector extensions (Tier B)** — Services + Endpoints/EndpointSlices (→ `-021/-022`, K5/K6),
-   Ingresses (K7), APIServices (`-020`), VAP/bindings+paramRef (D4), node version parsing (§I).
+3. **Collector extensions (Tier B)** — Endpoints/EndpointSlices (→ `-021`, K5), Ingresses (K7),
+   APIServices (`-020`), node version parsing (§I). `-022` (K6) has left this tier: Services are
+   collected, so it needs only the edge and the `traffic_intercept` sink (items 1 and 2). D4's
+   paramRef work likewise needs no collector change now that VAP and its bindings are collected.
 4. **Cloud (A5)** — GKE/AKS parsers + return-edge tables (K9); Tier-C fidelity, but parity with
    the shipped EKS edge.
 

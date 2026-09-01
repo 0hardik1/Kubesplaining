@@ -81,7 +81,11 @@ func TestAnalyzerFindsClusterAdminAndSecretsPaths(t *testing.T) {
 					ObjectMeta: objectMeta("reader-role", ""),
 					Rules: []rbacv1.PolicyRule{
 						{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "list"}},
+						// `create clusterrolebindings` reaches cluster-admin only together
+						// with `bind`, which is what clears the API server's escalation
+						// check on the binding write.
 						{APIGroups: []string{"rbac.authorization.k8s.io"}, Resources: []string{"clusterrolebindings"}, Verbs: []string{"create"}},
+						{APIGroups: []string{"rbac.authorization.k8s.io"}, Resources: []string{"clusterroles"}, Verbs: []string{"bind"}},
 					},
 				},
 			},
@@ -185,8 +189,13 @@ func TestNamespaceScopedRBACDoesNotEmitClusterAdmin(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name         string
+		name string
+		// roleRule is granted through a RoleBinding in namespace dev. clusterRule, when
+		// set, is granted through a ClusterRoleBinding, and exists so a case can supply
+		// the cluster-scoped half of an RBAC-write conjunction: without it the subject
+		// reaches no sink at all and the case would prove nothing about scope.
 		roleRule     rbacv1.PolicyRule
+		clusterRule  *rbacv1.PolicyRule
 		bannedRuleID string
 	}{
 		{
@@ -196,6 +205,11 @@ func TestNamespaceScopedRBACDoesNotEmitClusterAdmin(t *testing.T) {
 				Resources: []string{"rolebindings"},
 				Verbs:     []string{"create", "update", "patch"},
 			},
+			clusterRule: &rbacv1.PolicyRule{
+				APIGroups: []string{"rbac.authorization.k8s.io"},
+				Resources: []string{"clusterroles"},
+				Verbs:     []string{"bind"},
+			},
 			bannedRuleID: "KUBE-PRIVESC-PATH-CLUSTER-ADMIN",
 		},
 		{
@@ -203,7 +217,7 @@ func TestNamespaceScopedRBACDoesNotEmitClusterAdmin(t *testing.T) {
 			roleRule: rbacv1.PolicyRule{
 				APIGroups: []string{"rbac.authorization.k8s.io"},
 				Resources: []string{"roles"},
-				Verbs:     []string{"bind", "escalate"},
+				Verbs:     []string{"create", "update", "escalate"},
 			},
 			bannedRuleID: "KUBE-PRIVESC-PATH-CLUSTER-ADMIN",
 		},
@@ -258,6 +272,24 @@ func TestNamespaceScopedRBACDoesNotEmitClusterAdmin(t *testing.T) {
 				},
 			}
 
+			if tc.clusterRule != nil {
+				snapshot.Resources.ClusterRoles = []rbacv1.ClusterRole{
+					{
+						ObjectMeta: objectMeta("cluster-rule", ""),
+						Rules:      []rbacv1.PolicyRule{*tc.clusterRule},
+					},
+				}
+				snapshot.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{
+					{
+						ObjectMeta: objectMeta("cluster-rule-binding", ""),
+						RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "cluster-rule"},
+						Subjects: []rbacv1.Subject{
+							{Kind: "ServiceAccount", Name: "dev-sa", Namespace: "dev"},
+						},
+					},
+				}
+			}
+
 			findings, err := New().Analyze(context.Background(), snapshot)
 			if err != nil {
 				t.Fatalf("Analyze() error = %v", err)
@@ -279,8 +311,12 @@ func TestNamespaceScopedRBACEmitsNamespaceAdminPath(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name     string
-		roleRule rbacv1.PolicyRule
+		name string
+		// See TestNamespaceScopedRBACDoesNotEmitClusterAdmin for why clusterRule exists:
+		// binding a ClusterRole into a namespace needs `bind` on clusterroles, and
+		// clusterroles is cluster-scoped, so that half can only arrive this way.
+		roleRule    rbacv1.PolicyRule
+		clusterRule *rbacv1.PolicyRule
 	}{
 		{
 			name: "modify_role_binding via RoleBinding emits namespace-admin",
@@ -289,13 +325,18 @@ func TestNamespaceScopedRBACEmitsNamespaceAdminPath(t *testing.T) {
 				Resources: []string{"rolebindings"},
 				Verbs:     []string{"create", "update", "patch"},
 			},
+			clusterRule: &rbacv1.PolicyRule{
+				APIGroups: []string{"rbac.authorization.k8s.io"},
+				Resources: []string{"clusterroles"},
+				Verbs:     []string{"bind"},
+			},
 		},
 		{
 			name: "bind_or_escalate via RoleBinding emits namespace-admin",
 			roleRule: rbacv1.PolicyRule{
 				APIGroups: []string{"rbac.authorization.k8s.io"},
 				Resources: []string{"roles"},
-				Verbs:     []string{"bind", "escalate"},
+				Verbs:     []string{"create", "update", "escalate"},
 			},
 		},
 	}
@@ -329,6 +370,24 @@ func TestNamespaceScopedRBACEmitsNamespaceAdminPath(t *testing.T) {
 						},
 					},
 				},
+			}
+
+			if tc.clusterRule != nil {
+				snapshot.Resources.ClusterRoles = []rbacv1.ClusterRole{
+					{
+						ObjectMeta: objectMeta("cluster-rule", ""),
+						Rules:      []rbacv1.PolicyRule{*tc.clusterRule},
+					},
+				}
+				snapshot.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{
+					{
+						ObjectMeta: objectMeta("cluster-rule-binding", ""),
+						RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "cluster-rule"},
+						Subjects: []rbacv1.Subject{
+							{Kind: "ServiceAccount", Name: "dev-sa", Namespace: "dev"},
+						},
+					},
+				}
 			}
 
 			findings, err := New().Analyze(context.Background(), snapshot)

@@ -2,6 +2,7 @@ package privesc
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -43,15 +44,20 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 	podSAsByNs := podServiceAccountsByNamespace(snapshot)
 
 	privilegedNamespaces := namespacesAllowingPrivileged(snapshot)
+	impersonableUsers := boundUsers(snapshot)
 
 	effective := permissions.Aggregate(snapshot)
 	for _, perms := range effective {
 		ensureSubjectNode(graph, perms.Subject)
 		for _, rule := range perms.Rules {
-			addEdgesForRule(graph, perms.Subject, rule, subjectsByNs, podSAsByNs)
+			addEdgesForRule(graph, perms.Subject, rule, subjectsByNs, podSAsByNs, impersonableUsers)
 		}
 		// Correlation edges that need the subject's full rule set at once
 		// (two RBAC verbs held together), rather than one rule at a time.
+		// addRBACWriteEdges stays first: its two edges used to be emitted from
+		// addEdgesForRule, ahead of every correlation edge, and BFS breaks ties on
+		// the order edges leaving a node were inserted.
+		addRBACWriteEdges(graph, perms.Subject, perms.Rules)
 		addSecretMintEdge(graph, perms.Subject, perms.Rules)
 		addNodeMigrateEdge(graph, perms.Subject, perms.Rules)
 		addPrivilegedPodCreateEdges(graph, perms.Subject, perms.Rules, privilegedNamespaces)
@@ -124,6 +130,7 @@ func addEdgesForRule(
 	rule permissions.EffectiveRule,
 	subjectsByNs map[string][]models.SubjectRef,
 	podSAsByNs map[string][]models.SubjectRef,
+	impersonableUsers []models.SubjectRef,
 ) {
 	from := nodeID(subject)
 	clusterScope := rule.Namespace == ""
@@ -149,60 +156,55 @@ func addEdgesForRule(
 		return
 	}
 
-	// modify_role_binding: cluster-scoped grants reach cluster-admin (write to any (Cluster)RoleBinding
-	// → bind to any role anywhere). Namespace-scoped grants on `rolebindings` reach namespace-admin in
-	// the binding's namespace (the subject can RoleBind itself to any ClusterRole, scoped to that ns).
-	// Namespace-scoped grants on `clusterrolebindings` are dead RBAC (clusterrolebindings is a
-	// cluster-scoped resource and the authorizer never allows the verb to succeed via a RoleBinding).
-	if clusterScope && matchesResourceVerb(rule, []string{"rolebindings", "clusterrolebindings"}, []string{"create", "update", "patch"}) {
-		add(sinkClusterAdmin, &models.EscalationEdge{
-			Technique:   "KUBE-PRIVESC-010",
-			Action:      "modify_role_binding",
-			Permission:  verbResource(rule, "rolebindings|clusterrolebindings"),
-			Description: "can create or mutate role bindings to grant itself any role",
-		})
-	}
-	if !clusterScope && matchesResourceVerb(rule, []string{"rolebindings"}, []string{"create", "update", "patch"}) {
-		sink := ensureNamespaceAdminSink(graph, rule.Namespace)
-		add(sink, &models.EscalationEdge{
-			Technique:   "KUBE-PRIVESC-010",
-			Action:      "modify_role_binding",
-			Permission:  verbResource(rule, "rolebindings"),
-			Description: fmt.Sprintf("can create or mutate RoleBindings in namespace %s to grant itself any role within %s", rule.Namespace, rule.Namespace),
-		})
-	}
-
-	// bind/escalate on (cluster)roles: same scope reasoning as modify_role_binding. Namespace-scoped
-	// grants on `roles` let the subject bind any ClusterRole inside the binding's namespace; on
-	// `clusterroles` they're dead RBAC.
-	if clusterScope && matchesResourceVerb(rule, []string{"roles", "clusterroles"}, []string{"bind", "escalate"}) {
-		add(sinkClusterAdmin, &models.EscalationEdge{
-			Technique:   "KUBE-PRIVESC-009",
-			Action:      "bind_or_escalate",
-			Permission:  verbResource(rule, "roles|clusterroles"),
-			Description: "can bypass RBAC escalation checks via bind/escalate",
-		})
-	}
-	if !clusterScope && matchesResourceVerb(rule, []string{"roles"}, []string{"bind", "escalate"}) {
-		sink := ensureNamespaceAdminSink(graph, rule.Namespace)
-		add(sink, &models.EscalationEdge{
-			Technique:   "KUBE-PRIVESC-009",
-			Action:      "bind_or_escalate",
-			Permission:  verbResource(rule, "roles"),
-			Description: fmt.Sprintf("can bypass RBAC escalation checks via bind/escalate within namespace %s", rule.Namespace),
-		})
-	}
+	// modify_role_binding (KUBE-PRIVESC-010) and bind_or_escalate (KUBE-PRIVESC-009)
+	// used to be emitted here, one rule at a time. They are conjunctions of two verbs
+	// that a subject can hold through two different bindings, which a per-rule pass
+	// cannot see, so they moved to addRBACWriteEdges. See that function for why
+	// either verb alone predicts a write the API server refuses.
 
 	// impersonate users/groups: users and groups are not namespaced K8s objects, so a RoleBinding
-	// granting these verbs is dead RBAC (the authorizer never lets it succeed). Only emit the
-	// cluster-admin edge for cluster-scoped grants.
-	if clusterScope && matchesResourceVerb(rule, []string{"users", "groups"}, []string{"impersonate"}) {
+	// granting these verbs is dead RBAC (the authorizer never lets it succeed). Only emit
+	// edges for cluster-scoped grants.
+	//
+	// `groups` reaches cluster-admin from the grant alone, and soundly: the apiserver
+	// hard-codes system:masters as authorized for every operation, and that group is
+	// impersonable whether or not any binding in the snapshot mentions it.
+	if clusterScope && matchesResourceVerb(rule, []string{"groups"}, []string{"impersonate"}) {
 		add(sinkClusterAdmin, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-008",
 			Action:      "impersonate",
-			Permission:  verbResource(rule, "users|groups"),
-			Description: "can impersonate another identity",
+			Permission:  verbResource(rule, "groups"),
+			Description: "can impersonate any group, including system:masters",
 		})
+	}
+
+	// `users` is worth exactly what the users it reaches are worth, so it gets
+	// per-target edges and lets BFS decide, rather than a blanket cluster-admin edge.
+	// There is no hard-coded privileged username the way system:masters is a
+	// hard-coded privileged group: a username carries only what some binding gave it.
+	// On a kubeadm cluster the admin identity is not a username at all (admin.conf's
+	// kubernetes-admin holds the group kubeadm:cluster-admins since 1.29, and
+	// O=system:masters before that), so a cluster can hold zero privileged User
+	// subjects, and there this grant escalates nothing.
+	//
+	// Impersonating a ServiceAccount does not launder around this: the apiserver
+	// splits an Impersonate-User header carrying the `system:serviceaccount:` prefix
+	// into a ServiceAccount impersonation request and authorizes it against
+	// `serviceaccounts`, not `users`. Holding `impersonate users` alone does not
+	// authorize impersonating an SA.
+	if clusterScope && matchesResourceVerb(rule, []string{"users"}, []string{"impersonate"}) {
+		for _, target := range impersonationTargets(rule, impersonableUsers) {
+			if target.Key() == subject.Key() {
+				continue
+			}
+			ensureSubjectNode(graph, target)
+			add(nodeID(target), &models.EscalationEdge{
+				Technique:   "KUBE-PRIVESC-008",
+				Action:      "impersonate_user",
+				Permission:  verbResource(rule, "users"),
+				Description: fmt.Sprintf("can impersonate User %s", target.Name),
+			})
+		}
 	}
 
 	if clusterScope && matchesResourceVerb(rule, []string{"groups"}, []string{"impersonate"}) {
@@ -384,6 +386,179 @@ func addNamespaceAdminTokenTheftEdges(graph *models.EscalationGraph, subjectsByN
 			})
 		}
 	}
+}
+
+// addRBACWriteEdges emits the KUBE-PRIVESC-010 (binding write) and KUBE-PRIVESC-009
+// (bind/escalate) edges. Both are conjunctions of two verbs, and neither half
+// escalates on its own.
+//
+// Kubernetes runs an escalation-prevention check on every (Cluster)RoleBinding
+// create AND update: the writer must already hold every permission the referenced
+// role grants, or hold `bind` on that role, or the write is refused with a Forbidden
+// naming the missing rules. `create clusterrolebindings` by itself therefore
+// predicts a route the API server denies. The mirror is equally true: `bind` with no
+// way to write a binding grants nothing.
+//
+// `escalate` pairs with role writes rather than binding writes. It lifts the same
+// "you may only grant what you already hold" rule for Role and ClusterRole content,
+// so a subject that can update a role AND holds `escalate` can widen a role it is
+// already bound to. It must be bound to something or it would not hold these grants
+// in the first place, which is why this arm needs no binding write.
+//
+// A subject holding only a binding write is not harmless, it is just not escalating:
+// the check passes for permissions it already holds, so it can hand its own
+// privileges to other subjects. That is lateral spread and persistence, and the rbac
+// module still reports it as a flat KUBE-PRIVESC-010 finding. Only the graph's claim
+// of a path to a higher sink is gated here.
+func addRBACWriteEdges(graph *models.EscalationGraph, subject models.SubjectRef, rules []permissions.EffectiveRule) {
+	// Cluster-scoped halves. clusterrolebindings and clusterroles are cluster-scoped
+	// resources, so a RoleBinding granting a verb on them is dead RBAC and only this
+	// arm consults them.
+	bindingWrite, bind := map[cutKey]bool{}, map[cutKey]bool{}
+	roleWrite, escalate := map[cutKey]bool{}, map[cutKey]bool{}
+	// Namespace-scoped halves, keyed by the binding's namespace.
+	bindingWriteNs := map[string]map[cutKey]bool{}
+	roleWriteNs, escalateNs := map[string]map[cutKey]bool{}, map[string]map[cutKey]bool{}
+
+	mark := func(byNamespace map[string]map[cutKey]bool, namespace string, key cutKey) {
+		if byNamespace[namespace] == nil {
+			byNamespace[namespace] = map[cutKey]bool{}
+		}
+		byNamespace[namespace][key] = true
+	}
+
+	writeVerbs := []string{"create", "update", "patch"}
+	for _, rule := range rules {
+		key := cutKey{binding: rule.SourceBinding, namespace: rule.Namespace}
+		if rule.Namespace == "" {
+			if matchesResourceVerb(rule, []string{"rolebindings", "clusterrolebindings"}, writeVerbs) {
+				bindingWrite[key] = true
+			}
+			if matchesResourceVerb(rule, []string{"roles", "clusterroles"}, []string{"bind"}) {
+				bind[key] = true
+			}
+			if matchesResourceVerb(rule, []string{"roles", "clusterroles"}, writeVerbs) {
+				roleWrite[key] = true
+			}
+			if matchesResourceVerb(rule, []string{"roles", "clusterroles"}, []string{"escalate"}) {
+				escalate[key] = true
+			}
+			continue
+		}
+		if matchesResourceVerb(rule, []string{"rolebindings"}, writeVerbs) {
+			mark(bindingWriteNs, rule.Namespace, key)
+		}
+		if matchesResourceVerb(rule, []string{"roles"}, writeVerbs) {
+			mark(roleWriteNs, rule.Namespace, key)
+		}
+		if matchesResourceVerb(rule, []string{"roles"}, []string{"escalate"}) {
+			mark(escalateNs, rule.Namespace, key)
+		}
+	}
+
+	if len(bindingWrite) > 0 && len(bind) > 0 {
+		ensureSubjectNode(graph, subject)
+		addEdge(graph, nodeID(subject), sinkClusterAdmin, &models.EscalationEdge{
+			Technique:   "KUBE-PRIVESC-010",
+			Action:      "modify_role_binding",
+			Permission:  "create/update (cluster)rolebindings + bind (cluster)roles",
+			Description: "can bind itself to any role, holding the `bind` verb that satisfies RBAC escalation prevention",
+			CutBreakers: cutBreakers(bindingWrite, bind),
+		})
+	}
+
+	if len(roleWrite) > 0 && len(escalate) > 0 {
+		ensureSubjectNode(graph, subject)
+		addEdge(graph, nodeID(subject), sinkClusterAdmin, &models.EscalationEdge{
+			Technique:   "KUBE-PRIVESC-009",
+			Action:      "bind_or_escalate",
+			Permission:  "create/update (cluster)roles + escalate",
+			Description: "can widen a role it is already bound to, holding the `escalate` verb that lifts RBAC escalation prevention",
+			CutBreakers: cutBreakers(roleWrite, escalate),
+		})
+	}
+
+	// A RoleBinding can bind a ClusterRole into its own namespace, and that is the
+	// route to namespace-admin. It needs `bind` on clusterroles, and clusterroles is
+	// cluster-scoped, so the bind half of this arm is only ever the cluster-scoped
+	// one. Namespaces are walked in sorted order because BFS breaks ties on edge
+	// insertion order and map iteration is not deterministic.
+	if len(bind) > 0 {
+		for _, namespace := range slices.Sorted(maps.Keys(bindingWriteNs)) {
+			ensureSubjectNode(graph, subject)
+			addEdge(graph, nodeID(subject), ensureNamespaceAdminSink(graph, namespace), &models.EscalationEdge{
+				Technique:        "KUBE-PRIVESC-010",
+				Action:           "modify_role_binding",
+				Permission:       "create/update rolebindings + bind (cluster)roles",
+				Description:      fmt.Sprintf("can RoleBind itself to any ClusterRole within namespace %s, holding the `bind` verb that satisfies RBAC escalation prevention", namespace),
+				BindingNamespace: namespace,
+				CutBreakers:      cutBreakers(bindingWriteNs[namespace], bind),
+			})
+		}
+	}
+
+	for _, namespace := range slices.Sorted(maps.Keys(roleWriteNs)) {
+		if len(escalateNs[namespace]) == 0 {
+			continue
+		}
+		ensureSubjectNode(graph, subject)
+		addEdge(graph, nodeID(subject), ensureNamespaceAdminSink(graph, namespace), &models.EscalationEdge{
+			Technique:        "KUBE-PRIVESC-009",
+			Action:           "bind_or_escalate",
+			Permission:       "create/update roles + escalate",
+			Description:      fmt.Sprintf("can widen a Role it is already bound to within namespace %s, holding the `escalate` verb that lifts RBAC escalation prevention", namespace),
+			BindingNamespace: namespace,
+			CutBreakers:      cutBreakers(roleWriteNs[namespace], escalateNs[namespace]),
+		})
+	}
+}
+
+// boundUsers lists the distinct User subjects some binding in the snapshot names.
+// Those are the only users worth impersonating: a username no binding mentions
+// carries no permissions at all, so an edge to it would assert reach the cluster
+// does not grant. system: users are left out because the graph already refuses to
+// launder a path through a control-plane identity (they are valid only as terminal
+// sinks reached by an explicit edge), so an edge to one could never be traversed.
+func boundUsers(snapshot models.Snapshot) []models.SubjectRef {
+	seen := map[string]bool{}
+	var users []models.SubjectRef
+	collect := func(subjects []rbacv1.Subject) {
+		for _, subject := range subjects {
+			if subject.Kind != "User" || subject.Name == "" || strings.HasPrefix(subject.Name, "system:") || seen[subject.Name] {
+				continue
+			}
+			seen[subject.Name] = true
+			users = append(users, models.SubjectRef{Kind: "User", Name: subject.Name})
+		}
+	}
+	for _, binding := range snapshot.Resources.RoleBindings {
+		collect(binding.Subjects)
+	}
+	for _, binding := range snapshot.Resources.ClusterRoleBindings {
+		collect(binding.Subjects)
+	}
+	sort.Slice(users, func(i, j int) bool { return users[i].Name < users[j].Name })
+	return users
+}
+
+// impersonationTargets narrows impersonable candidates to the ones a rule reaches.
+// `impersonate` acts on a named object, so a resourceNames-scoped rule authorizes it
+// only for the names it lists (permissions.Grants keeps the verb matched for exactly
+// that reason); an unscoped rule reaches every candidate.
+func impersonationTargets(rule permissions.EffectiveRule, candidates []models.SubjectRef) []models.SubjectRef {
+	if !rule.NameScoped() {
+		return candidates
+	}
+	if slices.Contains(rule.ResourceNames, "*") {
+		return candidates
+	}
+	var targets []models.SubjectRef
+	for _, candidate := range candidates {
+		if slices.Contains(rule.ResourceNames, candidate.Name) {
+			targets = append(targets, candidate)
+		}
+	}
+	return targets
 }
 
 // addSecretMintEdge emits the KUBE-PRIVESC-007 edge: a subject that holds BOTH
@@ -920,6 +1095,7 @@ var actionDifficulty = map[string]string{
 	"impersonate":                difficultyEasy,
 	"impersonate_system_masters": difficultyEasy,
 	"impersonate_serviceaccount": difficultyEasy,
+	"impersonate_user":           difficultyEasy,
 	"read_secrets":               difficultyEasy,
 	"token_request":              difficultyEasy,
 	"mint_arbitrary_token":       difficultyEasy,

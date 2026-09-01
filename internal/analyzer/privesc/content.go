@@ -105,19 +105,22 @@ func hopNarrative(hop models.EscalationHop) string {
 		return fmt.Sprintf("The identity %s already holds wildcard verbs on wildcard resources (%s), which is functionally identical to `cluster-admin`. The attacker can take any action on any resource in the cluster without further escalation.", from, perm)
 
 	case "modify_role_binding":
-		return fmt.Sprintf("Acting as %s, the attacker abuses RoleBinding write access (%s) to add themselves (or any subject they control) to a high-privilege ClusterRoleBinding, typically `cluster-admin`. They don't need the target role's permissions today, only the ability to change bindings.", from, perm)
+		return fmt.Sprintf("Acting as %s, the attacker writes a RoleBinding that grants them a high-privilege role, typically `cluster-admin`. The binding write alone would not be enough: the API server runs an escalation-prevention check on every binding create and update, refusing any write that grants permissions the writer does not already hold. This subject clears that check because it also holds the `bind` verb on the target role (%s), which is the documented carve-out from it.", from, perm)
 
 	case "bind_or_escalate":
 		if hasTo {
-			return fmt.Sprintf("Acting as %s, the attacker uses the RBAC `bind/escalate` bypass (%s) to grant themselves a role they do not currently hold and bind to %s. `bind/escalate` is the carve-out that lets the holder escape RBAC's normal \"you can only grant what you have\" guardrail.", from, perm, to)
+			return fmt.Sprintf("Acting as %s, the attacker rewrites a role it is already bound to so that the role grants more than it did, then inherits the widened permissions and reaches %s. Writing a role with permissions you do not hold is normally refused; the `escalate` verb (%s) is the carve-out that lifts exactly that guardrail, and this subject holds it alongside write access to the role.", from, to, perm)
 		}
-		return fmt.Sprintf("Acting as %s, the attacker uses the RBAC `bind/escalate` bypass (%s) to grant themselves any role they choose, typically `cluster-admin`. `bind/escalate` is the carve-out that lets the holder escape RBAC's normal \"you can only grant what you have\" guardrail.", from, perm)
+		return fmt.Sprintf("Acting as %s, the attacker rewrites a role it is already bound to so that the role grants more than it did, typically everything. Writing a role with permissions you do not hold is normally refused; the `escalate` verb (%s) is the carve-out that lifts exactly that guardrail, and this subject holds it alongside write access to the role. No new binding is needed, because the subject is already bound to the role it is widening.", from, perm)
 
 	case "impersonate":
 		if hasTo {
 			return fmt.Sprintf("Acting as %s, the attacker uses RBAC impersonation (the `impersonate` verb on %s) to send API requests as %s. In practice, the kube-apiserver honours the `Impersonate-User/Impersonate-Group` headers and authorizes the request against the impersonated identity's permissions instead of the attacker's.", from, perm, to)
 		}
 		return fmt.Sprintf("Acting as %s, the attacker uses RBAC impersonation (the `impersonate` verb on %s) to send API requests as any identity in the cluster, including `system:masters`, which the apiserver hard-codes as cluster-admin. Granting `impersonate` on `groups: [\"*\"]` is functionally a cluster-admin grant.", from, perm)
+
+	case "impersonate_user":
+		return fmt.Sprintf("Acting as %s, the attacker impersonates the User %s (%s). Unlike group impersonation this is not a shortcut to cluster-admin: no username is privileged by construction, so the attacker gains exactly what that user's own bindings grant, and the chain continues from there. The apiserver honours the `Impersonate-User` header and authorizes the request against the impersonated user's permissions instead of the attacker's.", from, to, perm)
 
 	case "impersonate_system_masters":
 		return fmt.Sprintf("Acting as %s, the attacker impersonates the `system:masters` group (%s). The kube-apiserver hard-codes that group as authorized for every operation regardless of RBAC. A single such grant collapses the entire authorization layer.", from, perm)

@@ -469,7 +469,23 @@ func TestNamespaceAdminReachesColocatedServiceAccounts(t *testing.T) {
 		RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "binder"},
 		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "attacker", Namespace: "tenant"}},
 	}}
+	// `create rolebindings` alone does not reach namespace-admin: the API server's
+	// escalation check refuses a binding granting more than the writer holds. `bind`
+	// on clusterroles is what clears it, and clusterroles being cluster-scoped, that
+	// half can only arrive through a ClusterRoleBinding.
+	snapshot.Resources.ClusterRoles = []rbacv1.ClusterRole{{
+		ObjectMeta: objectMeta("binder-cr", ""),
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups: []string{"rbac.authorization.k8s.io"},
+			Resources: []string{"clusterroles"},
+			Verbs:     []string{"bind"},
+		}},
+	}}
 	snapshot.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{{
+		ObjectMeta: objectMeta("binder-crb", ""),
+		RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "binder-cr"},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "attacker", Namespace: "tenant"}},
+	}, {
 		ObjectMeta: objectMeta("powerful-crb", ""),
 		RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "cluster-admin"},
 		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "powerful", Namespace: "tenant"}},
@@ -570,6 +586,15 @@ func TestBuildGraphStampsEdgeProvenance(t *testing.T) {
 			RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "prov-impersonator"},
 			Subjects: []rbacv1.Subject{
 				{Kind: "ServiceAccount", Name: "prov-sa", Namespace: "prov"},
+			},
+		},
+		// `impersonate users` emits an edge per User some binding actually names: an
+		// unbound username carries no permissions, so there would be nothing to stamp.
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "prov-admin-binding"},
+			RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "cluster-admin"},
+			Subjects: []rbacv1.Subject{
+				{Kind: "User", Name: "prov-admin"},
 			},
 		},
 	}
@@ -1255,5 +1280,193 @@ func TestCSRSignEdge(t *testing.T) {
 				t.Fatalf("expectEdge=%v, sawEdge=%v; edges=%+v", tc.expectEdge, sawEdge, graph.Edges)
 			}
 		})
+	}
+}
+
+// rbacWriteSnapshot binds one ClusterRole carrying rules to ServiceAccount team-a/attacker.
+func rbacWriteSnapshot(rules ...rbacv1.PolicyRule) models.Snapshot {
+	snapshot := models.Snapshot{}
+	snapshot.Resources.Namespaces = []corev1.Namespace{{ObjectMeta: objectMeta("team-a", "")}}
+	snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{{ObjectMeta: objectMeta("attacker", "team-a")}}
+	snapshot.Resources.ClusterRoles = []rbacv1.ClusterRole{{
+		ObjectMeta: objectMeta("attacker-cr", ""),
+		Rules:      rules,
+	}}
+	snapshot.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{{
+		ObjectMeta: objectMeta("attacker-crb", ""),
+		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "attacker-cr"},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "attacker", Namespace: "team-a"}},
+	}}
+	return snapshot
+}
+
+func reachesClusterAdmin(snapshot models.Snapshot, source string) bool {
+	for _, p := range FindPaths(BuildGraph(snapshot), 5) {
+		if p.Source.Name == source && p.Target == models.TargetClusterAdmin {
+			return true
+		}
+	}
+	return false
+}
+
+func rbacRule(resources []string, verbs ...string) rbacv1.PolicyRule {
+	return rbacv1.PolicyRule{APIGroups: []string{"rbac.authorization.k8s.io"}, Resources: resources, Verbs: verbs}
+}
+
+// TestRBACWriteEdgesRequireBothHalves pins the conjunctions behind KUBE-PRIVESC-010
+// and KUBE-PRIVESC-009. Kubernetes runs an escalation-prevention check on every
+// (Cluster)RoleBinding create and update, refusing any binding that grants more than
+// the writer already holds, so a lone binding write predicts an API call the server
+// denies. `bind` and `escalate` are the two documented carve-outs from that check,
+// and each is equally inert on its own: `bind` with nothing to write grants nothing,
+// and `escalate` needs a role the subject can actually rewrite.
+func TestRBACWriteEdgesRequireBothHalves(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		rules []rbacv1.PolicyRule
+		want  bool
+	}{
+		{
+			name:  "binding write alone is refused by escalation prevention",
+			rules: []rbacv1.PolicyRule{rbacRule([]string{"clusterrolebindings"}, "create", "update", "patch")},
+			want:  false,
+		},
+		{
+			name:  "bind alone has no binding to write",
+			rules: []rbacv1.PolicyRule{rbacRule([]string{"clusterroles"}, "bind")},
+			want:  false,
+		},
+		{
+			name: "binding write plus bind clears the check",
+			rules: []rbacv1.PolicyRule{
+				rbacRule([]string{"clusterrolebindings"}, "create"),
+				rbacRule([]string{"clusterroles"}, "bind"),
+			},
+			want: true,
+		},
+		{
+			name:  "role write alone cannot author more than the writer holds",
+			rules: []rbacv1.PolicyRule{rbacRule([]string{"clusterroles"}, "create", "update", "patch")},
+			want:  false,
+		},
+		{
+			name:  "escalate alone has no role to widen",
+			rules: []rbacv1.PolicyRule{rbacRule([]string{"clusterroles"}, "escalate")},
+			want:  false,
+		},
+		{
+			name: "role write plus escalate widens the role the subject is bound to",
+			rules: []rbacv1.PolicyRule{
+				rbacRule([]string{"clusterroles"}, "update"),
+				rbacRule([]string{"clusterroles"}, "escalate"),
+			},
+			want: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := reachesClusterAdmin(rbacWriteSnapshot(tc.rules...), "attacker"); got != tc.want {
+				t.Fatalf("cluster-admin reachable = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRBACWriteHalvesMayComeFromDifferentBindings is why the conjunction lives in a
+// per-subject pass instead of a per-rule one: nothing makes a subject collect both
+// verbs through the same binding.
+func TestRBACWriteHalvesMayComeFromDifferentBindings(t *testing.T) {
+	t.Parallel()
+
+	snapshot := rbacWriteSnapshot(rbacRule([]string{"clusterrolebindings"}, "create"))
+	snapshot.Resources.ClusterRoles = append(snapshot.Resources.ClusterRoles, rbacv1.ClusterRole{
+		ObjectMeta: objectMeta("binder-cr", ""),
+		Rules:      []rbacv1.PolicyRule{rbacRule([]string{"clusterroles"}, "bind")},
+	})
+	snapshot.Resources.ClusterRoleBindings = append(snapshot.Resources.ClusterRoleBindings, rbacv1.ClusterRoleBinding{
+		ObjectMeta: objectMeta("binder-crb", ""),
+		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "binder-cr"},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "attacker", Namespace: "team-a"}},
+	})
+
+	if !reachesClusterAdmin(snapshot, "attacker") {
+		t.Fatal("want cluster-admin reachable when the two halves arrive through separate bindings")
+	}
+}
+
+// TestImpersonateUsersNeedsABoundUser proves `impersonate users` is not a
+// cluster-admin grant on its own. No username is privileged by construction, unlike
+// system:masters which the apiserver hard-codes, so the verb is worth exactly what
+// the users some binding names are worth. A kubeadm cluster carries its admin
+// identity on the group kubeadm:cluster-admins and binds no privileged User at all.
+func TestImpersonateUsersNeedsABoundUser(t *testing.T) {
+	t.Parallel()
+
+	impersonateUsers := rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"users"}, Verbs: []string{"impersonate"}}
+
+	t.Run("no bound user means no path", func(t *testing.T) {
+		t.Parallel()
+		if reachesClusterAdmin(rbacWriteSnapshot(impersonateUsers), "attacker") {
+			t.Fatal("impersonate users must not reach cluster-admin when the snapshot binds no privileged User")
+		}
+	})
+
+	t.Run("a cluster-admin-bound user is the whole chain", func(t *testing.T) {
+		t.Parallel()
+		snapshot := rbacWriteSnapshot(impersonateUsers)
+		snapshot.Resources.ClusterRoleBindings = append(snapshot.Resources.ClusterRoleBindings, rbacv1.ClusterRoleBinding{
+			ObjectMeta: objectMeta("alice-admin", ""),
+			RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "cluster-admin"},
+			Subjects:   []rbacv1.Subject{{Kind: "User", Name: "alice"}},
+		})
+
+		var hops []models.EscalationHop
+		for _, p := range FindPaths(BuildGraph(snapshot), 5) {
+			if p.Source.Name == "attacker" && p.Target == models.TargetClusterAdmin {
+				hops = p.Hops
+			}
+		}
+		if len(hops) != 2 {
+			t.Fatalf("want a 2-hop chain through User/alice, got %+v", hops)
+		}
+		if hops[0].Action != "impersonate_user" || hops[0].ToSubject.Name != "alice" {
+			t.Fatalf("want hop 1 to impersonate User alice, got %+v", hops[0])
+		}
+	})
+
+	t.Run("resourceNames scope the reachable users", func(t *testing.T) {
+		t.Parallel()
+		scoped := impersonateUsers
+		scoped.ResourceNames = []string{"bob"}
+		snapshot := rbacWriteSnapshot(scoped)
+		snapshot.Resources.ClusterRoleBindings = append(snapshot.Resources.ClusterRoleBindings, rbacv1.ClusterRoleBinding{
+			ObjectMeta: objectMeta("alice-admin", ""),
+			RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "cluster-admin"},
+			Subjects:   []rbacv1.Subject{{Kind: "User", Name: "alice"}},
+		})
+
+		if reachesClusterAdmin(snapshot, "attacker") {
+			t.Fatal("a rule naming only bob must not reach a path that runs through alice")
+		}
+	})
+}
+
+// TestImpersonateGroupsStaysUnconditional guards the other side of the users/groups
+// split: `impersonate groups` really does reach cluster-admin from the grant alone,
+// because system:masters is impersonable whether or not any binding mentions it.
+func TestImpersonateGroupsStaysUnconditional(t *testing.T) {
+	t.Parallel()
+
+	snapshot := rbacWriteSnapshot(rbacv1.PolicyRule{
+		APIGroups: []string{""},
+		Resources: []string{"groups"},
+		Verbs:     []string{"impersonate"},
+	})
+	if !reachesClusterAdmin(snapshot, "attacker") {
+		t.Fatal("impersonate groups must still reach cluster-admin with no further precondition")
 	}
 }

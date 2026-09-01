@@ -311,3 +311,158 @@ func keys[V any](m map[string]V) []string {
 	}
 	return out
 }
+
+// aggregationSnapshot builds a snapshot holding one aggregating ClusterRole bound to
+// one ServiceAccount, plus the contributor ClusterRoles handed in. aggregateRules is
+// what the aggregating role carries in .rules: empty models a manifest an author
+// wrote, non-empty models a live cluster where the aggregation controller has
+// already reconciled.
+func aggregationSnapshot(aggregateRules []rbacv1.PolicyRule, contributors ...rbacv1.ClusterRole) models.Snapshot {
+	clusterRoles := []rbacv1.ClusterRole{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "aggregated"},
+			AggregationRule: &rbacv1.AggregationRule{
+				ClusterRoleSelectors: []metav1.LabelSelector{
+					{MatchLabels: map[string]string{"rbac.example.com/aggregate-to-aggregated": "true"}},
+				},
+			},
+			Rules: aggregateRules,
+		},
+	}
+	clusterRoles = append(clusterRoles, contributors...)
+
+	return models.Snapshot{
+		Resources: models.SnapshotResources{
+			ClusterRoles: clusterRoles,
+			ClusterRoleBindings: []rbacv1.ClusterRoleBinding{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "aggregated-binding"},
+					RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "aggregated"},
+					Subjects: []rbacv1.Subject{
+						{Kind: "ServiceAccount", Name: "consumer", Namespace: "team-a"},
+					},
+				},
+			},
+		},
+	}
+}
+
+func contributorClusterRole(name string, labels map[string]string, rules ...rbacv1.PolicyRule) rbacv1.ClusterRole {
+	return rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels},
+		Rules:      rules,
+	}
+}
+
+// TestAggregateExpandsAggregationRuleOffline is the regression for the silent false
+// negative on manifest-sourced snapshots. kube-controller-manager writes an
+// aggregating ClusterRole's .rules for it, so a live snapshot reads fine, but a
+// rendered chart or a `scan-resource` input carries an empty .rules and used to
+// register as granting nothing at all.
+func TestAggregateExpandsAggregationRuleOffline(t *testing.T) {
+	t.Parallel()
+
+	snapshot := aggregationSnapshot(
+		nil,
+		contributorClusterRole("contributes", map[string]string{"rbac.example.com/aggregate-to-aggregated": "true"},
+			rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get"}},
+		),
+		contributorClusterRole("unlabelled", nil,
+			rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"delete"}},
+		),
+	)
+
+	perms := Aggregate(snapshot)["ServiceAccount/team-a/consumer"]
+	if perms == nil {
+		t.Fatal("consumer got no effective permissions at all")
+	}
+	if len(perms.Rules) != 1 {
+		t.Fatalf("want exactly the labelled contributor's rule, got %d rules: %+v", len(perms.Rules), perms.Rules)
+	}
+
+	rule := perms.Rules[0]
+	if !rule.Grants([]ResourceTarget{Core("secrets")}, "get") {
+		t.Errorf("aggregated rule does not grant get secrets: %+v", rule)
+	}
+	if rule.SourceRole != "aggregated" {
+		t.Errorf("SourceRole = %q, want the role the binding references", rule.SourceRole)
+	}
+	if rule.AggregatedFrom != "contributes" {
+		t.Errorf("AggregatedFrom = %q, want the ClusterRole that actually carries the rule", rule.AggregatedFrom)
+	}
+}
+
+// TestAggregateTrustsReconciledRules covers the live-cluster half: once the
+// aggregation controller has filled .rules, that is the authority, and re-deriving
+// the union on top would double-count every rule.
+func TestAggregateTrustsReconciledRules(t *testing.T) {
+	t.Parallel()
+
+	reconciled := []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get"}}}
+	snapshot := aggregationSnapshot(
+		reconciled,
+		contributorClusterRole("contributes", map[string]string{"rbac.example.com/aggregate-to-aggregated": "true"}, reconciled...),
+	)
+
+	perms := Aggregate(snapshot)["ServiceAccount/team-a/consumer"]
+	if len(perms.Rules) != 1 {
+		t.Fatalf("want 1 rule, got %d: %+v", len(perms.Rules), perms.Rules)
+	}
+	if perms.Rules[0].AggregatedFrom != "" {
+		t.Errorf("AggregatedFrom = %q, want empty for a rule read straight off .rules", perms.Rules[0].AggregatedFrom)
+	}
+}
+
+// TestAggregateDoesNotRecurseOnSelfSelectingAggregate proves a ClusterRole whose own
+// labels satisfy its own selector terminates instead of feeding itself.
+func TestAggregateDoesNotRecurseOnSelfSelectingAggregate(t *testing.T) {
+	t.Parallel()
+
+	snapshot := aggregationSnapshot(nil)
+	snapshot.Resources.ClusterRoles[0].Labels = map[string]string{"rbac.example.com/aggregate-to-aggregated": "true"}
+
+	perms := Aggregate(snapshot)["ServiceAccount/team-a/consumer"]
+	if perms != nil && len(perms.Rules) != 0 {
+		t.Fatalf("a self-selecting aggregate with no contributors must grant nothing, got %+v", perms.Rules)
+	}
+}
+
+// TestAggregateCarriesNonResourceURLs proves the non-resource half of a role survives
+// aggregation. Kubernetes rejects a PolicyRule carrying both nonResourceURLs and
+// regular resources, so such a rule matches nothing in Grants; carrying it is what
+// keeps that a false negative a later rule can fix rather than data thrown away here.
+func TestAggregateCarriesNonResourceURLs(t *testing.T) {
+	t.Parallel()
+
+	snapshot := models.Snapshot{
+		Resources: models.SnapshotResources{
+			ClusterRoles: []rbacv1.ClusterRole{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "debug-reader"},
+					Rules: []rbacv1.PolicyRule{
+						{NonResourceURLs: []string{"/debug/pprof/*"}, Verbs: []string{"get"}},
+					},
+				},
+			},
+			ClusterRoleBindings: []rbacv1.ClusterRoleBinding{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "debug-reader-binding"},
+					RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "debug-reader"},
+					Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "consumer", Namespace: "team-a"}},
+				},
+			},
+		},
+	}
+
+	perms := Aggregate(snapshot)["ServiceAccount/team-a/consumer"]
+	if perms == nil || len(perms.Rules) != 1 {
+		t.Fatalf("want 1 rule, got %+v", perms)
+	}
+	rule := perms.Rules[0]
+	if len(rule.NonResourceURLs) != 1 || rule.NonResourceURLs[0] != "/debug/pprof/*" {
+		t.Errorf("NonResourceURLs = %v, want the rule's paths carried through", rule.NonResourceURLs)
+	}
+	if rule.Grants([]ResourceTarget{Core("secrets")}, "get") {
+		t.Error("a non-resource rule must not match a resource target")
+	}
+}
