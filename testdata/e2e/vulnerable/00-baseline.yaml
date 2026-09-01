@@ -296,6 +296,13 @@ rules:
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["roles", "clusterroles"]
     verbs: ["bind", "escalate"]
+  # `escalate` lifts the "you may only grant what you already hold" rule for role
+  # CONTENT, so it needs write access to a role to be worth anything. Paired with
+  # the write below, this subject can widen the ClusterRole it is already bound to
+  # and inherit the result, with no new binding required.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "clusterroles"]
+    verbs: ["create", "update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -324,6 +331,15 @@ rules:
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["rolebindings", "clusterrolebindings"]
     verbs: ["create", "update", "patch"]
+  # `bind` is what makes the binding write above an escalation rather than a
+  # refused API call. The apiserver runs an escalation-prevention check on every
+  # (Cluster)RoleBinding create and update: the writer must already hold every
+  # permission the referenced role grants, or hold `bind` on it. Without this rule
+  # the fixture describes a subject that cannot bind itself to cluster-admin, and
+  # a KUBE-PRIVESC-PATH-CLUSTER-ADMIN finding for it would be a false positive.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "clusterroles"]
+    verbs: ["bind"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -470,6 +486,14 @@ roleRef:
 # `create rolebindings` via a RoleBinding only confers namespace-admin in
 # `rbac-ns-fixtures`, NOT cluster-admin. The e2e script asserts that
 # KUBE-PRIVESC-PATH-CLUSTER-ADMIN is NOT emitted for sa-ns-rolebinding-mutate.
+#
+# The cluster-scoped `bind` grant below is what keeps that guard non-vacuous.
+# Binding a ClusterRole into a namespace needs `bind` on clusterroles, and
+# clusterroles is cluster-scoped, so that half can only arrive through a
+# ClusterRoleBinding. Without it this SA reaches no sink at all and the negative
+# assertion would pass for the wrong reason. With it the SA genuinely reaches
+# namespace-admin in rbac-ns-fixtures, and still not cluster-admin, which is the
+# scope distinction the guard exists to pin.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -504,6 +528,28 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: r-ns-rolebinding-mutate
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-ns-rolebinding-mutate-bind
+rules:
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    verbs: ["bind"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-ns-rolebinding-mutate-bind
+subjects:
+  - kind: ServiceAccount
+    name: sa-ns-rolebinding-mutate
+    namespace: rbac-ns-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-ns-rolebinding-mutate-bind
 ---
 # === MODULE: podsec / escape (extra fixtures in `vulnerable` namespace) ===
 apiVersion: apps/v1

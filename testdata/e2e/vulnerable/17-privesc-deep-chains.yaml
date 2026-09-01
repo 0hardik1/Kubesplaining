@@ -105,6 +105,34 @@ subjects:
     name: deepchain-binder
     namespace: deepchain-tenant
 ---
+# The `bind` half of the conjunction. A RoleBinding write on its own is refused by
+# the apiserver's escalation-prevention check unless the writer already holds what
+# it is granting; `bind` on clusterroles is the carve-out that clears it. clusterroles
+# is cluster-scoped, so this half can only be granted cluster-wide. It confers no
+# cluster-admin route by itself, which is exactly why the chain asserted for this SA
+# still runs through namespace-admin rather than straight to the sink.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: deepchain-binder-bind
+rules:
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    verbs: ["bind"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: deepchain-binder-bind
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: deepchain-binder-bind
+subjects:
+  - kind: ServiceAccount
+    name: deepchain-binder
+    namespace: deepchain-tenant
+---
 # The co-located high-value identity that makes namespace-admin worth chaining.
 apiVersion: v1
 kind: ServiceAccount

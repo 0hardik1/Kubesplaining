@@ -138,6 +138,33 @@ subjects:
     name: cutres-detour
     namespace: cutres
 ---
+# The `bind` half that makes the detour above a real route: a RoleBinding write is
+# refused by escalation prevention unless the writer holds `bind` on the referenced
+# role. Granted through its own ClusterRoleBinding, so cutting the direct
+# cluster-admin binding (cutres-detour-direct) leaves both halves of the detour
+# intact and the alternate path still resolves.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cutres-detour-bind
+rules:
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    verbs: ["bind"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cutres-detour-bind
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cutres-detour-bind
+subjects:
+  - kind: ServiceAccount
+    name: cutres-detour
+    namespace: cutres
+---
 # Shape 3: one subject, granted `create pods` by two RoleBindings in two different
 # namespaces, neither of which carries a PSA enforce label. Gives Task 8's
 # addPrivilegedPodCreateEdges fix (one edge per granting binding, not one per
