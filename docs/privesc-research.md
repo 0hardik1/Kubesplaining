@@ -36,7 +36,7 @@ A "detectable" gap must be inferable from a `models.Snapshot` **offline** (RBAC 
 | Tier | Meaning | Implementable today? |
 | --- | --- | --- |
 | **A** | Fires on data the collector **already** captures (RBAC grants, Pod/controller specs, Nodes, existing webhook configs, SecretMetadata, ConfigMap keys). | Yes — rule + graph edge only. |
-| **B** | Needs a **new object type** added to the snapshot (Endpoints/EndpointSlices, Ingresses, APIServices, CSIDrivers, PriorityClasses, operator CRs). Node runtime/kernel version strings are *already present* but unparsed. Services, ValidatingAdmissionPolicies/bindings and CSRs were Tier B when this was written and are now collected, so rules over them are Tier A. | Yes — collector extension + rule. |
+| **B** | Needs a **new object type** added to the snapshot (Endpoints/EndpointSlices, Ingresses, APIServices, CSIDrivers, PriorityClasses, operator CRs). Node runtime/kernel version strings are *already present* but unparsed. Services, ValidatingAdmissionPolicies/bindings, MutatingAdmissionPolicies/bindings and CSRs were Tier B when this was written and are now collected, so rules over them are Tier A. | Yes — collector extension + rule. |
 | **C** | Precondition lives **outside the cluster** (cloud IAM policies, apiserver `--client-ca-file` trust, feature-gate state). Detection is **origin-only**: name the pivot, flag intent, cannot confirm the completed edge. | Partial — same fidelity as the shipped EKS IRSA edge. |
 
 ## Baseline recap — what is already modeled
@@ -122,7 +122,7 @@ these are **Tier A** (fire on current snapshot data).
 | Proposed rule | Sev | RBAC signal (verb · resource · apiGroup) | Terminal gain / sink | Tier |
 | --- | --- | --- | --- | --- |
 | KUBE-PRIVESC-018 | CRITICAL | create/update/patch · `mutatingwebhookconfigurations` / `validatingwebhookconfigurations` · admissionregistration.k8s.io | Mutating → `cluster_admin` (+`node_escape` via injected privileged sidecar); Validating → `kube_system_secrets` (AdmissionReview exfil). *See §D1.* | A |
-| KUBE-PRIVESC-019 | CRITICAL | create/update/patch · `mutatingadmissionpolicies`+`…bindings` (and VAP de-hardening) · admissionregistration.k8s.io | Webhookless CEL/JSONPatch injection → `node_escape`/`cluster_admin`. *§D2.* | A |
+| KUBE-PRIVESC-019 **(shipped)** | CRITICAL | create/update/patch · `mutatingadmissionpolicies`+`…bindings` · admissionregistration.k8s.io | Webhookless CEL/JSONPatch injection → `node_escape`. Shipped: rbac finding on both write halves + a `mutating_policy_inject` graph edge to `node_escape`, gated on a PSA-unrestricted namespace. Existing-policy de-hardening (single-half patch, §D3) is still open. *§D2.* | A |
 | KUBE-PRIVESC-020 | CRITICAL | create/update/patch · `apiservices` · apiregistration.k8s.io | Register aggregated API server → control-plane MITM/credential-forward (CVE-2022-3172) → `traffic_intercept`/`cluster_admin`. | A (edge) / B (flag existing) |
 | KUBE-PRIVESC-021 | HIGH | create/update/patch · `endpoints` (core) / `endpointslices` (discovery.k8s.io) | Repoint a Service backend (esp. a webhook/aggregated-API backing Service) → `traffic_intercept`. CVE-2021-25737/25740. | A (grant) / B (target scoping) |
 | KUBE-PRIVESC-022 | HIGH | create/update · `services` (core); update/patch · `services/status` | Set `spec.externalIPs` / `status.loadBalancer.ingress` → kube-proxy MITM of arbitrary IPs incl. IMDS/apiserver (CVE-2020-8554, unpatched-by-design) → `traffic_intercept`. | A (Services are collected; the externalip-webhook suppression reads the already-collected ValidatingWebhookConfigurations) |
@@ -193,6 +193,11 @@ the RBAC grant.
   TLS endpoint, mutation logic stored in etcd, executed in-process. `create` on
   `mutatingadmissionpolicies`+`…bindings` → same privileged-pod / token-mount injection,
   stealthier. Tier A on RBAC; feature-gate state is unknown offline (don't gate on it).
+  **Shipped** as `KUBE-PRIVESC-019`: the collector lists `mutatingadmissionpolicies` and
+  `…bindings` (warning where unserved, like VAP), the rbac analyzer emits CRITICAL when a
+  subject holds write on both, and the graph draws a `mutating_policy_inject` edge to
+  `node_escape`, gated on a namespace PSA does not restrict (mutating admission runs before
+  PSA validation, so the injected privileged pod needs somewhere permissive to land).
 - **D3 · De-harden an existing policy engine.** `update`/`patch`/`delete` on
   `{mutating,validating}webhookconfigurations` or VAP/MAP `…policies`/`…bindings` flips
   `failurePolicy Fail→Ignore`, narrows `namespaceSelector`/`objectSelector` to exempt the
@@ -390,7 +395,7 @@ Detectability and the load-bearing caveat are stated honestly.
 
 | # | Vector | Novelty | Detect | Key caveat |
 | --- | --- | --- | --- | --- |
-| N1 | **MutatingAdmissionPolicy** webhookless etcd-native mutating tap (§D2) | undocumented-but-real | full (RBAC) | feature-gate state unknown offline |
+| N1 **(shipped)** | **MutatingAdmissionPolicy** webhookless etcd-native mutating tap (§D2) | undocumented-but-real | full (RBAC) | shipped as `KUBE-PRIVESC-019`; edge gated on a PSA-unrestricted namespace |
 | N2 | `pods/ephemeralcontainers` inject into a **running** privileged pod (steal its token/PID) | undocumented-but-real | full | needs a high-value running pod in scope (`-013` covers the verb but not this framing) |
 | N3 | **ClusterTrustBundle / PodCertificate** trust-anchor poisoning → mTLS peer impersonation | undocumented-but-real | full (grant) | workload must project the bundle; signer-scoped needs `attest` |
 | N4/N15 | **VAP paramRef / policy-as-data** tampering (write the param, not the policy) | undocumented-but-real | partial | policy must actually derive its verdict from mutable params |

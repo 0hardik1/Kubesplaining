@@ -697,6 +697,57 @@ func TestPodEscapeEdgesCarryNoProvenance(t *testing.T) {
 // come from two different bindings, this edge derives from a single `create
 // pods` rule, so naming the binding is unambiguous and the cut-resilient pass
 // must be able to key off it.
+// TestMutatingPolicyEdgeRequiresBothHalvesAndPermissiveNamespace covers the
+// KUBE-PRIVESC-019 graph edge: write on BOTH mutatingadmissionpolicies and their
+// bindings adds a mutating_policy_inject edge to node_escape, gated on at least one
+// namespace PSA does not restrict. Policy-write alone, or a restricted-only cluster,
+// must not draw the edge.
+func TestMutatingPolicyEdgeRequiresBothHalvesAndPermissiveNamespace(t *testing.T) {
+	group := "admissionregistration.k8s.io"
+	build := func(restrictedOnly bool, resources ...string) *models.EscalationGraph {
+		snapshot := models.Snapshot{}
+		nsLabels := map[string]string{}
+		if restrictedOnly {
+			nsLabels["pod-security.kubernetes.io/enforce"] = "restricted"
+		}
+		snapshot.Resources.Namespaces = []corev1.Namespace{
+			{ObjectMeta: metav1.ObjectMeta{Name: "apps", Labels: nsLabels}},
+		}
+		snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+			{ObjectMeta: metav1.ObjectMeta{Name: "injector", Namespace: "apps"}},
+		}
+		snapshot.Resources.ClusterRoles = []rbacv1.ClusterRole{{
+			ObjectMeta: metav1.ObjectMeta{Name: "map-writer"},
+			Rules:      []rbacv1.PolicyRule{{APIGroups: []string{group}, Resources: resources, Verbs: []string{"create"}}},
+		}}
+		snapshot.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{{
+			ObjectMeta: metav1.ObjectMeta{Name: "map-writer-binding"},
+			RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "map-writer"},
+			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "injector", Namespace: "apps"}},
+		}}
+		return BuildGraph(snapshot)
+	}
+
+	hasEdge := func(g *models.EscalationGraph) bool {
+		for _, edge := range g.Edges {
+			if edge.Action == "mutating_policy_inject" && edge.To == sinkNodeEscape {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !hasEdge(build(false, "mutatingadmissionpolicies", "mutatingadmissionpolicybindings")) {
+		t.Error("both halves + permissive namespace: expected a mutating_policy_inject edge")
+	}
+	if hasEdge(build(false, "mutatingadmissionpolicies")) {
+		t.Error("policy write alone: unexpected mutating_policy_inject edge")
+	}
+	if hasEdge(build(true, "mutatingadmissionpolicies", "mutatingadmissionpolicybindings")) {
+		t.Error("restricted-only cluster: injected privileged pod has nowhere to land, expected no edge")
+	}
+}
+
 func TestPrivilegedPodCreateEdgeStampsProvenance(t *testing.T) {
 	snapshot := models.Snapshot{}
 	snapshot.Resources.Namespaces = []corev1.Namespace{

@@ -187,6 +187,12 @@ var Glossary = map[string]GlossaryEntry{
 		Short: "A pluggable validator/mutator for API requests; failurePolicy: Ignore is a security gap.",
 		Long:  template.HTML(`<p>An <strong>admission webhook</strong> intercepts API requests before they are persisted, allowing custom policy. If a security-critical webhook has <code>failurePolicy: Ignore</code>, an outage of the webhook backend silently disables enforcement, and attackers can race a webhook restart and slip through.</p>`),
 	},
+	"MutatingAdmissionPolicy": {
+		Title:  "MutatingAdmissionPolicy",
+		Short:  "In-tree, webhookless CEL/JSONPatch mutator; write access to it and its binding rewrites every admitted object.",
+		Long:   template.HTML(`<p>A <strong>MutatingAdmissionPolicy</strong> rewrites objects as the API server admits them, using CEL, a JSON patch, or an ApplyConfiguration stored in etcd and executed in-process (GA in Kubernetes v1.36). It is the mutating counterpart of the <code>ValidatingAdmissionPolicy</code> and the webhookless replacement for a mutating admission webhook: there is no external endpoint, serving certificate, or backing Deployment.</p><p>A policy only runs once a <code>MutatingAdmissionPolicyBinding</code> activates it, so the two objects are a pair. Whoever can <code>create</code>/<code>update</code>/<code>patch</code> both can inject <code>privileged: true</code>, a <code>hostPath</code>, or a sidecar into every future pod. Because mutating admission runs before validating admission, the injected pod still faces Pod Security Admission and must land in a namespace PSA does not restrict, which is why write access here is treated like write access to <code>ClusterRoleBindings</code>.</p>`),
+		DocURL: "https://kubernetes.io/docs/reference/access-authn-authz/mutating-admission-policy/",
+	},
 	"kube-system": {
 		Title: "kube-system namespace",
 		Short: "Holds the control plane's ServiceAccounts and tokens. Read-access here is cluster-admin.",
@@ -303,6 +309,16 @@ var Techniques = map[string]TechniqueExplainer{
 			{Note: "Enumerate which users any binding names", Cmd: "kubectl get clusterrolebindings,rolebindings -A -o json | jq -r '.items[].subjects[]? | select(.kind==\"User\") | .name' | sort -u"},
 			{Note: "Check what the impersonated user can actually do", Cmd: "kubectl auth can-i --list --as=<user>"},
 			{Note: "Act as them", Cmd: "kubectl --as=<user> get secrets -A"},
+		},
+	},
+	"mutating_policy_inject": {
+		Title: "MutatingAdmissionPolicy injection",
+		Plain: template.HTML(`<p>A <strong>MutatingAdmissionPolicy</strong> is the in-tree, webhookless way to rewrite objects as the API server admits them (GA in Kubernetes v1.36). Its CEL / JSONPatch mutation lives in etcd and runs inside the API server, so unlike a mutating webhook there is no external endpoint, TLS certificate, or backing Deployment to notice.</p><p>An attacker who can write both the policy and a binding for it injects <code>privileged: true</code>, a <code>hostPath</code> mount, or an extra container into every pod created afterwards. Mutating admission runs <em>before</em> validating admission, so the injected pod still faces Pod Security Admission: the mutation targets a namespace PSA does not restrict (an unlabeled one, or <code>kube-system</code>), lands a privileged pod there, and that is a node escape.</p>`),
+		Mitre: "T1610 — Deploy Container",
+		AttackerSteps: []AttackerStep{
+			{Note: "Confirm write access to both the policy and its binding", Cmd: "kubectl auth can-i create mutatingadmissionpolicies && kubectl auth can-i create mutatingadmissionpolicybindings"},
+			{Note: "Apply a policy that injects a privileged container/hostPath into pods, then a binding that activates it", Cmd: "kubectl apply -f evil-mutatingadmissionpolicy.yaml -f evil-binding.yaml"},
+			{Note: "Trigger or wait for a pod create in a PSA-unrestricted namespace, then chroot the host from the injected privileged pod", Cmd: "kubectl exec injected-pod -- chroot /host sh"},
 		},
 	},
 	"bind_or_escalate": {
@@ -639,6 +655,8 @@ func TechniqueKeyForFinding(f models.Finding) string {
 		return "token_request"
 	case f.RuleID == "KUBE-PRIVESC-017":
 		return "wildcard_permission"
+	case f.RuleID == "KUBE-PRIVESC-019":
+		return "mutating_policy_inject"
 	case f.RuleID == "KUBE-RBAC-OVERBROAD-001":
 		return "bound_to_cluster_admin"
 	case f.RuleID == "KUBE-CLOUD-AWSAUTH-SYSTEM-MASTERS-001",
@@ -694,7 +712,7 @@ func GlossaryKeyForResource(ref *models.ResourceRef) string {
 	case "Pod", "Deployment", "DaemonSet", "StatefulSet", "ReplicaSet", "Job",
 		"Secret", "ConfigMap", "Namespace", "PersistentVolume",
 		"ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding",
-		"CertificateSigningRequest":
+		"CertificateSigningRequest", "MutatingAdmissionPolicy":
 		return ref.Kind
 	}
 	return ""

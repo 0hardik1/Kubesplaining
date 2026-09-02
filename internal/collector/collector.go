@@ -609,6 +609,46 @@ func (c *Collector) Collect(ctx context.Context) (models.Snapshot, error) {
 		return nil
 	})
 
+	// MutatingAdmissionPolicy went stable (GA, admissionregistration.k8s.io/v1) in
+	// Kubernetes v1.36. On clusters older than that, or with the feature gate off, the
+	// typed list returns NotFound / NoMatch and the runTask switch downgrades it to a
+	// warning, the same absent-resource path VAP takes. Unlike a webhook a mutating
+	// policy carries its mutation logic in etcd and runs in-process, so `create` on it
+	// (plus a binding) is an admission-time injection primitive the privesc graph draws.
+	runTask("mutatingadmissionpolicies", func() error {
+		list, err := c.client.AdmissionregistrationV1().MutatingAdmissionPolicies().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return err
+		}
+
+		items := make([]admissionregistrationv1.MutatingAdmissionPolicy, 0, len(list.Items))
+		for _, item := range list.Items {
+			items = append(items, sanitizeMutatingAdmissionPolicy(item, c.opts.IncludeManagedFields))
+		}
+
+		mu.Lock()
+		snapshot.Resources.MutatingAdmissionPolicies = items
+		mu.Unlock()
+		return nil
+	})
+
+	runTask("mutatingadmissionpolicybindings", func() error {
+		list, err := c.client.AdmissionregistrationV1().MutatingAdmissionPolicyBindings().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return err
+		}
+
+		items := make([]admissionregistrationv1.MutatingAdmissionPolicyBinding, 0, len(list.Items))
+		for _, item := range list.Items {
+			items = append(items, sanitizeMutatingAdmissionPolicyBinding(item, c.opts.IncludeManagedFields))
+		}
+
+		mu.Lock()
+		snapshot.Resources.MutatingAdmissionPolicyBindings = items
+		mu.Unlock()
+		return nil
+	})
+
 	// Kyverno and Gatekeeper are CRDs — use the dynamic client (when available)
 	// and pre-flight on Discovery().ServerGroups() so we skip the list entirely
 	// when the API group isn't served. Avoids a per-engine NoMatchError round-trip
@@ -869,6 +909,16 @@ func sanitizeValidatingAdmissionPolicy(obj admissionregistrationv1.ValidatingAdm
 }
 
 func sanitizeValidatingAdmissionPolicyBinding(obj admissionregistrationv1.ValidatingAdmissionPolicyBinding, includeManagedFields bool) admissionregistrationv1.ValidatingAdmissionPolicyBinding {
+	obj.ManagedFields = maybeManagedFields(nil, includeManagedFields, obj.ManagedFields)
+	return obj
+}
+
+func sanitizeMutatingAdmissionPolicy(obj admissionregistrationv1.MutatingAdmissionPolicy, includeManagedFields bool) admissionregistrationv1.MutatingAdmissionPolicy {
+	obj.ManagedFields = maybeManagedFields(nil, includeManagedFields, obj.ManagedFields)
+	return obj
+}
+
+func sanitizeMutatingAdmissionPolicyBinding(obj admissionregistrationv1.MutatingAdmissionPolicyBinding, includeManagedFields bool) admissionregistrationv1.MutatingAdmissionPolicyBinding {
 	obj.ManagedFields = maybeManagedFields(nil, includeManagedFields, obj.ManagedFields)
 	return obj
 }

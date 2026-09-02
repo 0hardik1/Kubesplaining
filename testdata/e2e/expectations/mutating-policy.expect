@@ -1,0 +1,9 @@
+# Expected rule ID from the mutating-admission-policy fixture
+# (testdata/e2e/vulnerable/19-privesc-mutating-policy.yaml). Write access to BOTH
+# mutatingadmissionpolicies AND mutatingadmissionpolicybindings is KUBE-PRIVESC-019.
+#
+# The graph edge this grant adds (mutating_policy_inject -> node_escape, then the
+# control-plane continuation to system_masters on kind's schedulable control-plane
+# node) only re-emits KUBE-PRIVESC-PATH-NODE-ESCAPE / -SYSTEM-MASTERS IDs already
+# covered by baseline.expect, so no new PATH assertion is needed here.
+KUBE-PRIVESC-019
