@@ -61,6 +61,7 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 		addSecretMintEdge(graph, perms.Subject, perms.Rules)
 		addNodeMigrateEdge(graph, perms.Subject, perms.Rules)
 		addPrivilegedPodCreateEdges(graph, perms.Subject, perms.Rules, privilegedNamespaces)
+		addMutatingPolicyEdge(graph, perms.Subject, perms.Rules, privilegedNamespaces)
 		// These two stay last of the per-subject builders: addCSRApprovalEdge used to
 		// run in a pass after the whole loop, and BFS breaks ties on the order edges
 		// leaving a node were inserted. Keeping it last preserves which route to
@@ -797,6 +798,53 @@ func cutBreakers(halves ...map[cutKey]bool) []models.BindingRef {
 // can `create pods` in a namespace whose Pod Security Admission posture does
 // not block privileged pods can launch a privileged pod and escape to the node.
 // Full wildcards are already cluster-admin (-017), so they are skipped.
+// addMutatingPolicyEdge emits the KUBE-PRIVESC-019 edge: a subject that can write
+// BOTH mutatingadmissionpolicies AND mutatingadmissionpolicybindings can author a
+// CEL/JSONPatch mutation and bind it, injecting `privileged`/`hostPath`/a sidecar
+// into pods at admission time cluster-wide, which is a node escape.
+//
+// Both resources are cluster-scoped, so only cluster-scoped rules count (a
+// RoleBinding granting them is dead RBAC the authorizer never honors). Both halves
+// are required: an unbound policy never executes, and a binding for no
+// attacker-controlled policy mutates nothing, the same shape as KUBE-PRIVESC-010.
+//
+// The edge is gated on at least one namespace that Pod Security Admission does not
+// restrict, because mutating admission runs before validating admission: an injected
+// `privileged` pod is still rejected by PSA in a baseline/restricted namespace, so
+// the mutation needs somewhere permissive to land. It targets node_escape, which the
+// graph then continues into control-plane PKI theft when a schedulable control-plane
+// node exists.
+func addMutatingPolicyEdge(graph *models.EscalationGraph, subject models.SubjectRef, rules []permissions.EffectiveRule, privilegedNamespaces map[string]bool) {
+	if len(privilegedNamespaces) == 0 {
+		return
+	}
+	policyWrite, bindingWrite := map[cutKey]bool{}, map[cutKey]bool{}
+	writeVerbs := []string{"create", "update", "patch"}
+	for _, rule := range rules {
+		if rule.Namespace != "" {
+			continue
+		}
+		key := cutKey{binding: rule.SourceBinding, namespace: rule.Namespace}
+		if matchesResourceVerb(rule, []string{"mutatingadmissionpolicies"}, writeVerbs) {
+			policyWrite[key] = true
+		}
+		if matchesResourceVerb(rule, []string{"mutatingadmissionpolicybindings"}, writeVerbs) {
+			bindingWrite[key] = true
+		}
+	}
+	if len(policyWrite) == 0 || len(bindingWrite) == 0 {
+		return
+	}
+	ensureSubjectNode(graph, subject)
+	addEdge(graph, nodeID(subject), sinkNodeEscape, &models.EscalationEdge{
+		Technique:   "KUBE-PRIVESC-019",
+		Action:      "mutating_policy_inject",
+		Permission:  "create/update mutatingadmissionpolicies + mutatingadmissionpolicybindings",
+		Description: "can author and bind a MutatingAdmissionPolicy that injects a privileged/hostPath pod at admission time",
+		CutBreakers: cutBreakers(policyWrite, bindingWrite),
+	})
+}
+
 func addPrivilegedPodCreateEdges(graph *models.EscalationGraph, subject models.SubjectRef, rules []permissions.EffectiveRule, privilegedNamespaces map[string]bool) {
 	// One edge per distinct granting binding, not one per subject. The cut-resilient pass
 	// models removing this subject from a single binding, so two bindings granting the
@@ -1110,6 +1158,7 @@ var actionDifficulty = map[string]string{
 	"ephemeral_container_inject":   difficultyModerate,
 	"pod_create_privileged_escape": difficultyModerate,
 	"pod_host_escape":              difficultyModerate,
+	"mutating_policy_inject":       difficultyModerate,
 	"nodes_proxy":                  difficultyModerate,
 	"irsa_assume_role":             difficultyModerate,
 	"aws_auth_admin":               difficultyModerate,
@@ -1243,6 +1292,9 @@ var resourceAPIGroup = map[string]string{
 	"certificatesigningrequests":          "certificates.k8s.io",
 	"certificatesigningrequests/approval": "certificates.k8s.io",
 	"certificatesigningrequests/status":   "certificates.k8s.io",
+	// admissionregistration.k8s.io
+	"mutatingadmissionpolicies":       "admissionregistration.k8s.io",
+	"mutatingadmissionpolicybindings": "admissionregistration.k8s.io",
 }
 
 // matchesResourceVerb reports whether a rule authorizes any of the given verbs on

@@ -146,11 +146,11 @@ func buildOverbroadAfter(roleKind, roleName, namespace string) string {
 }
 
 // ForRBACDangerous returns the structured remediation for the dangerous-verb
-// RBAC findings emitted by the rbac analyzer (KUBE-PRIVESC-001 through -017,
+// RBAC findings emitted by the rbac analyzer (KUBE-PRIVESC-001 through -019,
 // excluding the graph-only -PATH-* findings). Each finding identifies a single
 // effective rule from a (Cluster)Role; the fix is to remove that one rule. For
 // the correlation findings (-002/-007/-016) the finding is anchored to one half
-// of the pair, so removing that rule breaks the chain.
+// of the pair (-002/-007/-016/-019), so removing that rule breaks the chain.
 //
 // The patch we emit is a JSON-patch operation that surgically removes the
 // matching rule by re-writing the entire rules array with the offending rule
@@ -221,7 +221,8 @@ func isDangerousRBACRule(ruleID string) bool {
 		"KUBE-PRIVESC-014",
 		"KUBE-PRIVESC-015",
 		"KUBE-PRIVESC-016",
-		"KUBE-PRIVESC-017":
+		"KUBE-PRIVESC-017",
+		"KUBE-PRIVESC-019":
 		return true
 	}
 	return false

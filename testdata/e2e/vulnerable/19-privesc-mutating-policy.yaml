@@ -1,0 +1,47 @@
+# === MODULE: rbac (KUBE-PRIVESC-019 mutating admission policy injection) ===
+# A subject that can write BOTH mutatingadmissionpolicies AND their bindings can
+# author a CEL/JSONPatch mutation and bind it, injecting a privileged/hostPath pod
+# into every future admission at admission time. That is a cluster-takeover verb the
+# privesc graph draws as a mutating_policy_inject edge to node_escape.
+#
+# Same convention as 16-privesc-rbac.yaml: one unmounted ServiceAccount + one
+# ClusterRole + one ClusterRoleBinding, no workloads, so the finding fires on the
+# effective grant with no rollout wait. The grant is pure RBAC, so it applies on any
+# Kubernetes version even where MutatingAdmissionPolicy itself is not yet served: the
+# apiserver does not validate RBAC resource names against the served API surface.
+#
+# map-fixtures carries no pod-security.kubernetes.io/enforce label, so the cluster has
+# at least one namespace PSA does not restrict, which is what the graph edge needs for
+# the injected privileged pod to have somewhere to land.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: map-fixtures
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-mutating-policy
+  namespace: map-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-mutating-policy
+rules:
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["mutatingadmissionpolicies", "mutatingadmissionpolicybindings"]
+    verbs: ["create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-mutating-policy
+subjects:
+  - kind: ServiceAccount
+    name: sa-mutating-policy
+    namespace: map-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-mutating-policy

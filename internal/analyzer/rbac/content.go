@@ -986,6 +986,61 @@ func contentPrivesc016(subject models.SubjectRef, podsBinding, podsRole, nodeBin
 	}
 }
 
+// contentPrivesc019 is the mutating admission policy injection finding (KUBE-PRIVESC-019).
+//
+// A MutatingAdmissionPolicy is the webhookless, CEL/JSONPatch counterpart of a
+// mutating admission webhook (GA in Kubernetes v1.36). Its mutation logic lives in
+// etcd and runs in-process in the apiserver, so unlike a webhook there is no external
+// endpoint, TLS cert, or backing Deployment to find. A subject that can write both the
+// policy and a binding for it can rewrite every future admission request: inject
+// privileged, a hostPath, or a sidecar into pods cluster-wide.
+//
+// The honest caveat, stated in the copy: mutating admission runs BEFORE validating
+// admission, and Pod Security Admission is a validating plugin. So an injected
+// privileged pod is still checked by PSA and is rejected in a namespace that enforces
+// baseline or restricted. The injection therefore lands in a namespace PSA does not
+// restrict (an unlabeled namespace, or a privileged-labelled one such as most clusters'
+// kube-system), which is why the privesc graph gates its mutating_policy_inject edge on
+// at least one such namespace existing.
+func contentPrivesc019(subject models.SubjectRef, policyBinding, policyRole, bindingBinding, bindingRole string) ruleContent {
+	scope := models.Scope{
+		Level:  models.ScopeCluster,
+		Detail: "Cluster-wide: MutatingAdmissionPolicies and their bindings are cluster-scoped and rewrite admission for every matching request across the cluster",
+	}
+	return ruleContent{
+		Title: fmt.Sprintf("Mutating admission policy injection: `%s` can rewrite every admitted object", subjectKey(subject)),
+		Scope: scope,
+		Description: fmt.Sprintf("Subject %s can write `mutatingadmissionpolicies` (via %s : %s) and `mutatingadmissionpolicybindings` (via %s : %s). A `MutatingAdmissionPolicy` is the in-tree, webhookless equivalent of a mutating admission webhook (GA in Kubernetes v1.36): its CEL / JSONPatch / ApplyConfiguration mutation is stored in etcd and executed in-process by the apiserver, so there is no external endpoint, no serving certificate, and no backing Deployment, only the policy object and a binding that activates it.\n\n"+
+			"With write access to both, the subject authors a mutation that matches `pods` on CREATE and injects `securityContext.privileged: true`, a `hostPath` volume mounting the node root, or an extra container, then binds it. Every pod created afterwards, by any workload, controller, or user, is silently rewritten before it is persisted. One privileged pod on a node is a host escape, and from a control-plane node that is the cluster CA and every token.\n\n"+
+			"Both halves are load-bearing, which is why this finding requires them together: a policy with no binding never executes, and a binding pointing at no attacker-controlled policy mutates nothing. This mirrors `KUBE-PRIVESC-010`, where a binding write escalates only alongside the `bind` verb.\n\n"+
+			"One ordering detail decides where the injected pod can land, and the finding does not overstate it: mutating admission runs before validating admission, and Pod Security Admission is a validating plugin, so an injected `privileged` pod is still rejected by PSA in a namespace that enforces `baseline` or `restricted`. The mutation therefore targets a namespace PSA does not restrict (an unlabeled namespace, or a `privileged`-labelled one such as `kube-system`), which every real cluster has at least one of.",
+			subjectKey(subject), policyBinding, policyRole, bindingBinding, bindingRole),
+		Impact: "Cluster-wide admission-time object rewriting. The subject injects privileged settings, host mounts, or sidecars into every future pod, defeating pod-hardening for all workloads at once and reaching node, then control-plane, compromise, with no webhook or external infrastructure to detect.",
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker confirms both halves with `%s` and `%s`.", kubectlAuthCanI("create", "mutatingadmissionpolicies", "", subject), kubectlAuthCanI("create", "mutatingadmissionpolicybindings", "", subject)),
+			"They author a MutatingAdmissionPolicy matching `pods` CREATE whose ApplyConfiguration/JSONPatch sets `spec.containers[*].securityContext.privileged: true` and adds a `hostPath: /` volume, scoped (via matchConstraints or a namespaceSelector) to a namespace PSA does not restrict.",
+			"They create a MutatingAdmissionPolicyBinding referencing the policy, activating it cluster-wide for matching requests.",
+			"They wait for (or trigger) a pod create in that namespace (a Deployment rollout, a Job, their own `kubectl run`); the apiserver rewrites it in-process and admits a privileged, host-mounting pod.",
+			"From the privileged pod they `chroot` into the host root, read `/etc/kubernetes/pki/*` or `/var/lib/kubelet` on a control-plane-adjacent node, and forge cluster-admin credentials.",
+		},
+		Remediation: "Remove write access to `mutatingadmissionpolicies` and `mutatingadmissionpolicybindings` from every non-admin identity; treat it like write access to (Cluster)RoleBindings.",
+		RemediationSteps: []string{
+			fmt.Sprintf("Drop `create`/`update`/`patch` on `mutatingadmissionpolicies` and `mutatingadmissionpolicybindings` from %s. These verbs belong only to cluster administrators.", subjectKey(subject)),
+			"Audit who else holds them: `kubectl get clusterroles -o json | jq -r '.items[] | select(.rules[]?.resources[]? | test(\"mutatingadmissionpolic\")) | .metadata.name'` (add the ClusterRoleBinding subjects to see the reachable identities).",
+			"Enumerate existing policies and bindings for a mutation already planted: `kubectl get mutatingadmissionpolicies,mutatingadmissionpolicybindings -o yaml` and review each `spec.mutations` block.",
+			"Add a ValidatingAdmissionPolicy (or Kyverno / Gatekeeper rule) that rejects creation of MutatingAdmissionPolicies / bindings outside a tiny admin allowlist, as defence in depth.",
+			fmt.Sprintf("Verify with `%s` returning `no`.", kubectlAuthCanI("create", "mutatingadmissionpolicies", "", subject)),
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes: MutatingAdmissionPolicy", URL: "https://kubernetes.io/docs/reference/access-authn-authz/mutating-admission-policy/"},
+			{Title: "Kubernetes: Admission control ordering (mutating before validating)", URL: "https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/"},
+			refRBACGoodPractices,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1610, mitreT1611, mitreT1098, mitreT1078_004},
+	}
+}
+
 // lastField returns the last whitespace-separated token of s (e.g. "delete
 // nodes" -> "nodes", "update nodes/status" -> "nodes/status"). Used to render
 // the verb/resource pair in the KUBE-PRIVESC-016 verification command.

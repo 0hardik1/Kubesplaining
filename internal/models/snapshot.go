@@ -75,6 +75,14 @@ type SnapshotResources struct {
 	// presence detection; Phase 3 will evaluate the CEL expressions offline.
 	ValidatingAdmissionPolicies       []admissionregistrationv1.ValidatingAdmissionPolicy        `json:"validating_admission_policies,omitempty"`
 	ValidatingAdmissionPolicyBindings []admissionregistrationv1.ValidatingAdmissionPolicyBinding `json:"validating_admission_policy_bindings,omitempty"`
+	// MutatingAdmissionPolicies and MutatingAdmissionPolicyBindings are the in-tree
+	// CEL/JSONPatch mutating counterpart of VAP (GA in Kubernetes v1.36). A mutating
+	// policy rewrites objects at admission with no external webhook: it can flip
+	// `privileged`, add a `hostPath`, or inject a sidecar into every future pod, so
+	// write access to the pair is a cluster-takeover primitive the privesc graph draws
+	// (KUBE-PRIVESC-019). Collected for that graph edge and for presence reporting.
+	MutatingAdmissionPolicies       []admissionregistrationv1.MutatingAdmissionPolicy        `json:"mutating_admission_policies,omitempty"`
+	MutatingAdmissionPolicyBindings []admissionregistrationv1.MutatingAdmissionPolicyBinding `json:"mutating_admission_policy_bindings,omitempty"`
 	// KyvernoClusterPolicies and KyvernoPolicies hold Kyverno (Cluster)Policies as
 	// unstructured.Unstructured so we don't take a typed dependency on Kyverno's CRDs.
 	// Split mirrors the (Cluster)Role precedent so consumers preserve scope.

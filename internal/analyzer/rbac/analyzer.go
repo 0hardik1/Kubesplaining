@@ -21,10 +21,11 @@ import (
 // a core name - e.g. a CRD `secrets.example.com` - from tripping the core-`secrets`
 // checks.
 const (
-	groupRBAC  = "rbac.authorization.k8s.io"
-	groupCerts = "certificates.k8s.io"
-	groupApps  = "apps"
-	groupBatch = "batch"
+	groupRBAC      = "rbac.authorization.k8s.io"
+	groupCerts     = "certificates.k8s.io"
+	groupApps      = "apps"
+	groupBatch     = "batch"
+	groupAdmission = "admissionregistration.k8s.io"
 )
 
 // Target sets for the dangerous-permission checks below, each pinned to its API
@@ -47,6 +48,11 @@ var (
 	targetCSR         = []permissions.ResourceTarget{permissions.InGroup(groupCerts, "certificatesigningrequests")}
 	targetCSRApproval = []permissions.ResourceTarget{permissions.InGroup(groupCerts, "certificatesigningrequests/approval")}
 	targetCSRStatus   = []permissions.ResourceTarget{permissions.InGroup(groupCerts, "certificatesigningrequests/status")}
+	// The two halves of the KUBE-PRIVESC-019 mutating-admission-policy primitive. Both
+	// are cluster-scoped resources in admissionregistration.k8s.io, so the caller also
+	// requires rule.Namespace == "" (a RoleBinding granting these is dead RBAC).
+	targetMutatingPolicies       = []permissions.ResourceTarget{permissions.InGroup(groupAdmission, "mutatingadmissionpolicies")}
+	targetMutatingPolicyBindings = []permissions.ResourceTarget{permissions.InGroup(groupAdmission, "mutatingadmissionpolicybindings")}
 )
 
 // grants reports whether this rule authorizes any of verbs on any of targets,
@@ -474,6 +480,39 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 				"KUBE-PRIVESC-016", models.SeverityHigh, models.CategoryPrivilegeEscalation,
 				scoring.Clamp(7.5*exploitability*1.2), // node manipulation is cluster-scoped
 				contentPrivesc016(perms.Subject, deletePodsRule.formattedBinding(), deletePodsRule.formattedRole(), nodeManipRule.formattedBinding(), nodeManipRule.formattedRole(), nodeAction)), snapshot))
+		}
+
+		// KUBE-PRIVESC-019, mutating admission policy injection. `create`/`update`/
+		// `patch` on BOTH `mutatingadmissionpolicies` AND
+		// `mutatingadmissionpolicybindings` (cluster-scoped) lets a subject author a
+		// CEL/JSONPatch mutation and bind it, so every future admission request is
+		// rewritten in-process with no external webhook. It can inject
+		// `privileged: true`, a `hostPath`, or a sidecar into pods cluster-wide. Both
+		// halves are required: a policy with no binding never runs, and a binding with
+		// no attacker-controlled policy mutates nothing (this mirrors why
+		// KUBE-PRIVESC-010 needs the `bind` verb, not a binding write alone).
+		var mapPolicyRule, mapBindingRule *effectiveRule
+		for i := range perms.Rules {
+			r := &perms.Rules[i]
+			if r.Namespace != "" {
+				continue
+			}
+			if mapPolicyRule == nil && matchesMutatingPolicyWrite(*r) {
+				mapPolicyRule = r
+			}
+			if mapBindingRule == nil && matchesMutatingPolicyBindingWrite(*r) {
+				mapBindingRule = r
+			}
+		}
+		if mapPolicyRule != nil && mapBindingRule != nil {
+			exploitability := 1.0
+			if perms.Subject.Kind == "ServiceAccount" && usedServiceAccounts[perms.Subject.Key()] {
+				exploitability = 1.2
+			}
+			findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, *mapPolicyRule,
+				"KUBE-PRIVESC-019", models.SeverityCritical, models.CategoryPrivilegeEscalation,
+				scoring.Clamp(9.0*exploitability),
+				contentPrivesc019(perms.Subject, mapPolicyRule.formattedBinding(), mapPolicyRule.formattedRole(), mapBindingRule.formattedBinding(), mapBindingRule.formattedRole())), snapshot))
 		}
 	}
 
@@ -916,6 +955,19 @@ func matchesNodeStatusWrite(rule effectiveRule) bool {
 
 func matchesNodeDelete(rule effectiveRule) bool {
 	return rule.grants(targetNodes, "delete")
+}
+
+// matchesMutatingPolicyWrite / matchesMutatingPolicyBindingWrite are the two
+// halves of the KUBE-PRIVESC-019 mutating-admission-policy injection primitive.
+// `create`/`update`/`patch` on the policy authors the CEL/JSONPatch mutation;
+// the same verbs on the binding activate it against matching admission requests.
+// Both resources are cluster-scoped, so the caller requires rule.Namespace == "".
+func matchesMutatingPolicyWrite(rule effectiveRule) bool {
+	return rule.grants(targetMutatingPolicies, "create", "update", "patch")
+}
+
+func matchesMutatingPolicyBindingWrite(rule effectiveRule) bool {
+	return rule.grants(targetMutatingPolicyBindings, "create", "update", "patch")
 }
 
 // scopesCompose reports whether a create-secrets grant in createNs and a

@@ -299,12 +299,12 @@ command sequences, success oracles, and negative controls, live in the machine-r
 | R1-C2 | E1 | kind | Argo Workflows `spec.serviceAccountName`, no pods verb | **Known FN** |
 | R2-C1 | E1 | kind | `create rolebindings` + `bind` on a privileged ClusterRole | **Present.** Its control (binding write, no `bind`) is now correctly silent; see §4 |
 | R2-C2 | E1 | kind | Flux Kustomization steers cluster-admin kustomize-controller | **Present:** `KUBE-CONFUSED-DEPUTY-001`, hop-1 `operator_reconcile` |
-| R2-C3 | E1 | kind | MutatingAdmissionPolicy covering another tenant | **Known FN:** no `admissionregistration.k8s.io` case in `addEdgesForRule` |
+| R2-C3 | E1 | kind | MutatingAdmissionPolicy covering another tenant | **Covered (capability):** write on `mutatingadmissionpolicies`+`…bindings` now fires `KUBE-PRIVESC-019` + a `mutating_policy_inject` edge to `node_escape`. The finding is on the write capability, not on which tenant a specific policy's matchConstraints target. |
 | R2-C4 | E1 | kind | `spec.externalIPs` pointed at a victim ClusterIP | **Known FN**, double-blocked: no `traffic_intercept` sink exists |
 | R2-C5 | E1 | kind-multinode | Node-shared tenant token theft from `/var/lib/kubelet` | **Known FN:** `node_escape` has exactly two outbound edges |
 | R3-C1 | E1 | kind | Attacker-minted hostPath PV defeats PSA in a Restricted namespace | **Known FN** |
 | R3-C2 | E1 | kind | Flux applies a privileged hostPath DaemonSet | **Present:** path to `node_escape` via `operator_reconcile` |
-| R3-C3 | E1 | kind | Mutating policy injects a privileged sidecar into every future pod | **Known FN**, the census's highest-value Tier-A gap |
+| R3-C3 | E1 | kind | Mutating policy injects a privileged sidecar into every future pod | **Covered:** `KUBE-PRIVESC-019` (write on both `mutatingadmissionpolicies` and `…bindings`) + a `mutating_policy_inject` graph edge to `node_escape` |
 | R3-C5 | E1 config / E3 version | kind | Privileged hostPath pod (executed) + kernel CVE band (inherited) | **Present** for the configuration half only |
 | R3-C6 | E1 | kind-multinode | Bootstrap token to `system:node:<name>` via auto-approver | **Known FN:** no `TargetNodeIdentity` sink |
 | R4-C1 | E1 | kind | Self-approve a CSR, `CN=` an SA, authenticate as it | **Present:** `KUBE-PRIVESC-011` |

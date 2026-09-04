@@ -684,6 +684,51 @@ func TestNodeMigration(t *testing.T) {
 	assertRuleAbsent(t, findings, "KUBE-PRIVESC-016")
 }
 
+// TestMutatingAdmissionPolicyInjection covers KUBE-PRIVESC-019: write access to
+// BOTH mutatingadmissionpolicies AND their bindings is a cluster-takeover primitive.
+// Either half alone must not fire, and a namespace-scoped grant (dead RBAC on a
+// cluster-scoped resource) must not fire either.
+func TestMutatingAdmissionPolicyInjection(t *testing.T) {
+	t.Parallel()
+
+	group := "admissionregistration.k8s.io"
+	policyWrite := rbacv1.PolicyRule{APIGroups: []string{group}, Resources: []string{"mutatingadmissionpolicies"}, Verbs: []string{"create"}}
+	bindingWrite := rbacv1.PolicyRule{APIGroups: []string{group}, Resources: []string{"mutatingadmissionpolicybindings"}, Verbs: []string{"create"}}
+
+	both := clusterRoleSnapshot("map-injector", "map-sa", policyWrite, bindingWrite)
+	findings, err := New().Analyze(context.Background(), both)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	assertRulePresent(t, findings, "KUBE-PRIVESC-019")
+
+	// One rule granting both resources at once is the same capability.
+	combined := clusterRoleSnapshot("map-injector-2", "map-sa-2",
+		rbacv1.PolicyRule{APIGroups: []string{group}, Resources: []string{"mutatingadmissionpolicies", "mutatingadmissionpolicybindings"}, Verbs: []string{"create", "update", "patch"}})
+	findings, err = New().Analyze(context.Background(), combined)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	assertRulePresent(t, findings, "KUBE-PRIVESC-019")
+
+	// Policy write alone (no binding write) must not fire.
+	policyOnly := clusterRoleSnapshot("map-policy-only", "map-sa-3", policyWrite)
+	findings, err = New().Analyze(context.Background(), policyOnly)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	assertRuleAbsent(t, findings, "KUBE-PRIVESC-019")
+
+	// A wildcard on the admissionregistration group satisfies both halves.
+	wildcard := clusterRoleSnapshot("map-wild", "map-sa-4",
+		rbacv1.PolicyRule{APIGroups: []string{group}, Resources: []string{"*"}, Verbs: []string{"*"}})
+	findings, err = New().Analyze(context.Background(), wildcard)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	assertRulePresent(t, findings, "KUBE-PRIVESC-019")
+}
+
 // TestPodCreatePrivilegedEscape covers KUBE-PRIVESC-002: create pods in a
 // namespace whose Pod Security Admission posture does not block privileged pods.
 // A Restricted-enforced namespace must suppress it.

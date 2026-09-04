@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **`KUBE-PRIVESC-019`: mutating admission policy injection.** Kubesplaining was blind to `MutatingAdmissionPolicy`, the webhookless CEL/JSONPatch mutator that went GA (`admissionregistration.k8s.io/v1`) in Kubernetes v1.36 and is available on EKS. Unlike a mutating webhook it carries its mutation in etcd and runs in-process, so a subject that can write both `mutatingadmissionpolicies` and `mutatingadmissionpolicybindings` can inject `privileged: true`, a `hostPath`, or a sidecar into every future pod at admission time. The collector now lists both resources (they degrade to a warning on clusters that do not serve them, exactly as `ValidatingAdmissionPolicy` does), the snapshot carries them, the rbac analyzer emits a CRITICAL finding when a subject holds write access to both halves, and the privesc graph draws a `mutating_policy_inject` edge to `node_escape`. The edge is gated on at least one namespace Pod Security Admission does not restrict, because mutating admission runs before validating admission: the injected privileged pod still faces PSA, so it lands in an unlabeled or `privileged`-labelled namespace (which every cluster has). Both halves are required, mirroring why `KUBE-PRIVESC-010` needs the `bind` verb rather than a binding write alone.
+
+
 ## [1.2.0] - 2026-07-31
 
 This release is the graph release. Two waves of privilege-escalation work landed on top of v1.1.0 and they compound: the first took the escalation graph across the cloud boundary (a first-class EKS module, so a chain can cross from a Kubernetes ServiceAccount into an AWS IAM role) and completed the 17-entry `KUBE-PRIVESC` technique taxonomy; the second taught the graph to chain deeply rather than stop at its first sink, to model a privileged operator as a confused deputy, and to check whether the fix each finding recommends actually closes the route it found. Alongside them the certificates API is now covered on both sides, permission and evidence, and scoring changed shape: a chain is ranked by its hardest hop rather than by how many hops it has.
